@@ -1,13 +1,23 @@
 /**
- * SillyTavern ComfyUI 绘图 & TTS 语音朗读插件 (sillytavern-comfy-tts)
+ * SillyTavern ComfyUI 绘图 & TTS 语音朗读原生插件 (sillytavern-comfy-tts)
  * 
- * 功能亮点：
- * 1. ComfyUI 智能生图：自动解析 AI 回复中的 <image>prompt</image> 标签，驱动本地/远程 ComfyUI 引擎后台绘制；
- * 2. 轮播卡片交互：在消息中呈现多图滑动轮播、小圆点指示、触摸手势支持、全屏灯箱大图预览与重新生成；
- * 3. 划选文本即时语音朗读：手机触屏划选、电脑鼠标划选就地弹出「🔊 朗读选中文字」胶囊，一键原声发音；
- * 4. 消息一键朗读：自动剥离 <think> 思考过程、代码块与图像标签，只纯净朗读叙事内容；
- * 5. 多通道 TTS 支持：原生 Web Speech API 浏览器引擎（零门槛无依赖）、DSH 本地语音桥、自定义 HTTP 接口；
- * 6. 原生酒馆设置面板：在右侧扩展菜单注册控制面板，支持音色切换、语速调节、画风前缀后缀与尺寸配置。
+ * 纯正独立 SillyTavern 扩展，完全脱离任何外部宿主桥接，所有逻辑前端闭环：
+ * 1. ComfyUI 原生直连生图：
+ *    - 直连标准 ComfyUI 服务（默认 8188 端口或用户自定义局域网/远程地址）；
+ *    - 自动探查并列举 ComfyUI 已安装的模型权重（Checkpoint）、采样器（Sampler）与调度器（Scheduler）；
+ *    - 原生组装文生图标准工作流 JSON 并发送至 /prompt，支持实时 WebSocket 进度推送与 /history 轮询兜底；
+ *    - 自动解析 AI 消息中的 <image>prompt</image> 标签，支持手势滑动多图轮播、全屏大图灯箱预览、重新生成；
+ *    - 消息栏「🎨」快捷绘图按钮与 /comfy 斜杠命令。
+ * 
+ * 2. 独立纯净 TTS 语音朗读：
+ *    - 原生 Web Speech API（开箱即用、零服务器依赖、零网络开销、支持设备全语种声音）；
+ *    - OpenAI 兼容格式音频服务（/v1/audio/speech，适配 Edge-TTS、CosyVoice、GPT-SoVITS、Fish-Speech 等）；
+ *    - 手机触屏手滑划选、电脑鼠标划选就地升起「🔊 朗读选中文字」浮动胶囊；
+ *    - 消息栏「🔊」一键朗读（智能剥离 <think> 思考链、代码块与图像标签）；
+ *    - 屏幕右下角全局播放/停止常驻指示徽章与 /tts 斜杠命令。
+ * 
+ * 3. 标准酒馆配置中心：
+ *    - 接入酒馆右侧抽屉 Extensions Settings 与顶部魔杖菜单，支持模型探测、参数微调与即时试听测试。
  */
 
 (function () {
@@ -19,13 +29,12 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认配置
+  // 默认配置（纯净原生配置，无任何外部桥接依赖）
   const DEFAULT_SETTINGS = {
     // ComfyUI 设置
     comfyEnabled: true,
-    comfyEndpointType: 'dsh', // 'dsh' (3092/3090) | 'direct' (ComfyUI 8188)
-    comfyHost: '', // 留空则自动探测当前主机名:3092
-    comfyDirectHost: 'http://127.0.0.1:8188',
+    comfyHost: 'http://127.0.0.1:8188',
+    comfyCheckpoint: '',
     comfyAutoDrawTags: true,
     comfyShowMesButton: true,
     comfyPromptPrefix: '(masterpiece, best quality, highly detailed), ',
@@ -34,23 +43,30 @@
     comfyBatchCount: 1,
     comfyWidth: 512,
     comfyHeight: 768,
+    comfySteps: 20,
+    comfyCfg: 7.0,
+    comfySampler: 'euler',
+    comfyScheduler: 'normal',
 
     // TTS 设置
     ttsEnabled: true,
     ttsFloatingSelection: true,
     ttsShowMesButton: true,
     ttsFilterThinking: true,
-    ttsEngine: 'webspeech', // 'webspeech' | 'dsh' | 'custom_http'
+    ttsEngine: 'webspeech', // 'webspeech' | 'openai'
     ttsVoice: '',
     ttsRate: 1.0,
     ttsPitch: 1.0,
     ttsVolume: 1.0,
-    ttsDshHost: '', // 留空则自动探测
-    ttsCustomEndpoint: '',
+    ttsOpenAiEndpoint: '',
+    ttsOpenAiKey: '',
+    ttsOpenAiModel: 'tts-1',
+    ttsOpenAiVoice: 'alloy',
   };
 
-  // 状态变量
+  // 运行期全局状态
   let currentUtterance = null;
+  let currentAudio = null;
   let isTtsPlaying = false;
   let currentPlayingText = '';
   let ttsButton = null;
@@ -60,7 +76,7 @@
   let lightboxEl = null;
 
   /* ==========================================================================
-     1. 上下文与设置管理 (Context & Settings)
+     1. 上下文与持久化配置 (Context & Settings Management)
      ========================================================================== */
 
   function getSTContext() {
@@ -95,34 +111,20 @@
     }
   }
 
-  function getBridgeHost() {
-    return (window.location && window.location.hostname) ? window.location.hostname : '127.0.0.1';
-  }
-
-  function getBridgePort() {
-    return (typeof window !== 'undefined' && window.location && window.location.port === '3080') ? '3090' : '3092';
-  }
-
-  function getEffectiveComfyHost() {
+  function getCleanComfyHost() {
     const s = getSettings();
-    if (s.comfyHost && s.comfyHost.trim()) return s.comfyHost.trim().replace(/\/+$/, '');
-    return `http://${getBridgeHost()}:${getBridgePort()}`;
+    let host = (s.comfyHost || 'http://127.0.0.1:8188').trim().replace(/\/+$/, '');
+    if (!host.startsWith('http://') && !host.startsWith('https://')) {
+      host = 'http://' + host;
+    }
+    return host;
   }
-
-  function getEffectiveTtsHost() {
-    const s = getSettings();
-    if (s.ttsDshHost && s.ttsDshHost.trim()) return s.ttsDshHost.trim().replace(/\/+$/, '');
-    return `http://${getBridgeHost()}:${getBridgePort()}`;
-  }
-
-  /* ==========================================================================
-     2. 辅助提示工具 (Toast & Feedback)
-     ========================================================================== */
 
   function showToast(msg, type = 'info') {
     if (typeof toastr !== 'undefined') {
       if (type === 'error') toastr.error(msg, DISPLAY_NAME);
       else if (type === 'success') toastr.success(msg, DISPLAY_NAME);
+      else if (type === 'warning') toastr.warning(msg, DISPLAY_NAME);
       else toastr.info(msg, DISPLAY_NAME);
       return;
     }
@@ -130,7 +132,7 @@
   }
 
   /* ==========================================================================
-     3. 全屏大图灯箱预览 (Lightbox Viewer)
+     2. 全屏大图灯箱预览 (Lightbox Viewer)
      ========================================================================== */
 
   function ensureLightbox() {
@@ -194,10 +196,9 @@
   }
 
   /* ==========================================================================
-     4. TTS 语音朗读核心引擎 (TTS Audio Engine)
+     3. TTS 语音朗读引擎 (Web Speech API & OpenAI 兼容协议)
      ========================================================================== */
 
-  // 过滤掉思考标签、代码块、图像标签以及多余 markdown
   function cleanTextForTts(rawText) {
     if (!rawText) return '';
     let text = rawText;
@@ -219,7 +220,6 @@
     isTtsPlaying = playing;
     currentPlayingText = playing ? text : '';
 
-    // 更新浮动胶囊
     if (ttsButton) {
       if (playing) {
         ttsButton.className = 'sct-tts-pill-btn sct-tts-playing';
@@ -230,7 +230,6 @@
       }
     }
 
-    // 更新全局悬浮徽章
     const badge = getGlobalTtsBadge();
     if (badge) {
       if (playing) {
@@ -241,7 +240,6 @@
       }
     }
 
-    // 更新消息栏上的朗读按钮状态
     document.querySelectorAll('.sct-mes-tts-btn').forEach((btn) => {
       const parentMes = btn.closest('.mes');
       const mesText = parentMes ? parentMes.querySelector('.mes_text')?.textContent || '' : '';
@@ -266,11 +264,10 @@
 
     const s = getSettings();
     if (!s.ttsEnabled) {
-      showToast('TTS 语音功能已在设置中关闭', 'warning');
+      showToast('TTS 语音功能已在插件设置中关闭', 'warning');
       return;
     }
 
-    // 如果正在播放且再次点击相同的文本，则停止
     if (isTtsPlaying) {
       stopTts();
       return;
@@ -278,73 +275,93 @@
 
     setTtsPlayingState(true, text);
 
-    // 引擎 1：原生 Web Speech API (零配置、跨平台完美兼容)
-    if (s.ttsEngine === 'webspeech' || typeof window.speechSynthesis !== 'undefined') {
-      if (s.ttsEngine === 'webspeech' || !window.DshaTts) {
-        try {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(text);
-          currentUtterance = utterance;
-
-          utterance.rate = s.ttsRate || 1.0;
-          utterance.pitch = s.ttsPitch || 1.0;
-          utterance.volume = s.ttsVolume || 1.0;
-
-          // 匹配音色
-          const voices = window.speechSynthesis.getVoices();
-          if (s.ttsVoice) {
-            const matched = voices.find((v) => v.voiceURI === s.ttsVoice || v.name === s.ttsVoice);
-            if (matched) utterance.voice = matched;
-          } else {
-            // 默认优先匹配中文
-            const zhVoice = voices.find((v) => v.lang && (v.lang.startsWith('zh') || v.lang.startsWith('cmn')));
-            if (zhVoice) utterance.voice = zhVoice;
-          }
-
-          utterance.onend = () => {
-            currentUtterance = null;
-            setTtsPlayingState(false);
-          };
-
-          utterance.onerror = (e) => {
-            console.warn('[SCT_TTS] WebSpeech error', e);
-            currentUtterance = null;
-            setTtsPlayingState(false);
-          };
-
-          window.speechSynthesis.speak(utterance);
-          return;
-        } catch (err) {
-          console.warn('[SCT_TTS] WebSpeech failed, fallback to DSH host', err);
-        }
-      }
-    }
-
-    // 引擎 2：DSH 本地通道 (Android 原生通道 / HTTP 桥)
-    if (window.DshaTts && typeof window.DshaTts.postMessage === 'function') {
+    // 引擎分支 1：OpenAI 兼容协议 / 自定义 TTS API 端点
+    if (s.ttsEngine === 'openai' && s.ttsOpenAiEndpoint) {
       try {
-        window.DshaTts.postMessage(JSON.stringify({ action: 'speak', text: text }));
-        startDshStatusPolling();
+        const ep = s.ttsOpenAiEndpoint.trim().replace(/\/+$/, '');
+        const url = ep.endsWith('/speech') ? ep : `${ep}/v1/audio/speech`;
+        const headers = { 'Content-Type': 'application/json' };
+        if (s.ttsOpenAiKey) headers['Authorization'] = `Bearer ${s.ttsOpenAiKey.trim()}`;
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify({
+            model: s.ttsOpenAiModel || 'tts-1',
+            input: text,
+            voice: s.ttsOpenAiVoice || 'alloy',
+            speed: s.ttsRate || 1.0,
+            response_format: 'mp3'
+          })
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        const blob = await res.blob();
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio(audioUrl);
+        currentAudio = audio;
+        audio.volume = Math.min(1.0, Math.max(0, s.ttsVolume || 1.0));
+
+        audio.onended = () => {
+          URL.revokeObjectURL(audioUrl);
+          currentAudio = null;
+          setTtsPlayingState(false);
+        };
+        audio.onerror = (e) => {
+          URL.revokeObjectURL(audioUrl);
+          currentAudio = null;
+          setTtsPlayingState(false);
+          showToast(`音频播放失败: ${e.message || '未知解码错误'}`, 'error');
+        };
+
+        await audio.play();
         return;
       } catch (err) {
-        console.warn('[SCT_TTS] DshaTts WebMessage failed', err);
+        console.warn('[SCT_TTS] OpenAI TTS 失败，降级至原生 Web Speech API', err);
+        showToast(`OpenAI TTS 失败 (${err.message})，转用浏览器原生朗读`, 'warning');
       }
     }
 
-    const host = getEffectiveTtsHost();
-    try {
-      const res = await fetch(`${host}/app/tts?action=speak&text=${encodeURIComponent(text)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (!data.ok) {
+    // 引擎分支 2：浏览器原生 Web Speech API（零门槛、零网络延迟、全平台支持）
+    if (typeof window.speechSynthesis !== 'undefined') {
+      try {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        currentUtterance = utterance;
+
+        utterance.rate = s.ttsRate || 1.0;
+        utterance.pitch = s.ttsPitch || 1.0;
+        utterance.volume = s.ttsVolume || 1.0;
+
+        const voices = window.speechSynthesis.getVoices();
+        if (s.ttsVoice) {
+          const matched = voices.find((v) => v.voiceURI === s.ttsVoice || v.name === s.ttsVoice);
+          if (matched) utterance.voice = matched;
+        } else {
+          const zhVoice = voices.find((v) => v.lang && (v.lang.startsWith('zh') || v.lang.startsWith('cmn')));
+          if (zhVoice) utterance.voice = zhVoice;
+        }
+
+        utterance.onend = () => {
+          currentUtterance = null;
+          setTtsPlayingState(false);
+        };
+
+        utterance.onerror = (e) => {
+          console.warn('[SCT_TTS] WebSpeech 错误', e);
+          currentUtterance = null;
+          setTtsPlayingState(false);
+        };
+
+        window.speechSynthesis.speak(utterance);
+        return;
+      } catch (err) {
         setTtsPlayingState(false);
-        showToast(data.error || 'TTS 朗读失败', 'error');
-      } else {
-        startDshStatusPolling();
+        showToast(`语音朗读启动失败: ${err.message}`, 'error');
       }
-    } catch (e) {
+    } else {
       setTtsPlayingState(false);
-      showToast(`连接 TTS 服务失败: ${e.message}`, 'error');
+      showToast('当前浏览器环境不支持 Web Speech API，请配置 OpenAI 兼容 TTS 端点', 'error');
     }
   }
 
@@ -353,45 +370,16 @@
       window.speechSynthesis.cancel();
       currentUtterance = null;
     }
-
-    if (window.DshaTts && typeof window.DshaTts.postMessage === 'function') {
-      try { window.DshaTts.postMessage(JSON.stringify({ action: 'stop' })); } catch (_) {}
+    if (currentAudio) {
+      currentAudio.pause();
+      currentAudio = null;
     }
-
-    const host = getEffectiveTtsHost();
-    fetch(`${host}/app/tts?action=stop`).catch(() => {});
-
     setTtsPlayingState(false);
   }
 
-  let statusPollTimer = null;
-  function startDshStatusPolling() {
-    if (statusPollTimer) clearInterval(statusPollTimer);
-    const host = getEffectiveTtsHost();
-    let pollCount = 0;
-
-    statusPollTimer = setInterval(async () => {
-      pollCount++;
-      if (pollCount > 120) {
-        clearInterval(statusPollTimer);
-        setTtsPlayingState(false);
-        return;
-      }
-      try {
-        const res = await fetch(`${host}/app/tts?action=status`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.ok && !data.playing) {
-          clearInterval(statusPollTimer);
-          setTtsPlayingState(false);
-        }
-      } catch (_) {}
-    }, 1000);
-  }
-
   /* ==========================================================================
-     5. 划选文本浮动胶囊 (Selection Floating Pill)
-     ========================================================================= */
+     4. 划选文本浮动胶囊 (Selection Floating Pill)
+     ========================================================================== */
 
   function getTtsButton() {
     if (ttsButton) return ttsButton;
@@ -473,14 +461,11 @@
     let left = rect.left + rect.width / 2 - btnWidth / 2;
     let top = rect.top - btnHeight - 10;
 
-    // 边界检测
     const margin = 12;
     if (left < margin) left = margin;
     if (left + btnWidth > window.innerWidth - margin) {
       left = window.innerWidth - btnWidth - margin;
     }
-
-    // 如果顶部空间不足，则置于划选下方
     if (top < margin) {
       top = rect.bottom + 10;
     }
@@ -500,7 +485,6 @@
     document.addEventListener('mouseup', debouncedUpdate);
     document.addEventListener('touchend', debouncedUpdate);
 
-    // 点击其他空白区域收起
     document.addEventListener('mousedown', (e) => {
       if (ttsButton && !ttsButton.contains(e.target) && !isTtsPlaying) {
         ttsButton.style.display = 'none';
@@ -509,8 +493,20 @@
   }
 
   /* ==========================================================================
-     6. ComfyUI 生图与轮播交互 (ComfyUI Generation & Carousel)
+     5. ComfyUI 原生工作流组装与通信 (Direct ComfyUI Workflow & API Client)
      ========================================================================== */
+
+  // 探查 ComfyUI 已安装的模型权重与可用节点信息
+  async function fetchComfyObjectInfo(host) {
+    try {
+      const res = await fetch(`${host}/object_info/CheckpointLoaderSimple`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || [];
+    } catch (_) {
+      return null;
+    }
+  }
 
   // 轮播卡片状态管理 Map
   const cardStateMap = new Map();
@@ -531,9 +527,7 @@
     const total = images.length;
     const safeIdx = ((state.currentIdx % total) + total) % total;
     state.currentIdx = safeIdx;
-
-    const host = getBridgeHost();
-    const currentUrl = images[safeIdx].replace('127.0.0.1', host);
+    const currentUrl = images[safeIdx];
 
     container.innerHTML = `
       <div class="sct-comfy-card">
@@ -565,11 +559,9 @@
       </div>
     `;
 
-    // 绑定点击大图预览
     const vp = container.querySelector(`#vp_${cardId}`);
     vp.querySelector('img').addEventListener('click', () => openLightbox(currentUrl));
 
-    // 绑定触摸滑动 (Touch Swipe)
     let touchStartX = 0;
     vp.addEventListener('touchstart', (e) => {
       if (e.touches && e.touches.length > 0) touchStartX = e.touches[0].clientX;
@@ -588,7 +580,6 @@
       }
     }, { passive: true });
 
-    // 左右按钮
     const prevBtn = container.querySelector('.sct-prev-btn');
     if (prevBtn) {
       prevBtn.addEventListener('click', (e) => {
@@ -607,7 +598,6 @@
       });
     }
 
-    // 圆点点击
     container.querySelectorAll('.sct-comfy-dot').forEach((dot) => {
       dot.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -619,7 +609,6 @@
       });
     });
 
-    // 重新生成按钮
     const retryBtn = container.querySelector('.sct-retry-btn');
     if (retryBtn) {
       retryBtn.addEventListener('click', (e) => {
@@ -629,12 +618,12 @@
     }
   }
 
-  function renderLoadingCard(container, promptText) {
+  function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…') {
     container.innerHTML = `
       <div class="sct-comfy-card">
         <div class="sct-comfy-loading">
           <div class="sct-spinner"></div>
-          <div class="sct-loading-text">🎨 ComfyUI 正在后台生成画面…</div>
+          <div class="sct-loading-text">${progressText}</div>
           <div class="sct-loading-hint">提示词: ${promptText.slice(0, 50)}...</div>
         </div>
       </div>
@@ -649,7 +638,7 @@
             <span>⚠️</span>
             <span>ComfyUI 生图失败</span>
           </div>
-          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${err || '未能连接到 ComfyUI 绘画服务'}</div>
+          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${err || '未能连接到 ComfyUI 服务'}</div>
           <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
         </div>
       </div>
@@ -659,6 +648,7 @@
     });
   }
 
+  // 纯正的 ComfyUI 原生 API 调度器
   async function triggerComfyDraw(promptText, container) {
     const s = getSettings();
     if (!s.comfyEnabled) {
@@ -666,125 +656,175 @@
       return;
     }
 
-    renderLoadingCard(container, promptText);
+    renderLoadingCard(container, promptText, '🎨 正在连接 ComfyUI 引擎…');
 
-    const fullPrompt = `${s.comfyPromptPrefix || ''}${promptText}${s.comfyPromptSuffix || ''}`.trim();
-    const batch = s.comfyBatchCount || 1;
+    const comfyHost = getCleanComfyHost();
+    const fullPositivePrompt = `${s.comfyPromptPrefix || ''}${promptText}${s.comfyPromptSuffix || ''}`.trim();
+    const negativePrompt = s.comfyNegativePrompt || '';
+    const batch = Math.min(4, Math.max(1, s.comfyBatchCount || 1));
+    const width = s.comfyWidth || 512;
+    const height = s.comfyHeight || 768;
+    const steps = s.comfySteps || 20;
+    const cfg = s.comfyCfg || 7.0;
+    const sampler = s.comfySampler || 'euler';
+    const scheduler = s.comfyScheduler || 'normal';
+    const seed = Math.floor(Math.random() * 1000000000);
 
-    // 通道 1：DSH 服务模式 (默认本地 3092/3090 端口)
-    if (s.comfyEndpointType === 'dsh') {
-      const host = getEffectiveComfyHost();
+    // 探查或使用指定模型 Checkpoint
+    let ckpt = s.comfyCheckpoint || '';
+    if (!ckpt) {
+      const availableModels = await fetchComfyObjectInfo(comfyHost);
+      if (availableModels && availableModels.length > 0) {
+        ckpt = availableModels[0];
+      } else {
+        ckpt = 'v1-5-pruned-emaonly.safetensors';
+      }
+    }
+
+    // 组装标准原生 ComfyUI txt2img 工作流
+    const workflow = {
+      "3": {
+        "class_type": "KSampler",
+        "inputs": {
+          "cfg": cfg,
+          "denoise": 1,
+          "latent_image": ["5", 0],
+          "model": ["4", 0],
+          "negative": ["7", 0],
+          "positive": ["6", 0],
+          "sampler_name": sampler,
+          "scheduler": scheduler,
+          "seed": seed,
+          "steps": steps
+        }
+      },
+      "4": {
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {
+          "ckpt_name": ckpt
+        }
+      },
+      "5": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+          "batch_size": batch,
+          "height": height,
+          "width": width
+        }
+      },
+      "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+          "clip": ["4", 1],
+          "text": fullPositivePrompt
+        }
+      },
+      "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+          "clip": ["4", 1],
+          "text": negativePrompt
+        }
+      },
+      "8": {
+        "class_type": "VAEDecode",
+        "inputs": {
+          "samples": ["3", 0],
+          "vae": ["4", 2]
+        }
+      },
+      "9": {
+        "class_type": "SaveImage",
+        "inputs": {
+          "filename_prefix": "SillyTavern",
+          "images": ["8", 0]
+        }
+      }
+    };
+
+    const clientId = 'st_' + Math.random().toString(36).slice(2, 10);
+
+    try {
+      // 1. 尝试建立 WebSocket 实时进度监听
+      let ws = null;
       try {
-        // 触发异步生图
-        const drawUrl = `${host}/app/comfy/draw?prompt=${encodeURIComponent(fullPrompt)}&count=${batch}&sync=0`;
-        await fetch(drawUrl).catch(() => {});
+        const wsUrl = comfyHost.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`;
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'progress') {
+              const { value, max } = msg.data;
+              const percent = Math.round((value / max) * 100);
+              renderLoadingCard(container, promptText, `🎨 渲染进度: ${value}/${max} (${percent}%)`);
+            } else if (msg.type === 'executing') {
+              const node = msg.data.node;
+              if (node === '3') renderLoadingCard(container, promptText, `🎨 正在执行 KSampler 采样…`);
+              else if (node === '8') renderLoadingCard(container, promptText, `🎨 正在执行 VAE 解码…`);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {}
 
-        // 轮询查询图片就绪状态
-        let attempts = 0;
-        const maxAttempts = 80; // 80 * 1.5s = 120 秒超时
+      // 2. 提交任务至 ComfyUI /prompt 端点
+      const res = await fetch(`${comfyHost}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow, client_id: clientId })
+      });
 
-        const pollTimer = setInterval(async () => {
-          attempts++;
-          if (attempts > maxAttempts) {
+      if (!res.ok) {
+        throw new Error(`ComfyUI 响应失败 HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      const promptId = data.prompt_id;
+      if (!promptId) {
+        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
+          throw new Error(`工作流节点配置异常: ${JSON.stringify(data.node_errors)}`);
+        }
+        throw new Error('未获取到 ComfyUI 任务 ID');
+      }
+
+      // 3. 轮询 /history/{promptId} 获取最终生成的图像
+      let pollCount = 0;
+      const maxPoll = 120; // 120 * 1.5s = 180s 超时
+      const pollTimer = setInterval(async () => {
+        pollCount++;
+        if (pollCount > maxPoll) {
+          clearInterval(pollTimer);
+          if (ws) ws.close();
+          renderErrorCard(container, promptText, '生图等待超时（超过 180 秒）');
+          return;
+        }
+
+        try {
+          const hRes = await fetch(`${comfyHost}/history/${promptId}`);
+          if (!hRes.ok) return;
+          const hData = await hRes.json();
+          const task = hData[promptId];
+
+          if (task && task.outputs && task.outputs['9'] && task.outputs['9'].images) {
             clearInterval(pollTimer);
-            renderErrorCard(container, promptText, '生图等待超时（超过 120 秒）');
-            return;
+            if (ws) ws.close();
+
+            const images = task.outputs['9'].images.map((img) => 
+              `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
+            );
+
+            renderCarouselCard(container, images, promptText);
+            showToast('ComfyUI 绘图成功！', 'success');
           }
+        } catch (_) {}
+      }, 1500);
 
-          try {
-            const queryUrl = `${host}/app/comfy/image?prompt=${encodeURIComponent(fullPrompt)}`;
-            const res = await fetch(queryUrl);
-            if (!res.ok) return;
-            const data = await res.json();
-
-            if (data.status === 'ready' && data.images && data.images.length > 0) {
-              clearInterval(pollTimer);
-              renderCarouselCard(container, data.images, promptText);
-              showToast('ComfyUI 生图完成！', 'success');
-            } else if (data.status === 'error') {
-              clearInterval(pollTimer);
-              renderErrorCard(container, promptText, data.error || '后台生成失败');
-            }
-          } catch (_) {}
-        }, 1500);
-
-      } catch (err) {
-        renderErrorCard(container, promptText, err.message);
-      }
-    } else {
-      // 通道 2：直连标准 ComfyUI (8188 端口)
-      const comfyUrl = s.comfyDirectHost ? s.comfyDirectHost.replace(/\/+$/, '') : 'http://127.0.0.1:8188';
-      try {
-        // 发送简单标准文生图工作流至 /prompt
-        const res = await fetch(`${comfyUrl}/prompt`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: {
-              3: {
-                class_type: "KSampler",
-                inputs: {
-                  cfg: 8,
-                  denoise: 1,
-                  latent_image: ["5", 0],
-                  model: ["4", 0],
-                  negative: ["7", 0],
-                  positive: ["6", 0],
-                  sampler_name: "euler",
-                  scheduler: "normal",
-                  seed: Math.floor(Math.random() * 1000000000),
-                  steps: 20
-                }
-              },
-              4: { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "v1-5-pruned-emaonly.safetensors" } },
-              5: { class_type: "EmptyLatentImage", inputs: { batch_size: batch, height: s.comfyHeight || 768, width: s.comfyWidth || 512 } },
-              6: { class_type: "CLIPTextEncode", inputs: { clip: ["4", 1], text: fullPrompt } },
-              7: { class_type: "CLIPTextEncode", inputs: { clip: ["4", 1], text: s.comfyNegativePrompt || "" } },
-              8: { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-              9: { class_type: "SaveImage", inputs: { filename_prefix: "SillyTavern", images: ["8", 0] } }
-            }
-          })
-        });
-
-        if (!res.ok) throw new Error(`ComfyUI 响应异常 HTTP ${res.status}`);
-        const data = await res.json();
-        const promptId = data.prompt_id;
-        if (!promptId) throw new Error('未获取到任务 prompt_id');
-
-        // 轮询历史
-        let pollCount = 0;
-        const directTimer = setInterval(async () => {
-          pollCount++;
-          if (pollCount > 80) {
-            clearInterval(directTimer);
-            renderErrorCard(container, promptText, 'ComfyUI 任务处理超时');
-            return;
-          }
-
-          try {
-            const hRes = await fetch(`${comfyUrl}/history/${promptId}`);
-            if (!hRes.ok) return;
-            const hData = await hRes.json();
-            const task = hData[promptId];
-            if (task && task.outputs && task.outputs['9'] && task.outputs['9'].images) {
-              clearInterval(directTimer);
-              const outImages = task.outputs['9'].images.map(img => 
-                `${comfyUrl}/view?filename=${img.filename}&subfolder=${img.subfolder}&type=${img.type}`
-              );
-              renderCarouselCard(container, outImages, promptText);
-              showToast('ComfyUI 生图完成！', 'success');
-            }
-          } catch (_) {}
-        }, 1500);
-
-      } catch (e) {
-        renderErrorCard(container, promptText, `直连 ComfyUI 失败: ${e.message}`);
-      }
+    } catch (e) {
+      renderErrorCard(container, promptText, e.message);
     }
   }
 
   /* ==========================================================================
-     7. 消息 DOM 扫描与按钮注入 (Message Processing & DOM Injection)
+     6. 消息扫描与自动化注入 (Message Parsing & DOM Injection)
      ========================================================================== */
 
   function processSingleMessage(mesEl) {
@@ -808,12 +848,10 @@
 
     if (promptsToDraw.length > 0) {
       promptsToDraw.forEach((item, idx) => {
-        // 创建卡片占位容器
         const cardContainer = document.createElement('div');
         cardContainer.className = 'sct-comfy-card-container';
         cardContainer.dataset.sctPrompt = item.prompt;
 
-        // 在 DOM 中找到对应标签位置并替换
         textEl.innerHTML = textEl.innerHTML.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
         const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
         if (slot) {
@@ -825,7 +863,6 @@
         if (s.comfyAutoDrawTags) {
           triggerComfyDraw(item.prompt, cardContainer);
         } else {
-          // 提供点击开始生图占位
           cardContainer.innerHTML = `
             <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
               <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
@@ -844,7 +881,6 @@
     // 2. 注入消息工具栏操作按钮 (mes_buttons)
     const btnBar = mesEl.querySelector('.mes_buttons');
     if (btnBar) {
-      // 朗读按钮
       if (s.ttsShowMesButton && !btnBar.querySelector('.sct-mes-tts-btn')) {
         const ttsBtn = document.createElement('div');
         ttsBtn.className = 'sct-mes-action-btn sct-mes-tts-btn';
@@ -858,7 +894,6 @@
         btnBar.appendChild(ttsBtn);
       }
 
-      // 生图按钮
       if (s.comfyShowMesButton && !btnBar.querySelector('.sct-mes-draw-btn')) {
         const drawBtn = document.createElement('div');
         drawBtn.className = 'sct-mes-action-btn sct-mes-draw-btn';
@@ -889,41 +924,39 @@
   }
 
   /* ==========================================================================
-     8. 注册斜杠命令 (Slash Commands)
+     7. 斜杠命令支持 (Slash Commands)
      ========================================================================== */
 
   function registerSlashCommands() {
     const ctx = getSTContext();
-    if (!ctx) return;
+    if (!ctx || typeof ctx.registerSlashCommand !== 'function') return;
 
-    if (typeof ctx.registerSlashCommand === 'function') {
-      ctx.registerSlashCommand('comfy', (args) => {
-        const p = (args || '').trim();
-        if (!p) {
-          showToast('用法: /comfy <提示词>', 'warning');
-          return;
-        }
-        showToast(`已提交 ComfyUI 生图: ${p.slice(0, 30)}...`, 'info');
-        const container = document.createElement('div');
-        container.className = 'sct-comfy-card-container';
-        const chat = document.getElementById('chat');
-        if (chat) chat.appendChild(container);
-        triggerComfyDraw(p, container);
-      }, [], '使用 ComfyUI 根据提示词生成插画', true, true);
+    ctx.registerSlashCommand('comfy', (args) => {
+      const p = (args || '').trim();
+      if (!p) {
+        showToast('用法: /comfy <提示词>', 'warning');
+        return;
+      }
+      showToast(`已提交 ComfyUI 生图: ${p.slice(0, 30)}...`, 'info');
+      const container = document.createElement('div');
+      container.className = 'sct-comfy-card-container';
+      const chat = document.getElementById('chat');
+      if (chat) chat.appendChild(container);
+      triggerComfyDraw(p, container);
+    }, [], '直接使用 ComfyUI 根据提示词生成插画', true, true);
 
-      ctx.registerSlashCommand('tts', (args) => {
-        const t = (args || '').trim();
-        if (!t) {
-          showToast('用法: /tts <需要朗读的文本>', 'warning');
-          return;
-        }
-        speakText(t);
-      }, [], '使用 TTS 语音朗读指定文本', true, true);
-    }
+    ctx.registerSlashCommand('tts', (args) => {
+      const t = (args || '').trim();
+      if (!t) {
+        showToast('用法: /tts <需要朗读的文本>', 'warning');
+        return;
+      }
+      speakText(t);
+    }, [], '使用 TTS 语音朗读指定文本', true, true);
   }
 
   /* ==========================================================================
-     9. 扩展设置面板 (Settings UI & Menu)
+     8. 原生设置面板与魔杖菜单 (Settings UI & Menu Injection)
      ========================================================================== */
 
   function populateVoiceList(selectEl) {
@@ -953,7 +986,7 @@
     container.innerHTML = `
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-          <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读</b>
+          <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读 (原生独立版)</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content" style="display: block;">
@@ -981,21 +1014,13 @@
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-endpoint-type">后端连接方式</label>
-              <select id="sct-cfg-endpoint-type" class="text_pole">
-                <option value="dsh" ${s.comfyEndpointType === 'dsh' ? 'selected' : ''}>DSH 本地桥服务 (3092/3090 端口，推荐)</option>
-                <option value="direct" ${s.comfyEndpointType === 'direct' ? 'selected' : ''}>原生 ComfyUI 直连 (8188 端口)</option>
-              </select>
+              <label for="sct-cfg-comfy-host">ComfyUI 服务地址 (默认 8188 端口)</label>
+              <input type="text" id="sct-cfg-comfy-host" class="text_pole" placeholder="http://127.0.0.1:8188" value="${s.comfyHost || 'http://127.0.0.1:8188'}" />
             </div>
 
-            <div class="sct-setting-col" id="sct-dsh-host-wrap">
-              <label for="sct-cfg-comfy-host">DSH 服务地址 (留空自动匹配)</label>
-              <input type="text" id="sct-cfg-comfy-host" class="text_pole" placeholder="http://127.0.0.1:3092" value="${s.comfyHost || ''}" />
-            </div>
-
-            <div class="sct-setting-col" id="sct-direct-host-wrap">
-              <label for="sct-cfg-direct-host">ComfyUI 直连地址</label>
-              <input type="text" id="sct-cfg-direct-host" class="text_pole" placeholder="http://127.0.0.1:8188" value="${s.comfyDirectHost || ''}" />
+            <div class="sct-setting-col">
+              <label for="sct-cfg-checkpoint">模型检查点权重 (Checkpoint)</label>
+              <input type="text" id="sct-cfg-checkpoint" class="text_pole" placeholder="留空自动选择 ComfyUI 内首个可用模型" value="${s.comfyCheckpoint || ''}" />
             </div>
 
             <div class="sct-setting-col">
@@ -1018,8 +1043,18 @@
               <input type="number" id="sct-cfg-batch" class="text_pole" min="1" max="4" style="width: 70px;" value="${s.comfyBatchCount || 1}" />
             </div>
 
+            <div class="sct-setting-row">
+              <label for="sct-cfg-steps">采样步数 (Steps)</label>
+              <input type="number" id="sct-cfg-steps" class="text_pole" min="1" max="100" style="width: 70px;" value="${s.comfySteps || 20}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-cfg">CFG Scale</label>
+              <input type="number" id="sct-cfg-cfg" class="text_pole" min="1" max="30" step="0.5" style="width: 70px;" value="${s.comfyCfg || 7.0}" />
+            </div>
+
             <div class="sct-test-btn-group">
-              <button type="button" class="sct-comfy-btn" id="sct-btn-test-comfy">📡 测试 ComfyUI 连接</button>
+              <button type="button" class="sct-comfy-btn" id="sct-btn-test-comfy">📡 测试 ComfyUI 连接与模型探测</button>
             </div>
           </div>
 
@@ -1051,18 +1086,35 @@
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-tts-engine">语音引擎</label>
+              <label for="sct-cfg-tts-engine">语音引擎类型</label>
               <select id="sct-cfg-tts-engine" class="text_pole">
-                <option value="webspeech" ${s.ttsEngine === 'webspeech' ? 'selected' : ''}>浏览器原生 Web Speech API (推荐，即开即用)</option>
-                <option value="dsh" ${s.ttsEngine === 'dsh' ? 'selected' : ''}>DSH 本地语音通道 (3092/3090/原生)</option>
+                <option value="webspeech" ${s.ttsEngine === 'webspeech' ? 'selected' : ''}>浏览器原生 Web Speech API (推荐，零延迟开箱即用)</option>
+                <option value="openai" ${s.ttsEngine === 'openai' ? 'selected' : ''}>OpenAI 兼容音频服务 (/v1/audio/speech)</option>
               </select>
             </div>
 
-            <div class="sct-setting-col" id="sct-voice-select-wrap">
+            <!-- Web Speech 音色 -->
+            <div class="sct-setting-col" id="sct-wrap-voice-ws" style="${s.ttsEngine === 'webspeech' ? '' : 'display:none;'}">
               <label for="sct-cfg-voice">发音人音色 (Voice)</label>
               <select id="sct-cfg-voice" class="text_pole">
                 <option value="">加载中…</option>
               </select>
+            </div>
+
+            <!-- OpenAI 兼容配置 -->
+            <div id="sct-wrap-openai" style="${s.ttsEngine === 'openai' ? '' : 'display:none;'}">
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-openai-ep">API 端点 (如 https://api.openai.com)</label>
+                <input type="text" id="sct-cfg-openai-ep" class="text_pole" placeholder="http://127.0.0.1:8000" value="${s.ttsOpenAiEndpoint || ''}" />
+              </div>
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-openai-key">API Key (留空免鉴权)</label>
+                <input type="password" id="sct-cfg-openai-key" class="text_pole" placeholder="sk-..." value="${s.ttsOpenAiKey || ''}" />
+              </div>
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-openai-voice">音色名称 (如 alloy / echo / 角色名)</label>
+                <input type="text" id="sct-cfg-openai-voice" class="text_pole" value="${s.ttsOpenAiVoice || 'alloy'}" />
+              </div>
             </div>
 
             <div class="sct-setting-row">
@@ -1087,7 +1139,6 @@
 
     parent.appendChild(container);
 
-    // 绑定展开/收起
     const drawerToggle = container.querySelector('.inline-drawer-toggle');
     const drawerContent = container.querySelector('.inline-drawer-content');
     drawerToggle.addEventListener('click', () => {
@@ -1098,31 +1149,45 @@
         : 'inline-drawer-icon fa-solid fa-circle-chevron-right right';
     });
 
-    // 绑定音色列表加载
     const voiceSelect = container.querySelector('#sct-cfg-voice');
     populateVoiceList(voiceSelect);
     if (typeof window.speechSynthesis !== 'undefined') {
       window.speechSynthesis.onvoiceschanged = () => populateVoiceList(voiceSelect);
     }
 
-    // 绑定所有表单项的改动保存
+    // 引擎切换展示联动
+    const engineSelect = container.querySelector('#sct-cfg-tts-engine');
+    const wrapWs = container.querySelector('#sct-wrap-voice-ws');
+    const wrapOai = container.querySelector('#sct-wrap-openai');
+    engineSelect.addEventListener('change', (e) => {
+      const val = e.target.value;
+      saveSettings({ ttsEngine: val });
+      wrapWs.style.display = val === 'webspeech' ? '' : 'none';
+      wrapOai.style.display = val === 'openai' ? '' : 'none';
+    });
+
+    // 绑定改动保存
     container.querySelector('#sct-cfg-comfy-enabled').addEventListener('change', (e) => saveSettings({ comfyEnabled: e.target.checked }));
     container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
     container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
-    container.querySelector('#sct-cfg-endpoint-type').addEventListener('change', (e) => saveSettings({ comfyEndpointType: e.target.value }));
     container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-direct-host').addEventListener('input', (e) => saveSettings({ comfyDirectHost: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
     container.querySelector('#sct-cfg-prompt-prefix').addEventListener('input', (e) => saveSettings({ comfyPromptPrefix: e.target.value }));
     container.querySelector('#sct-cfg-prompt-suffix').addEventListener('input', (e) => saveSettings({ comfyPromptSuffix: e.target.value }));
     container.querySelector('#sct-cfg-neg-prompt').addEventListener('input', (e) => saveSettings({ comfyNegativePrompt: e.target.value }));
     container.querySelector('#sct-cfg-batch').addEventListener('change', (e) => saveSettings({ comfyBatchCount: parseInt(e.target.value, 10) || 1 }));
+    container.querySelector('#sct-cfg-steps').addEventListener('change', (e) => saveSettings({ comfySteps: parseInt(e.target.value, 10) || 20 }));
+    container.querySelector('#sct-cfg-cfg').addEventListener('change', (e) => saveSettings({ comfyCfg: parseFloat(e.target.value) || 7.0 }));
 
     container.querySelector('#sct-cfg-tts-enabled').addEventListener('change', (e) => saveSettings({ ttsEnabled: e.target.checked }));
     container.querySelector('#sct-cfg-float-sel').addEventListener('change', (e) => saveSettings({ ttsFloatingSelection: e.target.checked }));
     container.querySelector('#sct-cfg-mes-tts-btn').addEventListener('change', (e) => saveSettings({ ttsShowMesButton: e.target.checked }));
     container.querySelector('#sct-cfg-filter-think').addEventListener('change', (e) => saveSettings({ ttsFilterThinking: e.target.checked }));
-    container.querySelector('#sct-cfg-tts-engine').addEventListener('change', (e) => saveSettings({ ttsEngine: e.target.value }));
     voiceSelect.addEventListener('change', (e) => saveSettings({ ttsVoice: e.target.value }));
+
+    container.querySelector('#sct-cfg-openai-ep').addEventListener('input', (e) => saveSettings({ ttsOpenAiEndpoint: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-openai-key').addEventListener('input', (e) => saveSettings({ ttsOpenAiKey: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-openai-voice').addEventListener('input', (e) => saveSettings({ ttsOpenAiVoice: e.target.value.trim() }));
 
     const rateRange = container.querySelector('#sct-cfg-rate');
     const rateVal = container.querySelector('#sct-rate-val');
@@ -1138,33 +1203,33 @@
       saveSettings({ ttsPitch: parseFloat(e.target.value) });
     });
 
-    // 测试连接 ComfyUI 按钮
+    // 探查 ComfyUI 连接
     container.querySelector('#sct-btn-test-comfy').addEventListener('click', async () => {
-      const curS = getSettings();
       const testBtn = container.querySelector('#sct-btn-test-comfy');
-      testBtn.textContent = '⏳ 测试中…';
+      const host = getCleanComfyHost();
+      testBtn.textContent = '⏳ 正在探查 ComfyUI…';
       try {
-        if (curS.comfyEndpointType === 'dsh') {
-          const host = getEffectiveComfyHost();
-          const res = await fetch(`${host}/app/comfy/image`);
-          if (res.ok) showToast(`成功连通 DSH 绘图服务 (${host})`, 'success');
-          else throw new Error(`HTTP ${res.status}`);
+        const statsRes = await fetch(`${host}/system_stats`);
+        if (!statsRes.ok) throw new Error(`HTTP ${statsRes.status}`);
+        const models = await fetchComfyObjectInfo(host);
+        if (models && models.length > 0) {
+          showToast(`成功连接 ComfyUI！探查到 ${models.length} 个模型 (默认推荐: ${models[0]})`, 'success');
+          if (!container.querySelector('#sct-cfg-checkpoint').value) {
+            container.querySelector('#sct-cfg-checkpoint').value = models[0];
+            saveSettings({ comfyCheckpoint: models[0] });
+          }
         } else {
-          const direct = curS.comfyDirectHost ? curS.comfyDirectHost.replace(/\/+$/, '') : 'http://127.0.0.1:8188';
-          const res = await fetch(`${direct}/system_stats`);
-          if (res.ok) showToast(`成功连通 ComfyUI 服务 (${direct})`, 'success');
-          else throw new Error(`HTTP ${res.status}`);
+          showToast(`成功连接 ComfyUI (${host})，服务就绪！`, 'success');
         }
       } catch (err) {
-        showToast(`ComfyUI 服务连接失败: ${err.message}`, 'error');
+        showToast(`无法连通 ComfyUI (${host}): ${err.message}。请确保已启动 ComfyUI 且允许跨域`, 'error');
       } finally {
-        testBtn.textContent = '📡 测试 ComfyUI 连接';
+        testBtn.textContent = '📡 测试 ComfyUI 连接与模型探测';
       }
     });
 
-    // 测试试听 TTS 按钮
     container.querySelector('#sct-btn-test-tts').addEventListener('click', () => {
-      speakText('你好！这是 SillyTavern 智能语音朗读测试，祝您玩得愉快！');
+      speakText('您好！这是 SillyTavern 纯净原生插件的语音朗读测试，祝您使用愉快！');
     });
     container.querySelector('#sct-btn-stop-tts').addEventListener('click', () => {
       stopTts();
@@ -1187,7 +1252,6 @@
 
     item.addEventListener('click', (e) => {
       e.preventDefault();
-      // 打开右侧抽屉并滚动至扩展设置
       if (typeof jQuery !== 'undefined') {
         jQuery('#right-nav-panel').addClass('openDrawer');
         jQuery('#extensions_settings_tab').trigger('click');
@@ -1201,19 +1265,15 @@
   }
 
   /* ==========================================================================
-     10. 插件主生命周期初始化 (Initialization)
+     9. 插件生命周期启动与事件监听 (Lifecycle)
      ========================================================================== */
 
   function init() {
-    console.log(`[${DISPLAY_NAME}] 正在初始化…`);
+    console.log(`[${DISPLAY_NAME}] 正在初始化纯净酒馆原生插件…`);
 
-    // 划选浮动胶囊监听
     bindSelectionListeners();
-
-    // 注册斜杠命令
     registerSlashCommands();
 
-    // 监听消息渲染事件
     const ctx = getSTContext();
     const es = ctx?.eventSource || (typeof eventSource !== 'undefined' ? eventSource : null);
     const et = ctx?.eventTypes || ctx?.event_types || (typeof event_types !== 'undefined' ? event_types : null);
@@ -1237,7 +1297,6 @@
       }
     }
 
-    // DOM 轮询观察器兜底（确保无论何时翻页或切换楼层均能处理）
     const chatObserver = new MutationObserver(() => {
       scanAllMessages();
     });
@@ -1247,7 +1306,6 @@
       chatObserver.observe(targetChat, { childList: true, subtree: true });
     }
 
-    // 扩展菜单与设置注入轮询
     let initChecks = 0;
     const initTimer = setInterval(() => {
       initChecks++;
@@ -1258,7 +1316,7 @@
       if (initChecks > 10) clearInterval(initTimer);
     }, 800);
 
-    console.log(`[${DISPLAY_NAME}] 初始化就绪！`);
+    console.log(`[${DISPLAY_NAME}] 纯净原生插件就绪！`);
   }
 
   if (document.readyState === 'loading') {

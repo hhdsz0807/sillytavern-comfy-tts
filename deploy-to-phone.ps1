@@ -13,7 +13,10 @@ Write-Host $devices
 $targetDir = "/data/user/0/com.dsh.client.plus/files/linux/ubuntu/root/SillyTavern/public/scripts/extensions/third-party/sillytavern-comfy-tts"
 $localDir = $PSScriptRoot
 
-Write-Host ">>> 正在创建手机端扩展目录: $targetDir"
+Write-Host ">>> 正在清理手机端可能残留的旧版 dsh-bridge 扩展..."
+& $AdbPath shell "run-as com.dsh.client.plus rm -rf /data/user/0/com.dsh.client.plus/files/linux/ubuntu/root/SillyTavern/public/scripts/extensions/third-party/dsh-bridge" 2>$null
+
+Write-Host ">>> 正在创建手机端纯净扩展目录: $targetDir"
 & $AdbPath shell "run-as com.dsh.client.plus mkdir -p $targetDir"
 
 Write-Host ">>> 正在推送插件文件到临时目录 /data/local/tmp/..."
