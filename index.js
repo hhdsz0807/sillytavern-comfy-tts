@@ -442,6 +442,7 @@
     `;
 
     overlay.querySelector('.sct-lightbox-close-btn').addEventListener('click', closeLightbox);
+    overlay.querySelector('#sct-lightbox-img').addEventListener('click', closeLightbox);
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) closeLightbox();
     });
@@ -501,23 +502,31 @@
     if (lightboxEl) lightboxEl.classList.remove('active');
   }
 
-  // 长按交互辅助绑定 (支持鼠标长按与触屏长按，防滑动误触)
+  // 长按与点击交互辅助绑定 (严格区分点击、长按与移动端上下滑动翻页)
   function bindLongPress(el, onLongPress, onClick) {
     if (!el) return;
     let timer = null;
     let startX = 0;
     let startY = 0;
     let isLongPress = false;
+    let isMoved = false;
+    let touchStartTime = 0;
+    let lastMoveTime = 0;
 
     const start = (clientX, clientY, e) => {
       isLongPress = false;
+      isMoved = false;
       startX = clientX;
       startY = clientY;
+      touchStartTime = Date.now();
+
+      clear();
       timer = setTimeout(() => {
+        if (isMoved) return;
         isLongPress = true;
         try { if (navigator.vibrate) navigator.vibrate(50); } catch (_) {}
         if (onLongPress) onLongPress(e);
-      }, 500);
+      }, 650); // 适度放宽长按阈值至 650ms，且期间严禁位移
     };
 
     const clear = () => {
@@ -527,28 +536,34 @@
       }
     };
 
+    // 鼠标事件 (桌面端)
     el.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       start(e.clientX, e.clientY, e);
     });
 
     el.addEventListener('mousemove', (e) => {
-      if (!timer) return;
-      if (Math.hypot(e.clientX - startX, e.clientY - startY) > 10) {
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) > 8) {
+        isMoved = true;
         clear();
       }
     });
 
     el.addEventListener('mouseup', (e) => {
       const wasLong = isLongPress;
+      const moved = isMoved;
       clear();
-      if (!wasLong && onClick) {
+      if (!wasLong && !moved && onClick) {
         onClick(e);
       }
     });
 
-    el.addEventListener('mouseleave', clear);
+    el.addEventListener('mouseleave', () => {
+      isMoved = true;
+      clear();
+    });
 
+    // 触屏事件 (移动端上下滑动滚动浏览聊天记录)
     el.addEventListener('touchstart', (e) => {
       if (e.touches && e.touches.length === 1) {
         start(e.touches[0].clientX, e.touches[0].clientY, e);
@@ -556,9 +571,13 @@
     }, { passive: true });
 
     el.addEventListener('touchmove', (e) => {
-      if (!timer) return;
       if (e.touches && e.touches.length === 1) {
-        if (Math.hypot(e.touches[0].clientX - startX, e.touches[0].clientY - startY) > 12) {
+        const dx = Math.abs(e.touches[0].clientX - startX);
+        const dy = Math.abs(e.touches[0].clientY - startY);
+        // 只要任何方向产生超过 6px 的位移 (无论上下滑动还是斜向滑动)，立刻标记为“滑动”，彻底取消一切长按与点击！
+        if (dx > 6 || dy > 6) {
+          isMoved = true;
+          lastMoveTime = Date.now();
           clear();
         }
       }
@@ -566,13 +585,29 @@
 
     el.addEventListener('touchend', (e) => {
       const wasLong = isLongPress;
+      const moved = isMoved;
+      const duration = Date.now() - touchStartTime;
       clear();
-      if (!wasLong && onClick) {
+
+      // 必须是：没有发生过任何滑动、没有触发长按、纯手指点按且持续时间正常 (40ms - 450ms)
+      if (!wasLong && !moved && onClick && duration > 40 && duration < 450) {
         onClick(e);
       }
     });
 
-    el.addEventListener('touchcancel', clear);
+    el.addEventListener('touchcancel', () => {
+      isMoved = true;
+      lastMoveTime = Date.now();
+      clear();
+    });
+
+    // 彻底阻止移动端在滑动释放后浏览器合成的虚拟 click 穿透
+    el.addEventListener('click', (e) => {
+      if (isMoved || (Date.now() - lastMoveTime < 450)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
   }
 
   /* ==========================================================================
@@ -1926,23 +1961,29 @@
       openLightbox(currentUrl, promptText, activeLoras, container);
     });
 
-    // 触摸滑动 (Touch Swipe)
+    // 触摸滑动 (Touch Swipe - 严格区分左右横向翻图与页面上下垂直滚动)
     let touchStartX = 0;
+    let touchStartY = 0;
     vp.addEventListener('touchstart', (e) => {
-      e.stopPropagation();
-      if (e.touches && e.touches.length > 0) touchStartX = e.touches[0].clientX;
+      if (e.touches && e.touches.length > 0) {
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+      }
     }, { passive: true });
 
     vp.addEventListener('touchend', (e) => {
-      e.stopPropagation();
       if (e.changedTouches && e.changedTouches.length > 0 && total > 1) {
-        const diff = e.changedTouches[0].clientX - touchStartX;
-        if (diff > 45) {
-          state.currentIdx = (state.currentIdx - 1 + total) % total;
-          renderCarouselCard(container, state.images, promptText, activeLoras);
-        } else if (diff < -45) {
-          state.currentIdx = (state.currentIdx + 1) % total;
-          renderCarouselCard(container, state.images, promptText, activeLoras);
+        const diffX = e.changedTouches[0].clientX - touchStartX;
+        const diffY = e.changedTouches[0].clientY - touchStartY;
+        // 只有当水平位移明显大于垂直位移 (至少 1.5 倍) 且绝对距离大于 50px 时才视作切换卡片，绝不干扰上下滚动！
+        if (Math.abs(diffX) > 50 && Math.abs(diffX) > Math.abs(diffY) * 1.5) {
+          if (diffX > 50) {
+            state.currentIdx = (state.currentIdx - 1 + total) % total;
+            renderCarouselCard(container, state.images, promptText, activeLoras);
+          } else if (diffX < -50) {
+            state.currentIdx = (state.currentIdx + 1) % total;
+            renderCarouselCard(container, state.images, promptText, activeLoras);
+          }
         }
       }
     }, { passive: true });

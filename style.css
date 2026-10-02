@@ -357,9 +357,15 @@
    -------------------------------------------------------------------------- */
 .sct-lightbox-overlay {
   position: fixed !important;
-  inset: 0 !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
   z-index: 2147483647 !important;
-  background: rgba(10, 10, 15, 0.92);
+  background: rgba(10, 10, 15, 0.94);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   display: flex;
@@ -368,6 +374,8 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease;
+  padding: 16px;
+  box-sizing: border-box;
 }
 
 .sct-lightbox-overlay.active {
@@ -377,25 +385,30 @@
 
 .sct-lightbox-content {
   position: relative;
-  max-width: 95vw;
+  max-width: 96vw;
   max-height: 92vh;
+  max-height: 92dvh;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
 }
 
 .sct-lightbox-content img {
-  max-width: 92vw;
-  max-height: 85vh;
+  max-width: 94vw;
+  max-height: 72vh;
+  max-height: 72dvh;
   object-fit: contain;
   border-radius: 8px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
 }
 
 .sct-lightbox-toolbar {
   margin-top: 12px;
   display: flex;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
 }
 
