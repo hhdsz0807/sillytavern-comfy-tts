@@ -1470,9 +1470,9 @@
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
           <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读 (原生工作流版)</b>
-          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+          <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
-        <div class="inline-drawer-content" style="display: block;">
+        <div class="inline-drawer-content" style="display: none;">
           
           <!-- 板块 1: ComfyUI 基础连接与模型选择 -->
           <div class="sct-settings-section">
@@ -1731,16 +1731,23 @@
 
     parent.appendChild(container);
 
-    // 折叠展开
-    const drawerToggle = container.querySelector('.inline-drawer-toggle');
-    const drawerContent = container.querySelector('.inline-drawer-content');
-    drawerToggle.addEventListener('click', () => {
-      const isHidden = drawerContent.style.display === 'none';
-      drawerContent.style.display = isHidden ? 'block' : 'none';
-      drawerToggle.querySelector('.inline-drawer-icon').className = isHidden 
-        ? 'inline-drawer-icon fa-solid fa-circle-chevron-down down'
-        : 'inline-drawer-icon fa-solid fa-circle-chevron-right right';
-    });
+    // 折叠展开管理：
+    // SillyTavern 原生框架会在 document 上统一代理监听 .inline-drawer-toggle 并执行 slideToggle 与 class down 切换。
+    // 为避免与酒馆原生双重触发冲突，有 jQuery 时交由宿主托管；若在单体测试或极简无 jQuery 环境则进行轻量兜底。
+    if (typeof jQuery === 'undefined' || !jQuery) {
+      const drawerToggle = container.querySelector('.inline-drawer-toggle');
+      const drawerContent = container.querySelector('.inline-drawer-content');
+      const drawerIcon = container.querySelector('.inline-drawer-icon');
+      if (drawerToggle && drawerContent) {
+        drawerToggle.addEventListener('click', () => {
+          const isHidden = drawerContent.style.display === 'none' || getComputedStyle(drawerContent).display === 'none';
+          drawerContent.style.display = isHidden ? 'block' : 'none';
+          if (drawerIcon) {
+            drawerIcon.classList.toggle('down', isHidden);
+          }
+        });
+      }
+    }
 
     // 渲染 LoRA 列表
     const loraContainer = container.querySelector('#sct-lora-items-container');
@@ -1938,7 +1945,15 @@
         jQuery('#right-nav-panel').addClass('openDrawer');
         jQuery('#extensions_settings_tab').trigger('click');
         const target = document.getElementById('sct-settings-container');
-        if (target) target.scrollIntoView({ behavior: 'smooth' });
+        if (target) {
+          const drawerContent = target.querySelector('.inline-drawer-content');
+          const drawerIcon = target.querySelector('.inline-drawer-icon');
+          if (drawerContent && (drawerContent.style.display === 'none' || getComputedStyle(drawerContent).display === 'none')) {
+            jQuery(drawerContent).slideDown(200);
+            if (drawerIcon) drawerIcon.classList.add('down');
+          }
+          target.scrollIntoView({ behavior: 'smooth' });
+        }
       }
       menu.style.display = 'none';
     });
