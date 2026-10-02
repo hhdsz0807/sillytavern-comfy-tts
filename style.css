@@ -911,25 +911,35 @@
 
 .sct-inpaint-canvas-container {
   position: relative;
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
   max-width: 100%;
-  max-height: 480px;
-  overflow: hidden;
+  max-height: 52vh;
+  overflow: auto !important;
   border-radius: 8px;
   line-height: 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  background: #090a0f;
+  scrollbar-width: thin;
 }
 
-.sct-inpaint-canvas-container img {
-  max-width: 100%;
-  max-height: 480px;
-  object-fit: contain;
+.sct-inpaint-canvas-stage {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  margin: auto;
+  transition: width 0.15s ease, height 0.15s ease;
+}
+
+.sct-inpaint-canvas-stage img {
   display: block;
   user-select: none;
   pointer-events: none;
 }
 
-.sct-inpaint-canvas-container canvas {
+.sct-inpaint-canvas-stage canvas {
   position: absolute;
   top: 0;
   left: 0;

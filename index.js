@@ -630,6 +630,38 @@
   let inpaintSamBusy = false;           // 是否正在向 ComfyUI 请求分割任务
   let currentInpaintUploadedName = null; // 缓存当前原图在 ComfyUI 中的文件名，避免重复上传
 
+  // 画板视图缩放状态
+  let inpaintZoomLevel = 1.0;
+  let inpaintBaseDisplayW = 512;
+  let inpaintBaseDisplayH = 768;
+
+  function applyInpaintZoom() {
+    if (!inpaintModalEl) return;
+    const stage = inpaintModalEl.querySelector('#sct-inpaint-canvas-stage');
+    const baseImg = inpaintModalEl.querySelector('#sct-inpaint-base-img');
+    const drawCanvas = inpaintModalEl.querySelector('#sct-inpaint-draw-canvas');
+    const zoomVal = inpaintModalEl.querySelector('#sct-zoom-val');
+
+    const targetW = Math.round(inpaintBaseDisplayW * inpaintZoomLevel);
+    const targetH = Math.round(inpaintBaseDisplayH * inpaintZoomLevel);
+
+    if (stage) {
+      stage.style.width = `${targetW}px`;
+      stage.style.height = `${targetH}px`;
+    }
+    if (baseImg) {
+      baseImg.style.width = `${targetW}px`;
+      baseImg.style.height = `${targetH}px`;
+    }
+    if (drawCanvas) {
+      drawCanvas.style.width = `${targetW}px`;
+      drawCanvas.style.height = `${targetH}px`;
+    }
+    if (zoomVal) {
+      zoomVal.textContent = `${Math.round(inpaintZoomLevel * 100)}%`;
+    }
+  }
+
   // 将返回的蒙版渲染并同步写入 inpaintMaskCanvas 与 inpaintDrawCanvas
   async function applyMaskImageToCanvas(maskUrl, addMode) {
     return new Promise((resolve, reject) => {
@@ -945,8 +977,10 @@
         <div class="sct-inpaint-body">
           <div class="sct-inpaint-stage-wrapper">
             <div class="sct-inpaint-canvas-container" id="sct-inpaint-canvas-container">
-              <img id="sct-inpaint-base-img" crossOrigin="anonymous" alt="Inpaint Base" />
-              <canvas id="sct-inpaint-draw-canvas"></canvas>
+              <div class="sct-inpaint-canvas-stage" id="sct-inpaint-canvas-stage">
+                <img id="sct-inpaint-base-img" crossOrigin="anonymous" alt="Inpaint Base" />
+                <canvas id="sct-inpaint-draw-canvas"></canvas>
+              </div>
             </div>
 
             <div class="sct-inpaint-toolbar">
@@ -959,6 +993,15 @@
               <div class="sct-tool-group sct-brush-size-group">
                 <span>笔刷粗细: <b id="sct-brush-size-val">30px</b></span>
                 <input type="range" id="sct-brush-size-slider" min="8" max="100" value="30" />
+              </div>
+
+              <!-- 画板视图放大/缩小调节 (方便细化眼睛/手等细节) -->
+              <div class="sct-tool-group sct-zoom-group">
+                <span style="font-size:12px; opacity:0.8;">画板缩放:</span>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-zoom-out" title="缩小画板视图">🔍 -</button>
+                <span id="sct-zoom-val" style="font-size:12px; min-width:38px; text-align:center; font-weight:600;">100%</span>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-zoom-in" title="放大画板视图 (方便细画微小细节)">🔍 +</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-zoom-reset" title="恢复适应屏幕 (100%)">适应</button>
               </div>
             </div>
 
@@ -1007,6 +1050,30 @@
             <div class="sct-setting-col" style="margin-bottom: 8px;">
               <label for="sct-inpaint-prompt-input">局部重绘提示词 (修改或补充涂抹区域特征)</label>
               <textarea id="sct-inpaint-prompt-input" class="text_pole sct-textarea-autowrap" rows="2" placeholder="描述涂抹区域期望呈现的画面内容…"></textarea>
+            </div>
+
+            <!-- 输出图像尺寸 (调节分辨率) -->
+            <div class="sct-setting-col" style="margin-bottom: 8px;">
+              <label for="sct-inpaint-size-preset">重绘生成尺寸 (调节输出图像分辨率)</label>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <select id="sct-inpaint-size-preset" class="text_pole" style="flex:1; min-width:180px; padding:6px 10px;">
+                  <option value="original" selected>🔄 保持原图尺寸 (自动检测匹配)</option>
+                  <option value="768x768">768 × 768 (1:1 标清方形)</option>
+                  <option value="768x1024">768 × 1024 (3:4 标清竖屏)</option>
+                  <option value="1024x768">1024 × 768 (4:3 标清横屏)</option>
+                  <option value="832x1216">832 × 1216 (约 9:16 高清立绘 - 推荐动漫角色)</option>
+                  <option value="1216x832">1216 × 832 (约 16:9 高清横屏 - 推荐宽景横幅)</option>
+                  <option value="1024x1024">1024 × 1024 (1:1 高清方形)</option>
+                  <option value="896x1344">896 × 1344 (超清大图竖屏)</option>
+                  <option value="custom">✏️ 自定义长宽...</option>
+                </select>
+                <div id="sct-inpaint-custom-size-row" style="display:none; gap:6px; align-items:center;">
+                  <input type="number" id="sct-inpaint-custom-w" placeholder="宽度" style="width:75px; padding:5px 8px; border-radius:6px; background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.2); color:#fff;" value="1024" step="64" min="256" max="2048" />
+                  <span style="opacity:0.6;">×</span>
+                  <input type="number" id="sct-inpaint-custom-h" placeholder="高度" style="width:75px; padding:5px 8px; border-radius:6px; background:rgba(0,0,0,0.4); border:1px solid rgba(255,255,255,0.2); color:#fff;" value="1024" step="64" min="256" max="2048" />
+                </div>
+              </div>
+              <div style="font-size:11px; opacity:0.6; margin-top:2px;">若当前图像分辨率较低或模糊，可选择更高分辨率直接放大高清重绘</div>
             </div>
 
             <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 10px;">
@@ -1167,6 +1234,51 @@
     growSlider.addEventListener('input', (e) => {
       growVal.textContent = `${e.target.value}px`;
     });
+
+    // 画板缩放控制按钮绑定
+    const zoomInBtn = overlay.querySelector('#sct-zoom-in');
+    const zoomOutBtn = overlay.querySelector('#sct-zoom-out');
+    const zoomResetBtn = overlay.querySelector('#sct-zoom-reset');
+
+    if (zoomInBtn) {
+      zoomInBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inpaintZoomLevel = Math.min(3.0, Math.round((inpaintZoomLevel + 0.25) * 100) / 100);
+        applyInpaintZoom();
+      });
+    }
+
+    if (zoomOutBtn) {
+      zoomOutBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inpaintZoomLevel = Math.max(0.5, Math.round((inpaintZoomLevel - 0.25) * 100) / 100);
+        applyInpaintZoom();
+      });
+    }
+
+    if (zoomResetBtn) {
+      zoomResetBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inpaintZoomLevel = 1.0;
+        applyInpaintZoom();
+      });
+    }
+
+    // 重绘分辨率选择与自定义宽高联动
+    const sizePresetSelect = overlay.querySelector('#sct-inpaint-size-preset');
+    const customSizeRow = overlay.querySelector('#sct-inpaint-custom-size-row');
+    if (sizePresetSelect && customSizeRow) {
+      sizePresetSelect.addEventListener('change', () => {
+        if (sizePresetSelect.value === 'custom') {
+          customSizeRow.style.display = 'inline-flex';
+        } else {
+          customSizeRow.style.display = 'none';
+        }
+      });
+    }
 
     // 画布涂抹事件绑定
     const drawCanvas = overlay.querySelector('#sct-inpaint-draw-canvas');
@@ -1355,11 +1467,28 @@
       const denoiseVal = parseFloat(overlay.querySelector('#sct-inpaint-denoise-slider').value) || 0.70;
       const growVal = parseInt(overlay.querySelector('#sct-inpaint-grow-slider').value, 10) || 6;
 
+      // 解析用户指定的目标重绘分辨率
+      let targetW = 0;
+      let targetH = 0;
+      const sizeVal = overlay.querySelector('#sct-inpaint-size-preset')?.value || 'original';
+      if (sizeVal === 'custom') {
+        const rawW = parseInt(overlay.querySelector('#sct-inpaint-custom-w')?.value, 10);
+        const rawH = parseInt(overlay.querySelector('#sct-inpaint-custom-h')?.value, 10);
+        if (!isNaN(rawW) && rawW > 0) targetW = Math.min(2048, Math.max(256, Math.round(rawW / 8) * 8));
+        if (!isNaN(rawH) && rawH > 0) targetH = Math.min(2048, Math.max(256, Math.round(rawH / 8) * 8));
+      } else if (sizeVal !== 'original' && sizeVal.includes('x')) {
+        const parts = sizeVal.split('x');
+        targetW = parseInt(parts[0], 10) || 0;
+        targetH = parseInt(parts[1], 10) || 0;
+      }
+
       closeInpaintModal();
 
       await triggerComfyInpaint({
         imageUrl: imageUrl,
         inpaintPrompt: inpaintPrompt,
+        targetWidth: targetW,
+        targetHeight: targetH,
         denoise: denoiseVal,
         growMaskBy: growVal,
         activeLoras: activeLoras,
@@ -1416,6 +1545,24 @@
       inpaintDrawCtx.clearRect(0, 0, natW, natH);
       inpaintMaskCtx.fillStyle = '#000000';
       inpaintMaskCtx.fillRect(0, 0, natW, natH);
+
+      // 计算自适应展示尺寸与基准缩放比
+      const maxStageW = Math.min(560, Math.max(280, (window.innerWidth || 800) - 48));
+      const ratio = Math.min(1.0, maxStageW / natW);
+      inpaintBaseDisplayW = Math.max(180, Math.round(natW * ratio));
+      inpaintBaseDisplayH = Math.max(180, Math.round(natH * ratio));
+      inpaintZoomLevel = 1.0;
+      applyInpaintZoom();
+
+      // 动态更新保持原图尺寸选项的描述文字
+      const optOriginal = modal.querySelector('#sct-inpaint-size-preset option[value="original"]');
+      if (optOriginal) {
+        optOriginal.textContent = `🔄 保持原图尺寸 (${natW} × ${natH})`;
+      }
+      const customWInput = modal.querySelector('#sct-inpaint-custom-w');
+      const customHInput = modal.querySelector('#sct-inpaint-custom-h');
+      if (customWInput) customWInput.value = natW;
+      if (customHInput) customHInput.value = natH;
     };
 
     baseImg.src = imageUrl;
@@ -1744,7 +1891,7 @@
     return workflow;
   }
 
-  // 动态组装 ComfyUI 局部重绘工作流 (Inpainting + VAEEncodeForInpaint + LoadImageMask + 多 LoRA)
+  // 动态组装 ComfyUI 局部重绘工作流 (Inpainting + VAEEncodeForInpaint + LoadImageMask + 多 LoRA + 尺寸缩放)
   function buildComfyInpaintWorkflow(params) {
     const {
       checkpoint,
@@ -1752,6 +1899,8 @@
       negativePrompt,
       uploadedImage,
       uploadedMask,
+      targetWidth = 0,
+      targetHeight = 0,
       denoise = 0.70,
       growMaskBy = 6,
       steps = 20,
@@ -1812,13 +1961,66 @@
       }
     };
 
+    let inpaintImageSource = ["10", 0];
+    let inpaintMaskSource = ["11", 0];
+
+    // 如果指定了输出目标尺寸，加入高保真 ImageScale 节点与蒙版双向缩放对齐
+    const needScale = (parseInt(targetWidth, 10) > 0 && parseInt(targetHeight, 10) > 0);
+    if (needScale) {
+      const finalW = parseInt(targetWidth, 10);
+      const finalH = parseInt(targetHeight, 10);
+
+      // Node 13: 原图高质量 Lanczos 插值缩放
+      workflow["13"] = {
+        "class_type": "ImageScale",
+        "inputs": {
+          "image": ["10", 0],
+          "upscale_method": "lanczos",
+          "width": finalW,
+          "height": finalH,
+          "crop": "disabled"
+        }
+      };
+      inpaintImageSource = ["13", 0];
+
+      // Node 14: 蒙版转图像 (MaskToImage)
+      workflow["14"] = {
+        "class_type": "MaskToImage",
+        "inputs": {
+          "mask": ["11", 0]
+        }
+      };
+
+      // Node 15: 蒙版图像双线性平滑插值缩放至目标分辨率 (ImageScale)
+      workflow["15"] = {
+        "class_type": "ImageScale",
+        "inputs": {
+          "image": ["14", 0],
+          "upscale_method": "bilinear",
+          "width": finalW,
+          "height": finalH,
+          "crop": "disabled"
+        }
+      };
+
+      // Node 16: 缩放后的图像重新转换回蒙版 (ImageToMask)
+      workflow["16"] = {
+        "class_type": "ImageToMask",
+        "inputs": {
+          "image": ["15", 0],
+          "channel": "red"
+        }
+      };
+      inpaintMaskSource = ["16", 0];
+    }
+
     // 5. VAEEncodeForInpaint 局部重绘专用潜空间编码 (Node 12)
     workflow["12"] = {
       "class_type": "VAEEncodeForInpaint",
       "inputs": {
-        "pixels": ["10", 0],
+        "pixels": inpaintImageSource,
         "vae": currentVae,
-        "mask": ["11", 0],
+        "mask": inpaintMaskSource,
         "grow_mask_by": Math.max(0, parseInt(growMaskBy, 10) || 6)
       }
     };
@@ -2059,6 +2261,8 @@
     const {
       imageUrl,
       inpaintPrompt,
+      targetWidth = 0,
+      targetHeight = 0,
       denoise = 0.70,
       growMaskBy = 6,
       activeLoras = [],
@@ -2158,6 +2362,8 @@
         negativePrompt: negativePrompt,
         uploadedImage: uploadedImageName,
         uploadedMask: uploadedMaskName,
+        targetWidth: targetWidth,
+        targetHeight: targetHeight,
         denoise: denoise,
         growMaskBy: growMaskBy,
         steps: s.comfySteps || 20,
