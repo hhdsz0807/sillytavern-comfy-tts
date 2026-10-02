@@ -1,23 +1,22 @@
 /**
  * SillyTavern ComfyUI 绘图 & TTS 语音朗读原生插件 (sillytavern-comfy-tts)
  * 
- * 纯正独立 SillyTavern 扩展，完全脱离任何外部宿主桥接，所有逻辑前端闭环：
- * 1. ComfyUI 原生直连生图：
- *    - 直连标准 ComfyUI 服务（默认 8188 端口或用户自定义局域网/远程地址）；
- *    - 自动探查并列举 ComfyUI 已安装的模型权重（Checkpoint）、采样器（Sampler）与调度器（Scheduler）；
- *    - 原生组装文生图标准工作流 JSON 并发送至 /prompt，支持实时 WebSocket 进度推送与 /history 轮询兜底；
- *    - 自动解析 AI 消息中的 <image>prompt</image> 标签，支持手势滑动多图轮播、全屏大图灯箱预览、重新生成；
- *    - 消息栏「🎨」快捷绘图按钮与 /comfy 斜杠命令。
+ * 核心功能：
+ * 1. ComfyUI 原生工作流引擎 (文生图 + 多 LoRA + 高清放大 Hires Fix)：
+ *    - 直连标准 ComfyUI 服务（默认 8188 端口或远程 IP）；
+ *    - 自动探查与下拉选择 Checkpoint 模型、采样器（Sampler）与调度算法（Scheduler）；
+ *    - 多 LoRA 规则管理：可视化配置多个 LoRA 权重、关键词匹配（正文出现该关键词自动激活该角色 LoRA 并将角色特征注入正向提示词）；
+ *    - 固定正向/负向质量提示词、画风前缀后缀；
+ *    - 可调节图像尺寸（内置常用比例芯片与自定义宽高）、单次生图张数（1~3 张轮播切换）；
+ *    - 高清放大倍数设置（Hires Fix 1.0x~2.0x 与重绘幅度调整）；
+ *    - 自动识别正文 `<image>image###sfw, tag###</image>` 标签自动后台异步出图，手势多图轮播卡片、全屏大图灯箱预览；
+ *    - 自动配图指令注入与一键复制；消息栏「🎨」快捷绘图与 /comfy 斜杠命令。
  * 
- * 2. 独立纯净 TTS 语音朗读：
- *    - 原生 Web Speech API（开箱即用、零服务器依赖、零网络开销、支持设备全语种声音）；
- *    - OpenAI 兼容格式音频服务（/v1/audio/speech，适配 Edge-TTS、CosyVoice、GPT-SoVITS、Fish-Speech 等）；
- *    - 手机触屏手滑划选、电脑鼠标划选就地升起「🔊 朗读选中文字」浮动胶囊；
+ * 2. 纯净独立 TTS 语音朗读：
+ *    - 原生 Web Speech API（零配置无延迟、支持系统全语种发音人）与 OpenAI 兼容格式音频服务；
+ *    - 划选文本就地弹出「🔊 朗读选中文字」浮动胶囊（带播放波纹动效与随点随停）；
  *    - 消息栏「🔊」一键朗读（智能剥离 <think> 思考链、代码块与图像标签）；
- *    - 屏幕右下角全局播放/停止常驻指示徽章与 /tts 斜杠命令。
- * 
- * 3. 标准酒馆配置中心：
- *    - 接入酒馆右侧抽屉 Extensions Settings 与顶部魔杖菜单，支持模型探测、参数微调与即时试听测试。
+ *    - 屏幕右下角全局播放/停止常驻指示条与 /tts 斜杠命令。
  */
 
 (function () {
@@ -29,26 +28,60 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认配置（纯净原生配置，无任何外部桥接依赖）
+  // 默认自动配图指示词
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\n<image>image###sfw, 英文tag提示词###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
+
+  // 默认配置
   const DEFAULT_SETTINGS = {
-    // ComfyUI 设置
+    // ComfyUI 服务与工作流设置
     comfyEnabled: true,
     comfyHost: 'http://127.0.0.1:8188',
+    comfyWorkflow: 'txt2img_multilora', // 'txt2img' | 'txt2img_multilora' | 'txt2img_multilora_hires'
     comfyCheckpoint: '',
     comfyAutoDrawTags: true,
     comfyShowMesButton: true,
-    comfyPromptPrefix: '(masterpiece, best quality, highly detailed), ',
+    
+    // 固定的正向、负向质量提示词与前后缀
+    comfyFixedPositive: '(masterpiece, best quality, highly detailed), ',
     comfyPromptSuffix: ', 8k, photorealistic, cinematic lighting',
-    comfyNegativePrompt: '(worst quality, low quality:1.4), deformed, bad anatomy, bad hands, missing fingers, extra limbs, blurry, cropped, watermark',
-    comfyBatchCount: 1,
+    comfyFixedNegative: '(worst quality, low quality:1.4), deformed, bad anatomy, bad hands, missing fingers, extra limbs, blurry, cropped, watermark, normal quality, username',
+    
+    // 图像尺寸与生成张数
     comfyWidth: 512,
     comfyHeight: 768,
+    comfyBatchCount: 1, // 1~3 张，轮播切换
+
+    // 采样核心参数
     comfySteps: 20,
     comfyCfg: 7.0,
     comfySampler: 'euler',
     comfyScheduler: 'normal',
 
-    // TTS 设置
+    // 高清放大倍数设置 (Hires Fix)
+    comfyHiresEnabled: false,
+    comfyHiresScale: 1.5,
+    comfyHiresDenoise: 0.45,
+
+    // 多 LoRA 规则库 (Array of LoRA objects)
+    // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn }]
+    comfyLoras: [
+      {
+        id: 'default_lora_1',
+        name: '',
+        strengthModel: 0.8,
+        strengthClip: 0.8,
+        keywords: '柚木凪, 凪, nagi, 银发',
+        triggerWords: 'nagi, 1girl, solo, silver hair, purple eyes, school uniform',
+        enabled: true,
+        alwaysOn: false
+      }
+    ],
+
+    // 自动配图指令注入
+    autoInjectImageInstruction: true,
+    imageInstructionText: DEFAULT_IMAGE_INSTRUCTION,
+
+    // TTS 语音朗读设置
     ttsEnabled: true,
     ttsFloatingSelection: true,
     ttsShowMesButton: true,
@@ -64,7 +97,7 @@
     ttsOpenAiVoice: 'alloy',
   };
 
-  // 运行期全局状态
+  // 运行期全局缓存与状态
   let currentUtterance = null;
   let currentAudio = null;
   let isTtsPlaying = false;
@@ -75,8 +108,14 @@
   let lastActionTime = 0;
   let lightboxEl = null;
 
+  // 探查到的 ComfyUI 资产缓存
+  let cachedCheckpoints = [];
+  let cachedLoras = [];
+  let cachedSamplers = [];
+  let cachedSchedulers = [];
+
   /* ==========================================================================
-     1. 上下文与持久化配置 (Context & Settings Management)
+     1. 上下文与设置管理 (Context & Settings)
      ========================================================================== */
 
   function getSTContext() {
@@ -91,13 +130,16 @@
     const extSettings = ctx?.extensionSettings || (typeof extension_settings !== 'undefined' ? extension_settings : null);
     if (extSettings) {
       if (!extSettings[MODULE_NAME]) {
-        extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS);
+        extSettings[MODULE_NAME] = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
       } else {
         extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, extSettings[MODULE_NAME]);
+        if (!Array.isArray(extSettings[MODULE_NAME].comfyLoras)) {
+          extSettings[MODULE_NAME].comfyLoras = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.comfyLoras));
+        }
       }
       return extSettings[MODULE_NAME];
     }
-    return Object.assign({}, DEFAULT_SETTINGS);
+    return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
   }
 
   function saveSettings(patch) {
@@ -109,6 +151,7 @@
     } else if (typeof saveSettingsDebounced === 'function') {
       saveSettingsDebounced();
     }
+    updateExtensionPrompt();
   }
 
   function getCleanComfyHost() {
@@ -132,7 +175,29 @@
   }
 
   /* ==========================================================================
-     2. 全屏大图灯箱预览 (Lightbox Viewer)
+     2. 自动配图指令注入 (System Prompt Guidance Injection)
+     ========================================================================== */
+
+  function updateExtensionPrompt() {
+    const s = getSettings();
+    const ctx = getSTContext();
+    if (!ctx) return;
+
+    if (s.autoInjectImageInstruction && s.comfyEnabled) {
+      const text = s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION;
+      if (typeof ctx.setExtensionPrompt === 'function') {
+        // 注入在上下文尾部，确保模型严格遵守输出规范
+        ctx.setExtensionPrompt(MODULE_NAME, `\n${text}\n`, 1, 0, false);
+      }
+    } else {
+      if (typeof ctx.setExtensionPrompt === 'function') {
+        ctx.setExtensionPrompt(MODULE_NAME, '', 1, 0, false);
+      }
+    }
+  }
+
+  /* ==========================================================================
+     3. 全屏大图灯箱预览 (Lightbox Viewer)
      ========================================================================== */
 
   function ensureLightbox() {
@@ -196,7 +261,658 @@
   }
 
   /* ==========================================================================
-     3. TTS 语音朗读引擎 (Web Speech API & OpenAI 兼容协议)
+     4. 标签解析与关键词匹配 (Tag Parsing & LoRA Keyword Matching)
+     ========================================================================== */
+
+  // 解析并提取 <image> 标签内容（完美匹配 <image>image###sfw, tags###</image> 及常规格式）
+  function parseImageTagContent(rawContent) {
+    let s = (rawContent || '').trim();
+    // 反转义 HTML 实体字符
+    s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    // 清除可能存在的 markdown 代码块包裹
+    s = s.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+    // 匹配 image###...### 模式
+    const m = s.match(/^image###([\s\S]*?)###$/i) || s.match(/###([\s\S]*?)###/);
+    if (m) {
+      s = m[1].trim();
+    } else if (s.startsWith('image###')) {
+      s = s.replace(/^image###/i, '').replace(/###$/i, '').trim();
+    }
+    return s;
+  }
+
+  // 检测上下文正文或提示词中是否命中了 LoRA 激活关键词
+  function detectActiveLoras(fullText, promptText) {
+    const s = getSettings();
+    const loras = s.comfyLoras || [];
+    const activeList = [];
+    const lowerContext = `${fullText} ${promptText}`.toLowerCase();
+
+    loras.forEach((item) => {
+      if (!item.enabled || !item.name) return;
+      if (item.alwaysOn) {
+        activeList.push(item);
+        return;
+      }
+      if (!item.keywords) return;
+      const kws = item.keywords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(Boolean);
+      const isMatched = kws.some(k => lowerContext.includes(k));
+      if (isMatched) {
+        activeList.push(item);
+      }
+    });
+
+    return activeList;
+  }
+
+  /* ==========================================================================
+     5. ComfyUI 原生工作流动态组装 (Dynamic ComfyUI Graph Builder)
+     ========================================================================== */
+
+  // 探查 ComfyUI 已安装的各类模型与算法
+  async function scanComfyAssets(host) {
+    const results = { checkpoints: [], loras: [], samplers: [], schedulers: [] };
+    try {
+      // 探查 Checkpoints
+      const ckptRes = await fetch(`${host}/object_info/CheckpointLoaderSimple`);
+      if (ckptRes.ok) {
+        const d = await ckptRes.json();
+        results.checkpoints = d?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || [];
+      }
+    } catch (_) {}
+
+    try {
+      // 探查 LoRAs
+      const loraRes = await fetch(`${host}/object_info/LoraLoader`);
+      if (loraRes.ok) {
+        const d = await loraRes.json();
+        results.loras = d?.LoraLoader?.input?.required?.lora_name?.[0] || [];
+      }
+    } catch (_) {}
+
+    try {
+      // 探查 Samplers & Schedulers
+      const samplerRes = await fetch(`${host}/object_info/KSampler`);
+      if (samplerRes.ok) {
+        const d = await samplerRes.json();
+        results.samplers = d?.KSampler?.input?.required?.sampler_name?.[0] || [];
+        results.schedulers = d?.KSampler?.input?.required?.scheduler?.[0] || [];
+      }
+    } catch (_) {}
+
+    cachedCheckpoints = results.checkpoints;
+    cachedLoras = results.loras;
+    cachedSamplers = results.samplers;
+    cachedSchedulers = results.schedulers;
+
+    return results;
+  }
+
+  // 动态组装 ComfyUI 工作流 (文生图 + 多 LoRA + 高清放大 Hires Fix)
+  function buildComfyWorkflow(params) {
+    const {
+      checkpoint,
+      positivePrompt,
+      negativePrompt,
+      width,
+      height,
+      batchSize,
+      steps,
+      cfg,
+      sampler,
+      scheduler,
+      activeLoras,
+      hiresEnabled,
+      hiresScale,
+      hiresDenoise,
+      seed
+    } = params;
+
+    const workflow = {};
+
+    // 1. Checkpoint Loader (Node 4)
+    workflow["4"] = {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": checkpoint
+      }
+    };
+
+    let currentModel = ["4", 0];
+    let currentClip = ["4", 1];
+    let currentVae = ["4", 2];
+
+    // 2. 多 LoRA 链式装载器 (Nodes 100, 101, 102...)
+    if (activeLoras && activeLoras.length > 0) {
+      activeLoras.forEach((lora, idx) => {
+        const loraNodeId = String(100 + idx);
+        workflow[loraNodeId] = {
+          "class_type": "LoraLoader",
+          "inputs": {
+            "model": currentModel,
+            "clip": currentClip,
+            "lora_name": lora.name,
+            "strength_model": parseFloat(lora.strengthModel) || 0.8,
+            "strength_clip": parseFloat(lora.strengthClip) || 0.8
+          }
+        };
+        currentModel = [loraNodeId, 0];
+        currentClip = [loraNodeId, 1];
+      });
+    }
+
+    // 3. Positive CLIPTextEncode (Node 6)
+    workflow["6"] = {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": currentClip,
+        "text": positivePrompt
+      }
+    };
+
+    // 4. Negative CLIPTextEncode (Node 7)
+    workflow["7"] = {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": currentClip,
+        "text": negativePrompt
+      }
+    };
+
+    // 5. EmptyLatentImage (Node 5)
+    workflow["5"] = {
+      "class_type": "EmptyLatentImage",
+      "inputs": {
+        "batch_size": batchSize,
+        "height": height,
+        "width": width
+      }
+    };
+
+    // 6. 基础 KSampler (Node 3)
+    workflow["3"] = {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": cfg,
+        "denoise": 1.0,
+        "latent_image": ["5", 0],
+        "model": currentModel,
+        "negative": ["7", 0],
+        "positive": ["6", 0],
+        "sampler_name": sampler,
+        "scheduler": scheduler,
+        "seed": seed,
+        "steps": steps
+      }
+    };
+
+    let lastLatent = ["3", 0];
+
+    // 7. 高清放大分支 (Hires Fix: LatentUpscaleBy + 2nd KSampler)
+    if (hiresEnabled && hiresScale > 1.0) {
+      // Node 200: LatentUpscaleBy
+      workflow["200"] = {
+        "class_type": "LatentUpscaleBy",
+        "inputs": {
+          "samples": ["3", 0],
+          "scale_by": hiresScale,
+          "upscale_method": "bicubic"
+        }
+      };
+
+      // Node 201: Second KSampler for Hires Fix
+      const hiresSteps = Math.max(12, Math.round(steps * 0.7));
+      workflow["201"] = {
+        "class_type": "KSampler",
+        "inputs": {
+          "cfg": cfg,
+          "denoise": hiresDenoise,
+          "latent_image": ["200", 0],
+          "model": currentModel,
+          "negative": ["7", 0],
+          "positive": ["6", 0],
+          "sampler_name": sampler,
+          "scheduler": scheduler,
+          "seed": seed + 1,
+          "steps": hiresSteps
+        }
+      };
+
+      lastLatent = ["201", 0];
+    }
+
+    // 8. VAE Decode (Node 8)
+    workflow["8"] = {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": lastLatent,
+        "vae": currentVae
+      }
+    };
+
+    // 9. SaveImage (Node 9)
+    workflow["9"] = {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "SillyTavern",
+        "images": ["8", 0]
+      }
+    };
+
+    return workflow;
+  }
+
+  /* ==========================================================================
+     6. 轮播展示卡片与生图调度 (Carousel Card & Generation Dispatcher)
+     ========================================================================== */
+
+  const cardStateMap = new Map();
+
+  function renderCarouselCard(container, images, promptText, activeLoras = []) {
+    if (!images || images.length === 0) return;
+    const cardId = container.dataset.sctCardId || `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    container.dataset.sctCardId = cardId;
+
+    let state = cardStateMap.get(cardId);
+    if (!state) {
+      state = { currentIdx: 0, images: images, prompt: promptText, loras: activeLoras };
+      cardStateMap.set(cardId, state);
+    } else {
+      state.images = images;
+    }
+
+    const total = images.length;
+    const safeIdx = ((state.currentIdx % total) + total) % total;
+    state.currentIdx = safeIdx;
+    const currentUrl = images[safeIdx];
+
+    const loraBadgeHtml = activeLoras && activeLoras.length > 0 
+      ? `<span style="font-size:10px; background:rgba(168,85,247,0.3); border:1px solid rgba(168,85,247,0.5); padding:1px 6px; border-radius:8px; color:#f0abfc;">LoRA: ${activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', ')}</span>`
+      : '';
+
+    container.innerHTML = `
+      <div class="sct-comfy-card">
+        <div class="sct-comfy-card-header">
+          <div class="sct-title">
+            <span>🎨</span>
+            <span>ComfyUI 生图</span>
+            ${loraBadgeHtml}
+          </div>
+          <div class="sct-prompt-preview" title="${encodeURIComponent(promptText)}">
+            ${promptText.slice(0, 45)}...
+          </div>
+        </div>
+        <div class="sct-comfy-viewport" id="vp_${cardId}">
+          <img src="${currentUrl}" alt="ComfyUI Image ${safeIdx + 1}" />
+          ${total > 1 ? `<div class="sct-comfy-counter-badge">${safeIdx + 1} / ${total}</div>` : ''}
+        </div>
+        <div class="sct-comfy-footer">
+          ${total > 1 ? `
+            <button type="button" class="sct-comfy-btn sct-prev-btn">◀ 上一张</button>
+            <div class="sct-comfy-dots">
+              ${images.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
+            </div>
+            <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
+          ` : `
+            <span style="font-size: 11px; opacity: 0.5;">点击图片放大查看</span>
+            <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
+          `}
+        </div>
+      </div>
+    `;
+
+    const vp = container.querySelector(`#vp_${cardId}`);
+    vp.querySelector('img').addEventListener('click', () => openLightbox(currentUrl));
+
+    // 触摸滑动 (Touch Swipe)
+    let touchStartX = 0;
+    vp.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length > 0) touchStartX = e.touches[0].clientX;
+    }, { passive: true });
+
+    vp.addEventListener('touchend', (e) => {
+      if (e.changedTouches && e.changedTouches.length > 0 && total > 1) {
+        const diff = e.changedTouches[0].clientX - touchStartX;
+        if (diff > 45) {
+          state.currentIdx = (state.currentIdx - 1 + total) % total;
+          renderCarouselCard(container, images, promptText, activeLoras);
+        } else if (diff < -45) {
+          state.currentIdx = (state.currentIdx + 1) % total;
+          renderCarouselCard(container, images, promptText, activeLoras);
+        }
+      }
+    }, { passive: true });
+
+    const prevBtn = container.querySelector('.sct-prev-btn');
+    if (prevBtn) {
+      prevBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.currentIdx = (state.currentIdx - 1 + total) % total;
+        renderCarouselCard(container, images, promptText, activeLoras);
+      });
+    }
+
+    const nextBtn = container.querySelector('.sct-next-btn');
+    if (nextBtn) {
+      nextBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.currentIdx = (state.currentIdx + 1) % total;
+        renderCarouselCard(container, images, promptText, activeLoras);
+      });
+    }
+
+    container.querySelectorAll('.sct-comfy-dot').forEach((dot) => {
+      dot.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = parseInt(dot.dataset.idx, 10);
+        if (!isNaN(idx)) {
+          state.currentIdx = idx;
+          renderCarouselCard(container, images, promptText, activeLoras);
+        }
+      });
+    });
+
+    const retryBtn = container.querySelector('.sct-retry-btn');
+    if (retryBtn) {
+      retryBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        triggerComfyDraw(promptText, container, activeLoras);
+      });
+    }
+  }
+
+  function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…') {
+    container.innerHTML = `
+      <div class="sct-comfy-card">
+        <div class="sct-comfy-loading">
+          <div class="sct-spinner"></div>
+          <div class="sct-loading-text">${progressText}</div>
+          <div class="sct-loading-hint">提示词: ${promptText.slice(0, 50)}...</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderErrorCard(container, promptText, err, activeLoras) {
+    container.innerHTML = `
+      <div class="sct-comfy-card">
+        <div class="sct-comfy-error">
+          <div class="sct-comfy-error-header">
+            <span>⚠️</span>
+            <span>ComfyUI 生图失败</span>
+          </div>
+          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${err || '未能连接到 ComfyUI 服务'}</div>
+          <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
+        </div>
+      </div>
+    `;
+    container.querySelector('.sct-error-retry').addEventListener('click', () => {
+      triggerComfyDraw(promptText, container, activeLoras);
+    });
+  }
+
+  // 触发 ComfyUI 生图任务
+  async function triggerComfyDraw(promptText, container, explicitActiveLoras = null) {
+    const s = getSettings();
+    if (!s.comfyEnabled) {
+      showToast('ComfyUI 绘图功能未开启', 'warning');
+      return;
+    }
+
+    renderLoadingCard(container, promptText, '🎨 正在构建工作流并连接 ComfyUI…');
+
+    const comfyHost = getCleanComfyHost();
+    const batch = Math.min(3, Math.max(1, s.comfyBatchCount || 1));
+    const width = s.comfyWidth || 512;
+    const height = s.comfyHeight || 768;
+    const steps = s.comfySteps || 20;
+    const cfg = s.comfyCfg || 7.0;
+    const sampler = s.comfySampler || 'euler';
+    const scheduler = s.comfyScheduler || 'normal';
+    const seed = Math.floor(Math.random() * 1000000000);
+
+    // 确定启用的 LoRA 列表与特征词注入
+    const activeLoras = explicitActiveLoras || detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText);
+    
+    // 注入 LoRA 角色特征词到正向提示词中
+    const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
+    const loraInjection = loraTriggerWords ? `${loraTriggerWords}, ` : '';
+    
+    // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀
+    const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim();
+    const negativePrompt = s.comfyFixedNegative || '';
+
+    // 探查可用 Checkpoint
+    let ckpt = s.comfyCheckpoint || '';
+    if (!ckpt) {
+      if (cachedCheckpoints.length === 0) {
+        await scanComfyAssets(comfyHost);
+      }
+      ckpt = cachedCheckpoints[0] || 'v1-5-pruned-emaonly.safetensors';
+    }
+
+    // 是否开启高清放大
+    const hiresEnabled = s.comfyWorkflow === 'txt2img_multilora_hires' || s.comfyHiresEnabled;
+    const hiresScale = parseFloat(s.comfyHiresScale) || 1.5;
+    const hiresDenoise = parseFloat(s.comfyHiresDenoise) || 0.45;
+
+    // 动态生成标准 ComfyUI 工作流
+    const workflow = buildComfyWorkflow({
+      checkpoint: ckpt,
+      positivePrompt: fullPositivePrompt,
+      negativePrompt: negativePrompt,
+      width: width,
+      height: height,
+      batchSize: batch,
+      steps: steps,
+      cfg: cfg,
+      sampler: sampler,
+      scheduler: scheduler,
+      activeLoras: activeLoras,
+      hiresEnabled: hiresEnabled,
+      hiresScale: hiresScale,
+      hiresDenoise: hiresDenoise,
+      seed: seed
+    });
+
+    const clientId = 'st_' + Math.random().toString(36).slice(2, 10);
+
+    try {
+      // 1. 尝试建立 WebSocket 实时进度接收
+      let ws = null;
+      try {
+        const wsUrl = comfyHost.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`;
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'progress') {
+              const { value, max } = msg.data;
+              const percent = Math.round((value / max) * 100);
+              renderLoadingCard(container, promptText, `🎨 正在采样渲染: ${value}/${max} 步 (${percent}%)`);
+            } else if (msg.type === 'executing') {
+              const node = msg.data.node;
+              if (node === '3') renderLoadingCard(container, promptText, `🎨 执行基础 KSampler 采样…`);
+              else if (node === '201') renderLoadingCard(container, promptText, `🔍 执行高清放大重绘采样…`);
+              else if (node === '8') renderLoadingCard(container, promptText, `🎨 执行 VAE 解码输出…`);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {}
+
+      // 2. 提交任务至 ComfyUI /prompt
+      const res = await fetch(`${comfyHost}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow, client_id: clientId })
+      });
+
+      if (!res.ok) {
+        throw new Error(`ComfyUI 响应异常 HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      const promptId = data.prompt_id;
+      if (!promptId) {
+        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
+          throw new Error(`工作流节点配置异常: ${JSON.stringify(data.node_errors)}`);
+        }
+        throw new Error('未获取到 ComfyUI 任务 ID');
+      }
+
+      // 3. 轮询 /history/{promptId} 获取输出图像
+      let pollCount = 0;
+      const maxPoll = 160; // 160 * 1.5s = 240s
+      const pollTimer = setInterval(async () => {
+        pollCount++;
+        if (pollCount > maxPoll) {
+          clearInterval(pollTimer);
+          if (ws) ws.close();
+          renderErrorCard(container, promptText, '生图等待超时（超过 240 秒）', activeLoras);
+          return;
+        }
+
+        try {
+          const hRes = await fetch(`${comfyHost}/history/${promptId}`);
+          if (!hRes.ok) return;
+          const hData = await hRes.json();
+          const task = hData[promptId];
+
+          if (task && task.outputs && task.outputs['9'] && task.outputs['9'].images) {
+            clearInterval(pollTimer);
+            if (ws) ws.close();
+
+            const images = task.outputs['9'].images.map((img) => 
+              `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
+            );
+
+            renderCarouselCard(container, images, promptText, activeLoras);
+            showToast(`ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个角色 LoRA)` : ''}`, 'success');
+          }
+        } catch (_) {}
+      }, 1500);
+
+    } catch (e) {
+      renderErrorCard(container, promptText, e.message, activeLoras);
+    }
+  }
+
+  /* ==========================================================================
+     7. 消息 DOM 扫描与自动化处理 (Message Scanning & Tag Processing)
+     ========================================================================== */
+
+  function processSingleMessage(mesEl) {
+    if (!mesEl || mesEl.dataset.sctProcessed) return;
+    mesEl.dataset.sctProcessed = 'true';
+
+    const s = getSettings();
+    const textEl = mesEl.querySelector('.mes_text');
+    if (!textEl) return;
+
+    // 1. 扫描并替换 <image>prompt</image> 标签 (支持 image###sfw, tag### 格式及 HTML 转义形态)
+    const textHtml = textEl.innerHTML;
+    const tagRegex = /<image>([\s\S]*?)<\/image>|&lt;image&gt;([\s\S]*?)&lt;\/image&gt;|<img_prompt>([\s\S]*?)<\/img_prompt>|&lt;img_prompt&gt;([\s\S]*?)&lt;\/img_prompt&gt;/gi;
+    let match;
+    const promptsToDraw = [];
+
+    while ((match = tagRegex.exec(textHtml)) !== null) {
+      const rawInner = match[1] || match[2] || match[3] || match[4] || '';
+      const cleanPrompt = parseImageTagContent(rawInner);
+      if (cleanPrompt) {
+        promptsToDraw.push({ raw: match[0], prompt: cleanPrompt });
+      }
+    }
+
+    if (promptsToDraw.length > 0) {
+      // 第一阶段：将所有匹配的标签一次性替换为插槽标记，避免循环内多次重写 innerHTML 破坏已插入的组件 DOM
+      let replacedHtml = textEl.innerHTML;
+      promptsToDraw.forEach((item, idx) => {
+        replacedHtml = replacedHtml.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
+      });
+      textEl.innerHTML = replacedHtml;
+
+      // 第二阶段：在已更新的 DOM 中查找插槽并挂载卡片容器与启动生图
+      promptsToDraw.forEach((item, idx) => {
+        const cardContainer = document.createElement('div');
+        cardContainer.className = 'sct-comfy-card-container';
+        cardContainer.dataset.sctPrompt = item.prompt;
+
+        const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
+        if (slot) {
+          slot.replaceWith(cardContainer);
+        } else {
+          textEl.appendChild(cardContainer);
+        }
+
+        // 检测上下文激活的 LoRA
+        const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
+
+        if (s.comfyAutoDrawTags) {
+          triggerComfyDraw(item.prompt, cardContainer, activeLoras);
+        } else {
+          cardContainer.innerHTML = `
+            <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
+              <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
+              <div style="margin-top: 8px;">
+                <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
+              </div>
+            </div>
+          `;
+          cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
+            triggerComfyDraw(item.prompt, cardContainer, activeLoras);
+          });
+        }
+      });
+    }
+
+    // 2. 注入消息工具栏操作按钮 (mes_buttons)
+    const btnBar = mesEl.querySelector('.mes_buttons');
+    if (btnBar) {
+      if (s.ttsShowMesButton && !btnBar.querySelector('.sct-mes-tts-btn')) {
+        const ttsBtn = document.createElement('div');
+        ttsBtn.className = 'sct-mes-action-btn sct-mes-tts-btn';
+        ttsBtn.textContent = '🔊';
+        ttsBtn.title = '朗读此条消息';
+        ttsBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const cleanText = cleanTextForTts(textEl.textContent || '');
+          speakText(cleanText);
+        });
+        btnBar.appendChild(ttsBtn);
+      }
+
+      if (s.comfyShowMesButton && !btnBar.querySelector('.sct-mes-draw-btn')) {
+        const drawBtn = document.createElement('div');
+        drawBtn.className = 'sct-mes-action-btn sct-mes-draw-btn';
+        drawBtn.textContent = '🎨';
+        drawBtn.title = '为此条消息生成插图';
+        drawBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const raw = textEl.textContent || '';
+          const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim().slice(0, 200);
+          const userPrompt = prompt('请输入 ComfyUI 绘图提示词：', cleaned);
+          if (userPrompt && userPrompt.trim()) {
+            let container = mesEl.querySelector('.sct-comfy-card-container');
+            if (!container) {
+              container = document.createElement('div');
+              container.className = 'sct-comfy-card-container';
+              textEl.appendChild(container);
+            }
+            const activeLoras = detectActiveLoras(textEl.textContent || '', userPrompt.trim());
+            triggerComfyDraw(userPrompt.trim(), container, activeLoras);
+          }
+        });
+        btnBar.appendChild(drawBtn);
+      }
+    }
+  }
+
+  function scanAllMessages() {
+    document.querySelectorAll('#chat .mes').forEach(processSingleMessage);
+  }
+
+  /* ==========================================================================
+     8. TTS 语音朗读核心实现 (Web Speech API & OpenAI Audio)
      ========================================================================== */
 
   function cleanTextForTts(rawText) {
@@ -208,7 +924,9 @@
       text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
     }
     text = text.replace(/<image>[\s\S]*?<\/image>/gi, '');
+    text = text.replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, '');
     text = text.replace(/<img_prompt>[\s\S]*?<\/img_prompt>/gi, '');
+    text = text.replace(/&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;/gi, '');
     text = text.replace(/```[\s\S]*?```/g, ' [代码块已省略] ');
     text = text.replace(/`([^`]+)`/g, '$1');
     text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
@@ -275,7 +993,7 @@
 
     setTtsPlayingState(true, text);
 
-    // 引擎分支 1：OpenAI 兼容协议 / 自定义 TTS API 端点
+    // 引擎分支 1：OpenAI 兼容协议
     if (s.ttsEngine === 'openai' && s.ttsOpenAiEndpoint) {
       try {
         const ep = s.ttsOpenAiEndpoint.trim().replace(/\/+$/, '');
@@ -307,22 +1025,21 @@
           currentAudio = null;
           setTtsPlayingState(false);
         };
-        audio.onerror = (e) => {
+        audio.onerror = () => {
           URL.revokeObjectURL(audioUrl);
           currentAudio = null;
           setTtsPlayingState(false);
-          showToast(`音频播放失败: ${e.message || '未知解码错误'}`, 'error');
+          showToast('音频解码播放失败', 'error');
         };
 
         await audio.play();
         return;
       } catch (err) {
-        console.warn('[SCT_TTS] OpenAI TTS 失败，降级至原生 Web Speech API', err);
-        showToast(`OpenAI TTS 失败 (${err.message})，转用浏览器原生朗读`, 'warning');
+        showToast(`OpenAI TTS 失败 (${err.message})，转为浏览器原生朗读`, 'warning');
       }
     }
 
-    // 引擎分支 2：浏览器原生 Web Speech API（零门槛、零网络延迟、全平台支持）
+    // 引擎分支 2：浏览器原生 Web Speech API
     if (typeof window.speechSynthesis !== 'undefined') {
       try {
         window.speechSynthesis.cancel();
@@ -347,8 +1064,7 @@
           setTtsPlayingState(false);
         };
 
-        utterance.onerror = (e) => {
-          console.warn('[SCT_TTS] WebSpeech 错误', e);
+        utterance.onerror = () => {
           currentUtterance = null;
           setTtsPlayingState(false);
         };
@@ -357,11 +1073,11 @@
         return;
       } catch (err) {
         setTtsPlayingState(false);
-        showToast(`语音朗读启动失败: ${err.message}`, 'error');
+        showToast(`语音朗读失败: ${err.message}`, 'error');
       }
     } else {
       setTtsPlayingState(false);
-      showToast('当前浏览器环境不支持 Web Speech API，请配置 OpenAI 兼容 TTS 端点', 'error');
+      showToast('当前浏览器环境不支持 Web Speech API', 'error');
     }
   }
 
@@ -376,10 +1092,6 @@
     }
     setTtsPlayingState(false);
   }
-
-  /* ==========================================================================
-     4. 划选文本浮动胶囊 (Selection Floating Pill)
-     ========================================================================== */
 
   function getTtsButton() {
     if (ttsButton) return ttsButton;
@@ -493,438 +1205,7 @@
   }
 
   /* ==========================================================================
-     5. ComfyUI 原生工作流组装与通信 (Direct ComfyUI Workflow & API Client)
-     ========================================================================== */
-
-  // 探查 ComfyUI 已安装的模型权重与可用节点信息
-  async function fetchComfyObjectInfo(host) {
-    try {
-      const res = await fetch(`${host}/object_info/CheckpointLoaderSimple`);
-      if (!res.ok) return null;
-      const data = await res.json();
-      return data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] || [];
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // 轮播卡片状态管理 Map
-  const cardStateMap = new Map();
-
-  function renderCarouselCard(container, images, promptText) {
-    if (!images || images.length === 0) return;
-    const cardId = container.dataset.sctCardId || `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    container.dataset.sctCardId = cardId;
-
-    let state = cardStateMap.get(cardId);
-    if (!state) {
-      state = { currentIdx: 0, images: images, prompt: promptText };
-      cardStateMap.set(cardId, state);
-    } else {
-      state.images = images;
-    }
-
-    const total = images.length;
-    const safeIdx = ((state.currentIdx % total) + total) % total;
-    state.currentIdx = safeIdx;
-    const currentUrl = images[safeIdx];
-
-    container.innerHTML = `
-      <div class="sct-comfy-card">
-        <div class="sct-comfy-card-header">
-          <div class="sct-title">
-            <span>🎨</span>
-            <span>ComfyUI 画面生成</span>
-          </div>
-          <div class="sct-prompt-preview" title="${encodeURIComponent(promptText)}">
-            ${promptText.slice(0, 45)}...
-          </div>
-        </div>
-        <div class="sct-comfy-viewport" id="vp_${cardId}">
-          <img src="${currentUrl}" alt="ComfyUI Image ${safeIdx + 1}" />
-          ${total > 1 ? `<div class="sct-comfy-counter-badge">${safeIdx + 1} / ${total}</div>` : ''}
-        </div>
-        <div class="sct-comfy-footer">
-          ${total > 1 ? `
-            <button type="button" class="sct-comfy-btn sct-prev-btn">◀ 上一张</button>
-            <div class="sct-comfy-dots">
-              ${images.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
-            </div>
-            <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
-          ` : `
-            <span style="font-size: 11px; opacity: 0.5;">点击图片可放大查看</span>
-            <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
-          `}
-        </div>
-      </div>
-    `;
-
-    const vp = container.querySelector(`#vp_${cardId}`);
-    vp.querySelector('img').addEventListener('click', () => openLightbox(currentUrl));
-
-    let touchStartX = 0;
-    vp.addEventListener('touchstart', (e) => {
-      if (e.touches && e.touches.length > 0) touchStartX = e.touches[0].clientX;
-    }, { passive: true });
-
-    vp.addEventListener('touchend', (e) => {
-      if (e.changedTouches && e.changedTouches.length > 0 && total > 1) {
-        const diff = e.changedTouches[0].clientX - touchStartX;
-        if (diff > 45) {
-          state.currentIdx = (state.currentIdx - 1 + total) % total;
-          renderCarouselCard(container, images, promptText);
-        } else if (diff < -45) {
-          state.currentIdx = (state.currentIdx + 1) % total;
-          renderCarouselCard(container, images, promptText);
-        }
-      }
-    }, { passive: true });
-
-    const prevBtn = container.querySelector('.sct-prev-btn');
-    if (prevBtn) {
-      prevBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        state.currentIdx = (state.currentIdx - 1 + total) % total;
-        renderCarouselCard(container, images, promptText);
-      });
-    }
-
-    const nextBtn = container.querySelector('.sct-next-btn');
-    if (nextBtn) {
-      nextBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        state.currentIdx = (state.currentIdx + 1) % total;
-        renderCarouselCard(container, images, promptText);
-      });
-    }
-
-    container.querySelectorAll('.sct-comfy-dot').forEach((dot) => {
-      dot.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const idx = parseInt(dot.dataset.idx, 10);
-        if (!isNaN(idx)) {
-          state.currentIdx = idx;
-          renderCarouselCard(container, images, promptText);
-        }
-      });
-    });
-
-    const retryBtn = container.querySelector('.sct-retry-btn');
-    if (retryBtn) {
-      retryBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        triggerComfyDraw(promptText, container);
-      });
-    }
-  }
-
-  function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…') {
-    container.innerHTML = `
-      <div class="sct-comfy-card">
-        <div class="sct-comfy-loading">
-          <div class="sct-spinner"></div>
-          <div class="sct-loading-text">${progressText}</div>
-          <div class="sct-loading-hint">提示词: ${promptText.slice(0, 50)}...</div>
-        </div>
-      </div>
-    `;
-  }
-
-  function renderErrorCard(container, promptText, err) {
-    container.innerHTML = `
-      <div class="sct-comfy-card">
-        <div class="sct-comfy-error">
-          <div class="sct-comfy-error-header">
-            <span>⚠️</span>
-            <span>ComfyUI 生图失败</span>
-          </div>
-          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${err || '未能连接到 ComfyUI 服务'}</div>
-          <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
-        </div>
-      </div>
-    `;
-    container.querySelector('.sct-error-retry').addEventListener('click', () => {
-      triggerComfyDraw(promptText, container);
-    });
-  }
-
-  // 纯正的 ComfyUI 原生 API 调度器
-  async function triggerComfyDraw(promptText, container) {
-    const s = getSettings();
-    if (!s.comfyEnabled) {
-      showToast('ComfyUI 绘图功能未开启', 'warning');
-      return;
-    }
-
-    renderLoadingCard(container, promptText, '🎨 正在连接 ComfyUI 引擎…');
-
-    const comfyHost = getCleanComfyHost();
-    const fullPositivePrompt = `${s.comfyPromptPrefix || ''}${promptText}${s.comfyPromptSuffix || ''}`.trim();
-    const negativePrompt = s.comfyNegativePrompt || '';
-    const batch = Math.min(4, Math.max(1, s.comfyBatchCount || 1));
-    const width = s.comfyWidth || 512;
-    const height = s.comfyHeight || 768;
-    const steps = s.comfySteps || 20;
-    const cfg = s.comfyCfg || 7.0;
-    const sampler = s.comfySampler || 'euler';
-    const scheduler = s.comfyScheduler || 'normal';
-    const seed = Math.floor(Math.random() * 1000000000);
-
-    // 探查或使用指定模型 Checkpoint
-    let ckpt = s.comfyCheckpoint || '';
-    if (!ckpt) {
-      const availableModels = await fetchComfyObjectInfo(comfyHost);
-      if (availableModels && availableModels.length > 0) {
-        ckpt = availableModels[0];
-      } else {
-        ckpt = 'v1-5-pruned-emaonly.safetensors';
-      }
-    }
-
-    // 组装标准原生 ComfyUI txt2img 工作流
-    const workflow = {
-      "3": {
-        "class_type": "KSampler",
-        "inputs": {
-          "cfg": cfg,
-          "denoise": 1,
-          "latent_image": ["5", 0],
-          "model": ["4", 0],
-          "negative": ["7", 0],
-          "positive": ["6", 0],
-          "sampler_name": sampler,
-          "scheduler": scheduler,
-          "seed": seed,
-          "steps": steps
-        }
-      },
-      "4": {
-        "class_type": "CheckpointLoaderSimple",
-        "inputs": {
-          "ckpt_name": ckpt
-        }
-      },
-      "5": {
-        "class_type": "EmptyLatentImage",
-        "inputs": {
-          "batch_size": batch,
-          "height": height,
-          "width": width
-        }
-      },
-      "6": {
-        "class_type": "CLIPTextEncode",
-        "inputs": {
-          "clip": ["4", 1],
-          "text": fullPositivePrompt
-        }
-      },
-      "7": {
-        "class_type": "CLIPTextEncode",
-        "inputs": {
-          "clip": ["4", 1],
-          "text": negativePrompt
-        }
-      },
-      "8": {
-        "class_type": "VAEDecode",
-        "inputs": {
-          "samples": ["3", 0],
-          "vae": ["4", 2]
-        }
-      },
-      "9": {
-        "class_type": "SaveImage",
-        "inputs": {
-          "filename_prefix": "SillyTavern",
-          "images": ["8", 0]
-        }
-      }
-    };
-
-    const clientId = 'st_' + Math.random().toString(36).slice(2, 10);
-
-    try {
-      // 1. 尝试建立 WebSocket 实时进度监听
-      let ws = null;
-      try {
-        const wsUrl = comfyHost.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`;
-        ws = new WebSocket(wsUrl);
-        ws.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'progress') {
-              const { value, max } = msg.data;
-              const percent = Math.round((value / max) * 100);
-              renderLoadingCard(container, promptText, `🎨 渲染进度: ${value}/${max} (${percent}%)`);
-            } else if (msg.type === 'executing') {
-              const node = msg.data.node;
-              if (node === '3') renderLoadingCard(container, promptText, `🎨 正在执行 KSampler 采样…`);
-              else if (node === '8') renderLoadingCard(container, promptText, `🎨 正在执行 VAE 解码…`);
-            }
-          } catch (_) {}
-        };
-      } catch (_) {}
-
-      // 2. 提交任务至 ComfyUI /prompt 端点
-      const res = await fetch(`${comfyHost}/prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: workflow, client_id: clientId })
-      });
-
-      if (!res.ok) {
-        throw new Error(`ComfyUI 响应失败 HTTP ${res.status}: ${res.statusText}`);
-      }
-
-      const data = await res.json();
-      const promptId = data.prompt_id;
-      if (!promptId) {
-        if (data.node_errors && Object.keys(data.node_errors).length > 0) {
-          throw new Error(`工作流节点配置异常: ${JSON.stringify(data.node_errors)}`);
-        }
-        throw new Error('未获取到 ComfyUI 任务 ID');
-      }
-
-      // 3. 轮询 /history/{promptId} 获取最终生成的图像
-      let pollCount = 0;
-      const maxPoll = 120; // 120 * 1.5s = 180s 超时
-      const pollTimer = setInterval(async () => {
-        pollCount++;
-        if (pollCount > maxPoll) {
-          clearInterval(pollTimer);
-          if (ws) ws.close();
-          renderErrorCard(container, promptText, '生图等待超时（超过 180 秒）');
-          return;
-        }
-
-        try {
-          const hRes = await fetch(`${comfyHost}/history/${promptId}`);
-          if (!hRes.ok) return;
-          const hData = await hRes.json();
-          const task = hData[promptId];
-
-          if (task && task.outputs && task.outputs['9'] && task.outputs['9'].images) {
-            clearInterval(pollTimer);
-            if (ws) ws.close();
-
-            const images = task.outputs['9'].images.map((img) => 
-              `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
-            );
-
-            renderCarouselCard(container, images, promptText);
-            showToast('ComfyUI 绘图成功！', 'success');
-          }
-        } catch (_) {}
-      }, 1500);
-
-    } catch (e) {
-      renderErrorCard(container, promptText, e.message);
-    }
-  }
-
-  /* ==========================================================================
-     6. 消息扫描与自动化注入 (Message Parsing & DOM Injection)
-     ========================================================================== */
-
-  function processSingleMessage(mesEl) {
-    if (!mesEl || mesEl.dataset.sctProcessed) return;
-    mesEl.dataset.sctProcessed = 'true';
-
-    const s = getSettings();
-    const textEl = mesEl.querySelector('.mes_text');
-    if (!textEl) return;
-
-    // 1. 扫描并替换 <image>prompt</image> 标签
-    const textHtml = textEl.innerHTML;
-    const tagRegex = /<image>([\s\S]*?)<\/image>|<img_prompt>([\s\S]*?)<\/img_prompt>/gi;
-    let match;
-    const promptsToDraw = [];
-
-    while ((match = tagRegex.exec(textHtml)) !== null) {
-      const prompt = (match[1] || match[2] || '').trim();
-      if (prompt) promptsToDraw.push({ raw: match[0], prompt: prompt });
-    }
-
-    if (promptsToDraw.length > 0) {
-      promptsToDraw.forEach((item, idx) => {
-        const cardContainer = document.createElement('div');
-        cardContainer.className = 'sct-comfy-card-container';
-        cardContainer.dataset.sctPrompt = item.prompt;
-
-        textEl.innerHTML = textEl.innerHTML.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
-        const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
-        if (slot) {
-          slot.replaceWith(cardContainer);
-        } else {
-          textEl.appendChild(cardContainer);
-        }
-
-        if (s.comfyAutoDrawTags) {
-          triggerComfyDraw(item.prompt, cardContainer);
-        } else {
-          cardContainer.innerHTML = `
-            <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
-              <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
-              <div style="margin-top: 8px;">
-                <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
-              </div>
-            </div>
-          `;
-          cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
-            triggerComfyDraw(item.prompt, cardContainer);
-          });
-        }
-      });
-    }
-
-    // 2. 注入消息工具栏操作按钮 (mes_buttons)
-    const btnBar = mesEl.querySelector('.mes_buttons');
-    if (btnBar) {
-      if (s.ttsShowMesButton && !btnBar.querySelector('.sct-mes-tts-btn')) {
-        const ttsBtn = document.createElement('div');
-        ttsBtn.className = 'sct-mes-action-btn sct-mes-tts-btn';
-        ttsBtn.textContent = '🔊';
-        ttsBtn.title = '朗读此条消息';
-        ttsBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const cleanText = cleanTextForTts(textEl.textContent || '');
-          speakText(cleanText);
-        });
-        btnBar.appendChild(ttsBtn);
-      }
-
-      if (s.comfyShowMesButton && !btnBar.querySelector('.sct-mes-draw-btn')) {
-        const drawBtn = document.createElement('div');
-        drawBtn.className = 'sct-mes-action-btn sct-mes-draw-btn';
-        drawBtn.textContent = '🎨';
-        drawBtn.title = '为此条消息生成插图';
-        drawBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const raw = textEl.textContent || '';
-          const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim().slice(0, 200);
-          const userPrompt = prompt('请输入 ComfyUI 绘图提示词：', cleaned);
-          if (userPrompt && userPrompt.trim()) {
-            let container = mesEl.querySelector('.sct-comfy-card-container');
-            if (!container) {
-              container = document.createElement('div');
-              container.className = 'sct-comfy-card-container';
-              textEl.appendChild(container);
-            }
-            triggerComfyDraw(userPrompt.trim(), container);
-          }
-        });
-        btnBar.appendChild(drawBtn);
-      }
-    }
-  }
-
-  function scanAllMessages() {
-    document.querySelectorAll('#chat .mes').forEach(processSingleMessage);
-  }
-
-  /* ==========================================================================
-     7. 斜杠命令支持 (Slash Commands)
+     9. 斜杠命令注册 (Slash Commands)
      ========================================================================== */
 
   function registerSlashCommands() {
@@ -942,8 +1223,9 @@
       container.className = 'sct-comfy-card-container';
       const chat = document.getElementById('chat');
       if (chat) chat.appendChild(container);
-      triggerComfyDraw(p, container);
-    }, [], '直接使用 ComfyUI 根据提示词生成插画', true, true);
+      const activeLoras = detectActiveLoras(p, p);
+      triggerComfyDraw(p, container, activeLoras);
+    }, [], '使用 ComfyUI (含多 LoRA 工作流) 根据提示词生成插画', true, true);
 
     ctx.registerSlashCommand('tts', (args) => {
       const t = (args || '').trim();
@@ -956,7 +1238,7 @@
   }
 
   /* ==========================================================================
-     8. 原生设置面板与魔杖菜单 (Settings UI & Menu Injection)
+     10. 原生配置面板与多 LoRA 规则设计 (Comprehensive Settings UI)
      ========================================================================== */
 
   function populateVoiceList(selectEl) {
@@ -974,6 +1256,115 @@
     });
   }
 
+  function renderLoraList(container) {
+    const s = getSettings();
+    const loras = s.comfyLoras || [];
+    container.innerHTML = '';
+
+    if (loras.length === 0) {
+      container.innerHTML = '<div style="font-size:12px; color:rgba(255,255,255,0.4); text-align:center; padding:10px;">暂未配置任何角色 LoRA 规则</div>';
+      return;
+    }
+
+    loras.forEach((item, idx) => {
+      const card = document.createElement('div');
+      card.className = 'sct-lora-card';
+      card.innerHTML = `
+        <div class="sct-lora-card-header">
+          <div class="sct-lora-title">
+            <span>🎭</span>
+            <span>LoRA #${idx + 1}</span>
+            <label style="margin-left:8px; font-size:11px; cursor:pointer;">
+              <input type="checkbox" class="sct-lora-enable" data-idx="${idx}" ${item.enabled ? 'checked' : ''} /> 启用
+            </label>
+            <label style="margin-left:6px; font-size:11px; cursor:pointer;" title="开启后即使正文未匹配到关键词也会默认挂载该 LoRA">
+              <input type="checkbox" class="sct-lora-always" data-idx="${idx}" ${item.alwaysOn ? 'checked' : ''} /> 常驻生效
+            </label>
+          </div>
+          <button type="button" class="sct-lora-del-btn" data-idx="${idx}">✕ 删除</button>
+        </div>
+
+        <div class="sct-setting-col">
+          <label>选择或填入 LoRA 模型文件名</label>
+          <div style="display:flex; gap:6px;">
+            <input type="text" class="text_pole sct-lora-name" data-idx="${idx}" placeholder="如 nagi_v1.safetensors" value="${item.name || ''}" style="flex:1;" />
+            <select class="text_pole sct-lora-select" data-idx="${idx}" style="max-width:140px;">
+              <option value="">(从扫描列表选择)</option>
+              ${cachedLoras.map(l => `<option value="${l}" ${l === item.name ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+
+        <div class="sct-setting-row">
+          <label>LoRA 权重强度 (0.1 ~ 2.0): <span class="sct-lora-str-val">${item.strengthModel || 0.8}</span></label>
+          <input type="range" class="sct-lora-strength" data-idx="${idx}" min="0.1" max="2.0" step="0.05" value="${item.strengthModel || 0.8}" />
+        </div>
+
+        <div class="sct-setting-col">
+          <label>LoRA 激活关键词 (正文/提示词出现即自动触发)</label>
+          <input type="text" class="text_pole sct-lora-keywords" data-idx="${idx}" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发" value="${item.keywords || ''}" />
+        </div>
+
+        <div class="sct-setting-col">
+          <label>角色特征激活词 (触发后自动注入正向提示词)</label>
+          <input type="text" class="text_pole sct-lora-triggers" data-idx="${idx}" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform" value="${item.triggerWords || ''}" />
+        </div>
+      `;
+
+      // 绑定各个 LoRA 项的事件
+      card.querySelector('.sct-lora-enable').addEventListener('change', (e) => {
+        loras[idx].enabled = e.target.checked;
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-always').addEventListener('change', (e) => {
+        loras[idx].alwaysOn = e.target.checked;
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-name').addEventListener('input', (e) => {
+        loras[idx].name = e.target.value.trim();
+        saveSettings({ comfyLoras: loras });
+      });
+
+      const select = card.querySelector('.sct-lora-select');
+      select.addEventListener('change', (e) => {
+        if (e.target.value) {
+          card.querySelector('.sct-lora-name').value = e.target.value;
+          loras[idx].name = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        }
+      });
+
+      const strRange = card.querySelector('.sct-lora-strength');
+      const strVal = card.querySelector('.sct-lora-str-val');
+      strRange.addEventListener('input', (e) => {
+        strVal.textContent = e.target.value;
+        loras[idx].strengthModel = parseFloat(e.target.value);
+        loras[idx].strengthClip = parseFloat(e.target.value);
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-keywords').addEventListener('input', (e) => {
+        loras[idx].keywords = e.target.value;
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-triggers').addEventListener('input', (e) => {
+        loras[idx].triggerWords = e.target.value;
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-del-btn').addEventListener('click', () => {
+        loras.splice(idx, 1);
+        saveSettings({ comfyLoras: loras });
+        renderLoraList(container);
+      });
+
+      container.appendChild(card);
+    });
+  }
+
   function injectSettingsPanel() {
     const parent = document.getElementById('extensions_settings');
     if (!parent || document.getElementById('sct-settings-container')) return;
@@ -986,31 +1377,21 @@
     container.innerHTML = `
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-          <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读 (原生独立版)</b>
+          <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读 (原生工作流版)</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content" style="display: block;">
           
-          <!-- ComfyUI 板块 -->
+          <!-- 板块 1: ComfyUI 基础连接与模型选择 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🎨</span>
-              <span>ComfyUI 生图设置</span>
+              <span>ComfyUI 服务连接与模型</span>
             </div>
 
             <div class="sct-setting-row">
               <label for="sct-cfg-comfy-enabled">启用 ComfyUI 生图功能</label>
               <input type="checkbox" id="sct-cfg-comfy-enabled" ${s.comfyEnabled ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-auto-draw">自动解析 &lt;image&gt; 标签生图</label>
-              <input type="checkbox" id="sct-cfg-auto-draw" ${s.comfyAutoDrawTags ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-mes-draw-btn">在每条消息下显示生图按钮</label>
-              <input type="checkbox" id="sct-cfg-mes-draw-btn" ${s.comfyShowMesButton ? 'checked' : ''} />
             </div>
 
             <div class="sct-setting-col">
@@ -1019,28 +1400,85 @@
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-checkpoint">模型检查点权重 (Checkpoint)</label>
-              <input type="text" id="sct-cfg-checkpoint" class="text_pole" placeholder="留空自动选择 ComfyUI 内首个可用模型" value="${s.comfyCheckpoint || ''}" />
+              <label for="sct-cfg-workflow">选择生图工作流 (内置完整图形生成)</label>
+              <select id="sct-cfg-workflow" class="text_pole">
+                <option value="txt2img" ${s.comfyWorkflow === 'txt2img' ? 'selected' : ''}>标准文生图工作流 (Txt2Img)</option>
+                <option value="txt2img_multilora" ${s.comfyWorkflow === 'txt2img_multilora' ? 'selected' : ''}>文生图 + 多 LoRA 智能链式工作流 (推荐)</option>
+                <option value="txt2img_multilora_hires" ${s.comfyWorkflow === 'txt2img_multilora_hires' ? 'selected' : ''}>文生图 + 多 LoRA + 高清二次潜空间放大 (Hires Fix)</option>
+              </select>
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-prompt-prefix">画风前缀提示词 (Prompt Prefix)</label>
-              <input type="text" id="sct-cfg-prompt-prefix" class="text_pole" value="${s.comfyPromptPrefix || ''}" />
+              <label for="sct-cfg-checkpoint">选择 Checkpoint 模型文件</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="sct-cfg-checkpoint" class="text_pole" placeholder="留空自动选择首个可用模型" value="${s.comfyCheckpoint || ''}" style="flex:1;" />
+                <select id="sct-ckpt-select" class="text_pole" style="max-width:140px;">
+                  <option value="">(模型列表)</option>
+                  ${cachedCheckpoints.map(c => `<option value="${c}" ${c === s.comfyCheckpoint ? 'selected' : ''}>${c}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+
+            <div class="sct-test-btn-group">
+              <button type="button" class="sct-comfy-btn" id="sct-btn-test-comfy">📡 测试 ComfyUI 连接与扫描全部模型</button>
+            </div>
+          </div>
+
+          <!-- 板块 2: 多 LoRA 配置与关键词智能激活 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🎭</span>
+              <span>角色 LoRA 管理与关键词激活</span>
+            </div>
+            <div class="sct-hint">配置角色专属 LoRA：当正文或提示词中出现配置的关键词时，插件自动将 LoRA 载入工作流，并将角色特征词精准注入正向提示词。</div>
+
+            <div id="sct-lora-items-container" class="sct-lora-list"></div>
+
+            <div style="margin-top:6px;">
+              <button type="button" class="sct-comfy-btn" id="sct-btn-add-lora">➕ 添加一条角色 LoRA 配置</button>
+            </div>
+          </div>
+
+          <!-- 板块 3: 提示词与画面质量参数 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>✨</span>
+              <span>固定质量提示词与出图尺寸</span>
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-prompt-suffix">画风后缀提示词 (Prompt Suffix)</label>
+              <label for="sct-cfg-fixed-pos">固定的正向质量提示词 (Prefix)</label>
+              <input type="text" id="sct-cfg-fixed-pos" class="text_pole" value="${s.comfyFixedPositive || ''}" />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-prompt-suffix">画风后缀提示词 (Suffix)</label>
               <input type="text" id="sct-cfg-prompt-suffix" class="text_pole" value="${s.comfyPromptSuffix || ''}" />
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-neg-prompt">通用负向提示词 (Negative Prompt)</label>
-              <textarea id="sct-cfg-neg-prompt" class="text_pole" rows="2">${s.comfyNegativePrompt || ''}</textarea>
+              <label for="sct-cfg-fixed-neg">固定的通用负向提示词 (Negative Prompt)</label>
+              <textarea id="sct-cfg-fixed-neg" class="text_pole" rows="2">${s.comfyFixedNegative || ''}</textarea>
+            </div>
+
+            <div class="sct-setting-col">
+              <label>图片尺寸 (Width x Height)</label>
+              <div class="sct-chip-group">
+                <button type="button" class="sct-chip-btn ${s.comfyWidth===512 && s.comfyHeight===768 ? 'active':''}" data-w="512" data-h="768">512x768 (经典人像)</button>
+                <button type="button" class="sct-chip-btn ${s.comfyWidth===768 && s.comfyHeight===1024 ? 'active':''}" data-w="768" data-h="1024">768x1024 (高清竖版)</button>
+                <button type="button" class="sct-chip-btn ${s.comfyWidth===1024 && s.comfyHeight===1024 ? 'active':''}" data-w="1024" data-h="1024">1024x1024 (正方形)</button>
+                <button type="button" class="sct-chip-btn ${s.comfyWidth===768 && s.comfyHeight===512 ? 'active':''}" data-w="768" data-h="512">768x512 (横屏场景)</button>
+              </div>
+              <div style="display:flex; gap:8px; margin-top:4px;">
+                <input type="number" id="sct-cfg-width" class="text_pole" placeholder="宽" value="${s.comfyWidth || 512}" style="width:100px;" />
+                <span style="align-self:center;">x</span>
+                <input type="number" id="sct-cfg-height" class="text_pole" placeholder="高" value="${s.comfyHeight || 768}" style="width:100px;" />
+              </div>
             </div>
 
             <div class="sct-setting-row">
-              <label for="sct-cfg-batch">每次生图张数 (1-4)</label>
-              <input type="number" id="sct-cfg-batch" class="text_pole" min="1" max="4" style="width: 70px;" value="${s.comfyBatchCount || 1}" />
+              <label for="sct-cfg-batch">单次生成张数 (1-3 张，轮播切换)</label>
+              <input type="number" id="sct-cfg-batch" class="text_pole" min="1" max="3" style="width: 70px;" value="${s.comfyBatchCount || 1}" />
             </div>
 
             <div class="sct-setting-row">
@@ -1053,12 +1491,76 @@
               <input type="number" id="sct-cfg-cfg" class="text_pole" min="1" max="30" step="0.5" style="width: 70px;" value="${s.comfyCfg || 7.0}" />
             </div>
 
-            <div class="sct-test-btn-group">
-              <button type="button" class="sct-comfy-btn" id="sct-btn-test-comfy">📡 测试 ComfyUI 连接与模型探测</button>
+            <div class="sct-setting-col">
+              <label for="sct-cfg-sampler">采样器 (Sampler) 与调度算法 (Scheduler)</label>
+              <div style="display:flex; gap:8px;">
+                <select id="sct-cfg-sampler" class="text_pole" style="flex:1;">
+                  <option value="${s.comfySampler}">${s.comfySampler || 'euler'}</option>
+                  ${cachedSamplers.map(sm => `<option value="${sm}" ${sm === s.comfySampler ? 'selected':''}>${sm}</option>`).join('')}
+                </select>
+                <select id="sct-cfg-scheduler" class="text_pole" style="flex:1;">
+                  <option value="${s.comfyScheduler}">${s.comfyScheduler || 'normal'}</option>
+                  ${cachedSchedulers.map(sc => `<option value="${sc}" ${sc === s.comfyScheduler ? 'selected':''}>${sc}</option>`).join('')}
+                </select>
+              </div>
             </div>
           </div>
 
-          <!-- TTS 语音板块 -->
+          <!-- 板块 4: 高清二次放大设置 (Hires Fix) -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🔍</span>
+              <span>高清二次放大修复设置 (Hires Fix)</span>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-hires-enable">启用潜空间高清放大</label>
+              <input type="checkbox" id="sct-cfg-hires-enable" ${s.comfyHiresEnabled || s.comfyWorkflow === 'txt2img_multilora_hires' ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-hires-scale">放大倍数 (1.2x ~ 2.0x): <span id="sct-hires-scale-val">${s.comfyHiresScale || 1.5}x</span></label>
+              <input type="range" id="sct-cfg-hires-scale" min="1.1" max="2.0" step="0.1" value="${s.comfyHiresScale || 1.5}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-hires-denoise">二次重绘幅度 (0.3 ~ 0.7): <span id="sct-hires-denoise-val">${s.comfyHiresDenoise || 0.45}</span></label>
+              <input type="range" id="sct-cfg-hires-denoise" min="0.2" max="0.75" step="0.05" value="${s.comfyHiresDenoise || 0.45}" />
+            </div>
+          </div>
+
+          <!-- 板块 5: 自动配图指令与消息交互 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🤖</span>
+              <span>自动配图指示与消息交互</span>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-auto-draw">自动检测正文中 &lt;image&gt; 标签即时生图</label>
+              <input type="checkbox" id="sct-cfg-auto-draw" ${s.comfyAutoDrawTags ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-mes-draw-btn">在每条消息操作栏显示「🎨」生图按钮</label>
+              <input type="checkbox" id="sct-cfg-mes-draw-btn" ${s.comfyShowMesButton ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-auto-inject-inst">自动向 AI 上下文注入【自动配图指示】</label>
+              <input type="checkbox" id="sct-cfg-auto-inject-inst" ${s.autoInjectImageInstruction ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-col">
+              <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
+              <div class="sct-code-box" id="sct-inst-preview">${s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION}</div>
+              <div style="margin-top:4px;">
+                <button type="button" class="sct-comfy-btn" id="sct-btn-copy-inst">📋 复制自动配图提示词</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 板块 6: 纯净 TTS 语音朗读 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title">
               <span>🔊</span>
@@ -1093,7 +1595,6 @@
               </select>
             </div>
 
-            <!-- Web Speech 音色 -->
             <div class="sct-setting-col" id="sct-wrap-voice-ws" style="${s.ttsEngine === 'webspeech' ? '' : 'display:none;'}">
               <label for="sct-cfg-voice">发音人音色 (Voice)</label>
               <select id="sct-cfg-voice" class="text_pole">
@@ -1101,10 +1602,9 @@
               </select>
             </div>
 
-            <!-- OpenAI 兼容配置 -->
             <div id="sct-wrap-openai" style="${s.ttsEngine === 'openai' ? '' : 'display:none;'}">
               <div class="sct-setting-col" style="margin-bottom: 8px;">
-                <label for="sct-cfg-openai-ep">API 端点 (如 https://api.openai.com)</label>
+                <label for="sct-cfg-openai-ep">API 端点 (如 http://127.0.0.1:8000)</label>
                 <input type="text" id="sct-cfg-openai-ep" class="text_pole" placeholder="http://127.0.0.1:8000" value="${s.ttsOpenAiEndpoint || ''}" />
               </div>
               <div class="sct-setting-col" style="margin-bottom: 8px;">
@@ -1112,7 +1612,7 @@
                 <input type="password" id="sct-cfg-openai-key" class="text_pole" placeholder="sk-..." value="${s.ttsOpenAiKey || ''}" />
               </div>
               <div class="sct-setting-col" style="margin-bottom: 8px;">
-                <label for="sct-cfg-openai-voice">音色名称 (如 alloy / echo / 角色名)</label>
+                <label for="sct-cfg-openai-voice">音色名称 (如 alloy / echo)</label>
                 <input type="text" id="sct-cfg-openai-voice" class="text_pole" value="${s.ttsOpenAiVoice || 'alloy'}" />
               </div>
             </div>
@@ -1139,6 +1639,7 @@
 
     parent.appendChild(container);
 
+    // 折叠展开
     const drawerToggle = container.querySelector('.inline-drawer-toggle');
     const drawerContent = container.querySelector('.inline-drawer-content');
     drawerToggle.addEventListener('click', () => {
@@ -1149,13 +1650,138 @@
         : 'inline-drawer-icon fa-solid fa-circle-chevron-right right';
     });
 
+    // 渲染 LoRA 列表
+    const loraContainer = container.querySelector('#sct-lora-items-container');
+    renderLoraList(loraContainer);
+
+    container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
+      const curLoras = getSettings().comfyLoras || [];
+      curLoras.push({
+        id: `lora_${Date.now()}`,
+        name: cachedLoras[0] || '',
+        strengthModel: 0.8,
+        strengthClip: 0.8,
+        keywords: '',
+        triggerWords: '',
+        enabled: true,
+        alwaysOn: false
+      });
+      saveSettings({ comfyLoras: curLoras });
+      renderLoraList(loraContainer);
+    });
+
+    // 尺寸快捷芯片
+    container.querySelectorAll('.sct-chip-btn').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        container.querySelectorAll('.sct-chip-btn').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        const w = parseInt(chip.dataset.w, 10);
+        const h = parseInt(chip.dataset.h, 10);
+        container.querySelector('#sct-cfg-width').value = w;
+        container.querySelector('#sct-cfg-height').value = h;
+        saveSettings({ comfyWidth: w, comfyHeight: h });
+      });
+    });
+
+    // 绑定基础事件与保存
+    container.querySelector('#sct-cfg-comfy-enabled').addEventListener('change', (e) => saveSettings({ comfyEnabled: e.target.checked }));
+    container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-workflow').addEventListener('change', (e) => saveSettings({ comfyWorkflow: e.target.value }));
+    container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
+    
+    const ckptSelect = container.querySelector('#sct-ckpt-select');
+    ckptSelect.addEventListener('change', (e) => {
+      if (e.target.value) {
+        container.querySelector('#sct-cfg-checkpoint').value = e.target.value;
+        saveSettings({ comfyCheckpoint: e.target.value });
+      }
+    });
+
+    container.querySelector('#sct-cfg-fixed-pos').addEventListener('input', (e) => saveSettings({ comfyFixedPositive: e.target.value }));
+    container.querySelector('#sct-cfg-prompt-suffix').addEventListener('input', (e) => saveSettings({ comfyPromptSuffix: e.target.value }));
+    container.querySelector('#sct-cfg-fixed-neg').addEventListener('input', (e) => saveSettings({ comfyFixedNegative: e.target.value }));
+    container.querySelector('#sct-cfg-width').addEventListener('change', (e) => saveSettings({ comfyWidth: parseInt(e.target.value, 10) || 512 }));
+    container.querySelector('#sct-cfg-height').addEventListener('change', (e) => saveSettings({ comfyHeight: parseInt(e.target.value, 10) || 768 }));
+    container.querySelector('#sct-cfg-batch').addEventListener('change', (e) => saveSettings({ comfyBatchCount: parseInt(e.target.value, 10) || 1 }));
+    container.querySelector('#sct-cfg-steps').addEventListener('change', (e) => saveSettings({ comfySteps: parseInt(e.target.value, 10) || 20 }));
+    container.querySelector('#sct-cfg-cfg').addEventListener('change', (e) => saveSettings({ comfyCfg: parseFloat(e.target.value) || 7.0 }));
+    container.querySelector('#sct-cfg-sampler').addEventListener('change', (e) => saveSettings({ comfySampler: e.target.value }));
+    container.querySelector('#sct-cfg-scheduler').addEventListener('change', (e) => saveSettings({ comfyScheduler: e.target.value }));
+
+    // 高清放大
+    container.querySelector('#sct-cfg-hires-enable').addEventListener('change', (e) => saveSettings({ comfyHiresEnabled: e.target.checked }));
+    const hiresScaleRange = container.querySelector('#sct-cfg-hires-scale');
+    const hiresScaleVal = container.querySelector('#sct-hires-scale-val');
+    hiresScaleRange.addEventListener('input', (e) => {
+      hiresScaleVal.textContent = `${e.target.value}x`;
+      saveSettings({ comfyHiresScale: parseFloat(e.target.value) });
+    });
+
+    const hiresDenoiseRange = container.querySelector('#sct-cfg-hires-denoise');
+    const hiresDenoiseVal = container.querySelector('#sct-hires-denoise-val');
+    hiresDenoiseRange.addEventListener('input', (e) => {
+      hiresDenoiseVal.textContent = e.target.value;
+      saveSettings({ comfyHiresDenoise: parseFloat(e.target.value) });
+    });
+
+    // 自动配图指令
+    container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
+    container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
+    container.querySelector('#sct-cfg-auto-inject-inst').addEventListener('change', (e) => saveSettings({ autoInjectImageInstruction: e.target.checked }));
+
+    container.querySelector('#sct-btn-copy-inst').addEventListener('click', () => {
+      const text = container.querySelector('#sct-inst-preview').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('已复制自动配图提示词到剪贴板！', 'success');
+      }).catch(() => {
+        showToast('复制失败，请手动划选复制', 'warning');
+      });
+    });
+
+    // 探查 ComfyUI 资产
+    container.querySelector('#sct-btn-test-comfy').addEventListener('click', async () => {
+      const testBtn = container.querySelector('#sct-btn-test-comfy');
+      const host = getCleanComfyHost();
+      testBtn.textContent = '⏳ 正在探查 ComfyUI…';
+      try {
+        const assets = await scanComfyAssets(host);
+        if (assets.checkpoints.length > 0 || assets.loras.length > 0) {
+          showToast(`连通成功！探查到 ${assets.checkpoints.length} 个模型, ${assets.loras.length} 个 LoRA`, 'success');
+          // 更新 Checkpoint 下拉
+          ckptSelect.innerHTML = '<option value="">(模型列表)</option>' + 
+            assets.checkpoints.map(c => `<option value="${c}">${c}</option>`).join('');
+          if (!container.querySelector('#sct-cfg-checkpoint').value && assets.checkpoints[0]) {
+            container.querySelector('#sct-cfg-checkpoint').value = assets.checkpoints[0];
+            saveSettings({ comfyCheckpoint: assets.checkpoints[0] });
+          }
+          // 更新采样器下拉
+          if (assets.samplers.length > 0) {
+            container.querySelector('#sct-cfg-sampler').innerHTML = 
+              assets.samplers.map(s => `<option value="${s}">${s}</option>`).join('');
+          }
+          if (assets.schedulers.length > 0) {
+            container.querySelector('#sct-cfg-scheduler').innerHTML = 
+              assets.schedulers.map(sc => `<option value="${sc}">${sc}</option>`).join('');
+          }
+          // 重新刷新 LoRA 列表下拉
+          renderLoraList(loraContainer);
+        } else {
+          showToast(`已连通 ComfyUI (${host})，服务就绪！`, 'success');
+        }
+      } catch (err) {
+        showToast(`连通 ComfyUI 失败 (${host}): ${err.message}`, 'error');
+      } finally {
+        testBtn.textContent = '📡 测试 ComfyUI 连接与扫描全部模型';
+      }
+    });
+
+    // TTS 绑定
     const voiceSelect = container.querySelector('#sct-cfg-voice');
     populateVoiceList(voiceSelect);
     if (typeof window.speechSynthesis !== 'undefined') {
       window.speechSynthesis.onvoiceschanged = () => populateVoiceList(voiceSelect);
     }
 
-    // 引擎切换展示联动
     const engineSelect = container.querySelector('#sct-cfg-tts-engine');
     const wrapWs = container.querySelector('#sct-wrap-voice-ws');
     const wrapOai = container.querySelector('#sct-wrap-openai');
@@ -1165,19 +1791,6 @@
       wrapWs.style.display = val === 'webspeech' ? '' : 'none';
       wrapOai.style.display = val === 'openai' ? '' : 'none';
     });
-
-    // 绑定改动保存
-    container.querySelector('#sct-cfg-comfy-enabled').addEventListener('change', (e) => saveSettings({ comfyEnabled: e.target.checked }));
-    container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
-    container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
-    container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-prompt-prefix').addEventListener('input', (e) => saveSettings({ comfyPromptPrefix: e.target.value }));
-    container.querySelector('#sct-cfg-prompt-suffix').addEventListener('input', (e) => saveSettings({ comfyPromptSuffix: e.target.value }));
-    container.querySelector('#sct-cfg-neg-prompt').addEventListener('input', (e) => saveSettings({ comfyNegativePrompt: e.target.value }));
-    container.querySelector('#sct-cfg-batch').addEventListener('change', (e) => saveSettings({ comfyBatchCount: parseInt(e.target.value, 10) || 1 }));
-    container.querySelector('#sct-cfg-steps').addEventListener('change', (e) => saveSettings({ comfySteps: parseInt(e.target.value, 10) || 20 }));
-    container.querySelector('#sct-cfg-cfg').addEventListener('change', (e) => saveSettings({ comfyCfg: parseFloat(e.target.value) || 7.0 }));
 
     container.querySelector('#sct-cfg-tts-enabled').addEventListener('change', (e) => saveSettings({ ttsEnabled: e.target.checked }));
     container.querySelector('#sct-cfg-float-sel').addEventListener('change', (e) => saveSettings({ ttsFloatingSelection: e.target.checked }));
@@ -1203,33 +1816,8 @@
       saveSettings({ ttsPitch: parseFloat(e.target.value) });
     });
 
-    // 探查 ComfyUI 连接
-    container.querySelector('#sct-btn-test-comfy').addEventListener('click', async () => {
-      const testBtn = container.querySelector('#sct-btn-test-comfy');
-      const host = getCleanComfyHost();
-      testBtn.textContent = '⏳ 正在探查 ComfyUI…';
-      try {
-        const statsRes = await fetch(`${host}/system_stats`);
-        if (!statsRes.ok) throw new Error(`HTTP ${statsRes.status}`);
-        const models = await fetchComfyObjectInfo(host);
-        if (models && models.length > 0) {
-          showToast(`成功连接 ComfyUI！探查到 ${models.length} 个模型 (默认推荐: ${models[0]})`, 'success');
-          if (!container.querySelector('#sct-cfg-checkpoint').value) {
-            container.querySelector('#sct-cfg-checkpoint').value = models[0];
-            saveSettings({ comfyCheckpoint: models[0] });
-          }
-        } else {
-          showToast(`成功连接 ComfyUI (${host})，服务就绪！`, 'success');
-        }
-      } catch (err) {
-        showToast(`无法连通 ComfyUI (${host}): ${err.message}。请确保已启动 ComfyUI 且允许跨域`, 'error');
-      } finally {
-        testBtn.textContent = '📡 测试 ComfyUI 连接与模型探测';
-      }
-    });
-
     container.querySelector('#sct-btn-test-tts').addEventListener('click', () => {
-      speakText('您好！这是 SillyTavern 纯净原生插件的语音朗读测试，祝您使用愉快！');
+      speakText('您好！这是 SillyTavern 智能语音朗读与 ComfyUI 原生生图测试，祝您使用愉快！');
     });
     container.querySelector('#sct-btn-stop-tts').addEventListener('click', () => {
       stopTts();
@@ -1265,14 +1853,15 @@
   }
 
   /* ==========================================================================
-     9. 插件生命周期启动与事件监听 (Lifecycle)
+     11. 插件启动与事件监听 (Lifecycle Initialization)
      ========================================================================== */
 
   function init() {
-    console.log(`[${DISPLAY_NAME}] 正在初始化纯净酒馆原生插件…`);
+    console.log(`[${DISPLAY_NAME}] 正在初始化 ComfyUI 原生工作流扩展…`);
 
     bindSelectionListeners();
     registerSlashCommands();
+    updateExtensionPrompt();
 
     const ctx = getSTContext();
     const es = ctx?.eventSource || (typeof eventSource !== 'undefined' ? eventSource : null);
@@ -1293,6 +1882,12 @@
         es.on(et.CHAT_CHANGED, () => {
           stopTts();
           setTimeout(scanAllMessages, 300);
+          updateExtensionPrompt();
+        });
+      }
+      if (et.CHAT_COMPLETION_PROMPT_READY) {
+        es.on(et.CHAT_COMPLETION_PROMPT_READY, () => {
+          updateExtensionPrompt();
         });
       }
     }
@@ -1312,11 +1907,12 @@
       injectSettingsPanel();
       injectWandMenuButton();
       scanAllMessages();
+      updateExtensionPrompt();
 
       if (initChecks > 10) clearInterval(initTimer);
     }, 800);
 
-    console.log(`[${DISPLAY_NAME}] 纯净原生插件就绪！`);
+    console.log(`[${DISPLAY_NAME}] 原生插件就绪！`);
   }
 
   if (document.readyState === 'loading') {
