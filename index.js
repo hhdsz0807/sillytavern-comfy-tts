@@ -86,11 +86,20 @@
     ttsFloatingSelection: true,
     ttsShowMesButton: true,
     ttsFilterThinking: true,
-    ttsEngine: 'webspeech', // 'webspeech' | 'openai'
+    ttsEngine: 'xiaomi', // 'xiaomi' | 'webspeech' | 'openai'
     ttsVoice: '',
     ttsRate: 1.0,
     ttsPitch: 1.0,
     ttsVolume: 1.0,
+    // 小米 MiMo 在线 TTS
+    ttsXiaomiKey: '',
+    ttsXiaomiEndpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
+    ttsXiaomiModel: 'mimo-v2.5-tts', // 'mimo-v2.5-tts' | 'mimo-v2.5-tts-voicedesign' | 'mimo-v2.5-tts-voiceclone'
+    ttsXiaomiVoice: '冰糖', // '冰糖' | '茉莉' | 'Mia' | 'Chloe' | 'Milo' | 'Dean'
+    ttsXiaomiSinging: false,
+    ttsXiaomiVoiceDesignPrompt: '年轻活泼的女性声音，亲切自然，语调轻快',
+    ttsXiaomiCloneSample: '',
+    // OpenAI 兼容 TTS
     ttsOpenAiEndpoint: '',
     ttsOpenAiKey: '',
     ttsOpenAiModel: 'tts-1',
@@ -1015,7 +1024,105 @@
 
     setTtsPlayingState(true, text);
 
-    // 引擎分支 1：OpenAI 兼容协议
+    // 引擎分支 1：小米 MiMo 在线 TTS (原厂高品质拟真人声)
+    if (s.ttsEngine === 'xiaomi') {
+      try {
+        const apiKey = (s.ttsXiaomiKey || '').trim();
+        if (!apiKey) {
+          showToast('请先在插件设置中填写小米 MiMo API Key', 'warning');
+          setTtsPlayingState(false);
+          return;
+        }
+
+        const endpoint = (s.ttsXiaomiEndpoint || 'https://api.xiaomimimo.com/v1/chat/completions').trim();
+        const model = s.ttsXiaomiModel || 'mimo-v2.5-tts';
+
+        let requestBody = {
+          model: model,
+          messages: []
+        };
+
+        if (model === 'mimo-v2.5-tts-voicedesign') {
+          const prompt = (s.ttsXiaomiVoiceDesignPrompt || '年轻活泼的女性声音，亲切自然，语调轻快').trim();
+          requestBody.messages = [
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: text }
+          ];
+          requestBody.audio = { format: 'mp3' };
+        } else if (model === 'mimo-v2.5-tts-voiceclone') {
+          let sample = (s.ttsXiaomiCloneSample || '').trim();
+          if (!sample) {
+            throw new Error('语音克隆模式需要填写参考音频 Base64 数据');
+          }
+          if (!sample.startsWith('data:audio/')) {
+            sample = 'data:audio/wav;base64,' + sample;
+          }
+          requestBody.messages = [
+            { role: 'assistant', content: text }
+          ];
+          requestBody.audio = {
+            voice: sample,
+            format: 'mp3'
+          };
+        } else {
+          // mimo-v2.5-tts 内置音色
+          let speakContent = text;
+          if (s.ttsXiaomiSinging && !speakContent.startsWith('(唱歌)') && !speakContent.startsWith('(sing)')) {
+            speakContent = '(唱歌)' + speakContent;
+          }
+          requestBody.messages = [
+            { role: 'assistant', content: speakContent }
+          ];
+          requestBody.audio = {
+            voice: s.ttsXiaomiVoice || '冰糖',
+            format: 'mp3'
+          };
+        }
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'api-key': apiKey,
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => '');
+          throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
+        }
+
+        const data = await res.json();
+        const audioBase64 = data?.choices?.[0]?.message?.audio?.data;
+        if (!audioBase64) {
+          throw new Error('小米 TTS 返回无音频数据 (choices[0].message.audio.data 为空)');
+        }
+
+        const audioUrl = `data:audio/mp3;base64,${audioBase64}`;
+        const audio = new Audio(audioUrl);
+        currentAudio = audio;
+        audio.volume = Math.min(1.0, Math.max(0, s.ttsVolume || 1.0));
+
+        audio.onended = () => {
+          currentAudio = null;
+          setTtsPlayingState(false);
+        };
+        audio.onerror = () => {
+          currentAudio = null;
+          setTtsPlayingState(false);
+          showToast('小米 TTS 音频播放失败', 'error');
+        };
+
+        await audio.play();
+        return;
+      } catch (err) {
+        showToast(`小米 TTS 失败 (${err.message})，转为浏览器原生朗读`, 'warning');
+      }
+    }
+
+    // 引擎分支 2：OpenAI 兼容协议
     if (s.ttsEngine === 'openai' && s.ttsOpenAiEndpoint) {
       try {
         const ep = s.ttsOpenAiEndpoint.trim().replace(/\/+$/, '');
@@ -1682,11 +1789,74 @@
             <div class="sct-setting-col">
               <label for="sct-cfg-tts-engine">语音引擎类型</label>
               <select id="sct-cfg-tts-engine" class="text_pole">
-                <option value="webspeech" ${s.ttsEngine === 'webspeech' ? 'selected' : ''}>浏览器原生 Web Speech API (推荐，零延迟开箱即用)</option>
+                <option value="xiaomi" ${s.ttsEngine === 'xiaomi' ? 'selected' : ''}>小米 MiMo 在线 TTS (原厂高品质拟真人声 · 推荐)</option>
+                <option value="webspeech" ${s.ttsEngine === 'webspeech' ? 'selected' : ''}>浏览器原生 Web Speech API (零配置 · 本地发音人)</option>
                 <option value="openai" ${s.ttsEngine === 'openai' ? 'selected' : ''}>OpenAI 兼容音频服务 (/v1/audio/speech)</option>
               </select>
             </div>
 
+            <!-- 小米 MiMo 在线 TTS 设置 -->
+            <div id="sct-wrap-xiaomi" style="${s.ttsEngine === 'xiaomi' ? '' : 'display:none;'}">
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-xiaomi-key">小米 MiMo API Key <span style="color:#ef4444;">*</span></label>
+                <input type="password" id="sct-cfg-xiaomi-key" class="text_pole" placeholder="填写小米开放平台 MiMo API Key" value="${escapeHtml(s.ttsXiaomiKey || '')}" />
+              </div>
+
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-xiaomi-model">模型型号 (Model)</label>
+                <select id="sct-cfg-xiaomi-model" class="text_pole">
+                  <option value="mimo-v2.5-tts" ${s.ttsXiaomiModel === 'mimo-v2.5-tts' ? 'selected' : ''}>mimo-v2.5-tts (内置高品质语音 · 支持唱歌模式)</option>
+                  <option value="mimo-v2.5-tts-voicedesign" ${s.ttsXiaomiModel === 'mimo-v2.5-tts-voicedesign' ? 'selected' : ''}>mimo-v2.5-tts-voicedesign (语音设计 · 文本描述专属音色)</option>
+                  <option value="mimo-v2.5-tts-voiceclone" ${s.ttsXiaomiModel === 'mimo-v2.5-tts-voiceclone' ? 'selected' : ''}>mimo-v2.5-tts-voiceclone (语音克隆 · 音频样本复刻真实音色)</option>
+                </select>
+              </div>
+
+              <!-- mimo-v2.5-tts 内置音色与唱歌模式 -->
+              <div id="sct-wrap-xiaomi-builtin" style="${(!s.ttsXiaomiModel || s.ttsXiaomiModel === 'mimo-v2.5-tts') ? '' : 'display:none;'}">
+                <div class="sct-setting-col" style="margin-bottom: 8px;">
+                  <label for="sct-cfg-xiaomi-voice-select">选择内置音色 (Voice)</label>
+                  <div style="display:flex; gap:6px;">
+                    <select id="sct-cfg-xiaomi-voice-select" class="text_pole" style="flex:1;">
+                      <option value="冰糖" ${s.ttsXiaomiVoice === '冰糖' ? 'selected' : ''}>冰糖 (甜美清新女声 · 推荐)</option>
+                      <option value="茉莉" ${s.ttsXiaomiVoice === '茉莉' ? 'selected' : ''}>茉莉 (知性温婉女声)</option>
+                      <option value="Mia" ${s.ttsXiaomiVoice === 'Mia' ? 'selected' : ''}>Mia (活泼灵动女声)</option>
+                      <option value="Chloe" ${s.ttsXiaomiVoice === 'Chloe' ? 'selected' : ''}>Chloe (沉稳干练女声)</option>
+                      <option value="Milo" ${s.ttsXiaomiVoice === 'Milo' ? 'selected' : ''}>Milo (阳光活力男声)</option>
+                      <option value="Dean" ${s.ttsXiaomiVoice === 'Dean' ? 'selected' : ''}>Dean (成熟磁性男声)</option>
+                      <option value="custom" ${!['冰糖','茉莉','Mia','Chloe','Milo','Dean'].includes(s.ttsXiaomiVoice) ? 'selected' : ''}>(自定义音色名)</option>
+                    </select>
+                    <input type="text" id="sct-cfg-xiaomi-voice-custom" class="text_pole" placeholder="音色名称" value="${escapeHtml(s.ttsXiaomiVoice || '冰糖')}" style="flex:1; ${['冰糖','茉莉','Mia','Chloe','Milo','Dean'].includes(s.ttsXiaomiVoice) ? 'display:none;' : ''}" />
+                  </div>
+                </div>
+                <div class="sct-setting-row" style="margin-bottom: 8px;">
+                  <label for="sct-cfg-xiaomi-singing">开启唱歌模式 (自动为朗读注入 (唱歌) 旋律)</label>
+                  <input type="checkbox" id="sct-cfg-xiaomi-singing" ${s.ttsXiaomiSinging ? 'checked' : ''} />
+                </div>
+              </div>
+
+              <!-- mimo-v2.5-tts-voicedesign 语音设计 Prompt -->
+              <div id="sct-wrap-xiaomi-design" style="${s.ttsXiaomiModel === 'mimo-v2.5-tts-voicedesign' ? '' : 'display:none;'}">
+                <div class="sct-setting-col" style="margin-bottom: 8px;">
+                  <label for="sct-cfg-xiaomi-prompt">语音设计音色描述 (Prompt)</label>
+                  <input type="text" id="sct-cfg-xiaomi-prompt" class="text_pole" placeholder="例如：年轻活泼的女性声音，亲切自然，语调轻快" value="${escapeHtml(s.ttsXiaomiVoiceDesignPrompt || '年轻活泼的女性声音，亲切自然，语调轻快')}" />
+                </div>
+              </div>
+
+              <!-- mimo-v2.5-tts-voiceclone 语音克隆 Base64 -->
+              <div id="sct-wrap-xiaomi-clone" style="${s.ttsXiaomiModel === 'mimo-v2.5-tts-voiceclone' ? '' : 'display:none;'}">
+                <div class="sct-setting-col" style="margin-bottom: 8px;">
+                  <label for="sct-cfg-xiaomi-clone">克隆参考音频 (Base64 或 data:audio/wav;base64,...)</label>
+                  <textarea id="sct-cfg-xiaomi-clone" class="text_pole" rows="2" placeholder="粘贴音频 Base64 数据">${escapeHtml(s.ttsXiaomiCloneSample || '')}</textarea>
+                </div>
+              </div>
+
+              <div class="sct-setting-col" style="margin-bottom: 8px;">
+                <label for="sct-cfg-xiaomi-ep">API 端点 (默认官方直连，可配置自建反代)</label>
+                <input type="text" id="sct-cfg-xiaomi-ep" class="text_pole" placeholder="https://api.xiaomimimo.com/v1/chat/completions" value="${escapeHtml(s.ttsXiaomiEndpoint || 'https://api.xiaomimimo.com/v1/chat/completions')}" />
+              </div>
+            </div>
+
+            <!-- 原生 Web Speech 设置 -->
             <div class="sct-setting-col" id="sct-wrap-voice-ws" style="${s.ttsEngine === 'webspeech' ? '' : 'display:none;'}">
               <label for="sct-cfg-voice">发音人音色 (Voice)</label>
               <select id="sct-cfg-voice" class="text_pole">
@@ -1694,6 +1864,7 @@
               </select>
             </div>
 
+            <!-- OpenAI 兼容音频服务设置 -->
             <div id="sct-wrap-openai" style="${s.ttsEngine === 'openai' ? '' : 'display:none;'}">
               <div class="sct-setting-col" style="margin-bottom: 8px;">
                 <label for="sct-cfg-openai-ep">API 端点 (如 http://127.0.0.1:8000)</label>
@@ -1885,13 +2056,52 @@
 
     const engineSelect = container.querySelector('#sct-cfg-tts-engine');
     const wrapWs = container.querySelector('#sct-wrap-voice-ws');
+    const wrapXiaomi = container.querySelector('#sct-wrap-xiaomi');
     const wrapOai = container.querySelector('#sct-wrap-openai');
     engineSelect.addEventListener('change', (e) => {
       const val = e.target.value;
       saveSettings({ ttsEngine: val });
       wrapWs.style.display = val === 'webspeech' ? '' : 'none';
+      wrapXiaomi.style.display = val === 'xiaomi' ? '' : 'none';
       wrapOai.style.display = val === 'openai' ? '' : 'none';
     });
+
+    // 小米 TTS 专属事件绑定
+    container.querySelector('#sct-cfg-xiaomi-key').addEventListener('input', (e) => saveSettings({ ttsXiaomiKey: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-xiaomi-ep').addEventListener('input', (e) => saveSettings({ ttsXiaomiEndpoint: e.target.value.trim() }));
+    
+    const mimoModelSelect = container.querySelector('#sct-cfg-xiaomi-model');
+    const wrapMimoBuiltin = container.querySelector('#sct-wrap-xiaomi-builtin');
+    const wrapMimoDesign = container.querySelector('#sct-wrap-xiaomi-design');
+    const wrapMimoClone = container.querySelector('#sct-wrap-xiaomi-clone');
+    mimoModelSelect.addEventListener('change', (e) => {
+      const m = e.target.value;
+      saveSettings({ ttsXiaomiModel: m });
+      wrapMimoBuiltin.style.display = m === 'mimo-v2.5-tts' ? '' : 'none';
+      wrapMimoDesign.style.display = m === 'mimo-v2.5-tts-voicedesign' ? '' : 'none';
+      wrapMimoClone.style.display = m === 'mimo-v2.5-tts-voiceclone' ? '' : 'none';
+    });
+
+    const mimoVoiceSelect = container.querySelector('#sct-cfg-xiaomi-voice-select');
+    const mimoVoiceCustom = container.querySelector('#sct-cfg-xiaomi-voice-custom');
+    mimoVoiceSelect.addEventListener('change', (e) => {
+      const v = e.target.value;
+      if (v === 'custom') {
+        mimoVoiceCustom.style.display = '';
+        saveSettings({ ttsXiaomiVoice: mimoVoiceCustom.value.trim() || '冰糖' });
+      } else {
+        mimoVoiceCustom.style.display = 'none';
+        mimoVoiceCustom.value = v;
+        saveSettings({ ttsXiaomiVoice: v });
+      }
+    });
+    mimoVoiceCustom.addEventListener('input', (e) => {
+      saveSettings({ ttsXiaomiVoice: e.target.value.trim() });
+    });
+
+    container.querySelector('#sct-cfg-xiaomi-singing').addEventListener('change', (e) => saveSettings({ ttsXiaomiSinging: e.target.checked }));
+    container.querySelector('#sct-cfg-xiaomi-prompt').addEventListener('input', (e) => saveSettings({ ttsXiaomiVoiceDesignPrompt: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-xiaomi-clone').addEventListener('input', (e) => saveSettings({ ttsXiaomiCloneSample: e.target.value.trim() }));
 
     container.querySelector('#sct-cfg-tts-enabled').addEventListener('change', (e) => saveSettings({ ttsEnabled: e.target.checked }));
     container.querySelector('#sct-cfg-float-sel').addEventListener('change', (e) => saveSettings({ ttsFloatingSelection: e.target.checked }));
