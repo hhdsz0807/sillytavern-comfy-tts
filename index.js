@@ -1256,70 +1256,148 @@
     });
   }
 
+  const expandedLoraIndices = new Set();
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   function renderLoraList(container) {
     const s = getSettings();
     const loras = s.comfyLoras || [];
     container.innerHTML = '';
 
     if (loras.length === 0) {
-      container.innerHTML = '<div style="font-size:12px; color:rgba(255,255,255,0.4); text-align:center; padding:10px;">暂未配置任何角色 LoRA 规则</div>';
+      container.innerHTML = '<div style="font-size:12px; color:rgba(255,255,255,0.4); text-align:center; padding:12px 10px; background:rgba(0,0,0,0.2); border-radius:8px; border:1px dashed rgba(255,255,255,0.1);">暂未配置任何角色 LoRA，点击下方「➕ 添加一条角色 LoRA 配置」开始添加</div>';
       return;
     }
 
     loras.forEach((item, idx) => {
+      const isExpanded = expandedLoraIndices.has(idx);
       const card = document.createElement('div');
-      card.className = 'sct-lora-card';
+      card.className = `sct-lora-card ${isExpanded ? 'expanded' : ''}`;
+      card.dataset.idx = String(idx);
+
+      const kwText = (item.keywords || '').trim();
+      const displayKw = kwText 
+        ? `<span class="sct-lora-kw-text" title="${escapeHtml(kwText)}">${escapeHtml(kwText)}</span>` 
+        : '<i class="sct-lora-kw-empty">未设置角色关键词 (点此展开配置)</i>';
+
       card.innerHTML = `
-        <div class="sct-lora-card-header">
-          <div class="sct-lora-title">
-            <span>🎭</span>
-            <span>LoRA #${idx + 1}</span>
-            <label style="margin-left:8px; font-size:11px; cursor:pointer;">
-              <input type="checkbox" class="sct-lora-enable" data-idx="${idx}" ${item.enabled ? 'checked' : ''} /> 启用
-            </label>
-            <label style="margin-left:6px; font-size:11px; cursor:pointer;" title="开启后即使正文未匹配到关键词也会默认挂载该 LoRA">
-              <input type="checkbox" class="sct-lora-always" data-idx="${idx}" ${item.alwaysOn ? 'checked' : ''} /> 常驻生效
-            </label>
+        <!-- 表面层：仅展示角色关键词与精简状态，点击整行展开/收起详情 -->
+        <div class="sct-lora-summary-bar">
+          <div class="sct-lora-summary-main">
+            <span class="sct-lora-role-icon">🎭</span>
+            <div class="sct-lora-kw-display">${displayKw}</div>
+            ${item.alwaysOn ? '<span class="sct-badge-always" title="即使正文未匹配到关键词也会默认挂载">常驻</span>' : ''}
+            ${!item.enabled ? '<span class="sct-badge-disabled">已停用</span>' : ''}
           </div>
-          <button type="button" class="sct-lora-del-btn" data-idx="${idx}">✕ 删除</button>
-        </div>
-
-        <div class="sct-setting-col">
-          <label>选择或填入 LoRA 模型文件名</label>
-          <div style="display:flex; gap:6px;">
-            <input type="text" class="text_pole sct-lora-name" data-idx="${idx}" placeholder="如 nagi_v1.safetensors" value="${item.name || ''}" style="flex:1;" />
-            <select class="text_pole sct-lora-select" data-idx="${idx}" style="max-width:140px;">
-              <option value="">(从扫描列表选择)</option>
-              ${cachedLoras.map(l => `<option value="${l}" ${l === item.name ? 'selected' : ''}>${l}</option>`).join('')}
-            </select>
+          <div class="sct-lora-summary-action">
+            <span class="sct-lora-chevron">${isExpanded ? '收起 ▲' : '详情 ▼'}</span>
           </div>
         </div>
 
-        <div class="sct-setting-row">
-          <label>LoRA 权重强度 (0.1 ~ 2.0): <span class="sct-lora-str-val">${item.strengthModel || 0.8}</span></label>
-          <input type="range" class="sct-lora-strength" data-idx="${idx}" min="0.1" max="2.0" step="0.05" value="${item.strengthModel || 0.8}" />
-        </div>
+        <!-- 详细配置层：点击后展开 -->
+        <div class="sct-lora-detail-body" style="${isExpanded ? 'display:flex;' : 'display:none;'}">
+          <div class="sct-setting-col">
+            <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(正文/提示词出现该词自动挂载 LoRA)</span></label>
+            <input type="text" class="text_pole sct-lora-keywords" data-idx="${idx}" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发" value="${escapeHtml(item.keywords || '')}" />
+          </div>
 
-        <div class="sct-setting-col">
-          <label>LoRA 激活关键词 (正文/提示词出现即自动触发)</label>
-          <input type="text" class="text_pole sct-lora-keywords" data-idx="${idx}" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发" value="${item.keywords || ''}" />
-        </div>
+          <div class="sct-setting-col">
+            <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后自动注入正向提示词)</span></label>
+            <input type="text" class="text_pole sct-lora-triggers" data-idx="${idx}" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform" value="${escapeHtml(item.triggerWords || '')}" />
+          </div>
 
-        <div class="sct-setting-col">
-          <label>角色特征激活词 (触发后自动注入正向提示词)</label>
-          <input type="text" class="text_pole sct-lora-triggers" data-idx="${idx}" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform" value="${item.triggerWords || ''}" />
+          <div class="sct-setting-col">
+            <label>选择或填入 LoRA 模型文件名</label>
+            <div style="display:flex; gap:6px;">
+              <input type="text" class="text_pole sct-lora-name" data-idx="${idx}" placeholder="如 nagi_v1.safetensors" value="${escapeHtml(item.name || '')}" style="flex:1;" />
+              <select class="text_pole sct-lora-select" data-idx="${idx}" style="max-width:140px;">
+                <option value="">(扫描列表)</option>
+                ${cachedLoras.map(l => `<option value="${escapeHtml(l)}" ${l === item.name ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+
+          <div class="sct-setting-row">
+            <label>LoRA 权重强度 (0.1 ~ 2.0): <span class="sct-lora-str-val">${item.strengthModel || 0.8}</span></label>
+            <input type="range" class="sct-lora-strength" data-idx="${idx}" min="0.1" max="2.0" step="0.05" value="${item.strengthModel || 0.8}" />
+          </div>
+
+          <div class="sct-lora-card-footer">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <label style="font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" class="sct-lora-enable" data-idx="${idx}" ${item.enabled ? 'checked' : ''} /> 启用
+              </label>
+              <label style="font-size:12px; cursor:pointer; display:flex; align-items:center; gap:4px;" title="开启后即使正文未匹配到关键词也会默认挂载该 LoRA">
+                <input type="checkbox" class="sct-lora-always" data-idx="${idx}" ${item.alwaysOn ? 'checked' : ''} /> 常驻生效
+              </label>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button type="button" class="sct-lora-del-btn" data-idx="${idx}">✕ 删除</button>
+              <button type="button" class="sct-lora-collapse-btn" data-idx="${idx}">▲ 收起</button>
+            </div>
+          </div>
         </div>
       `;
 
-      // 绑定各个 LoRA 项的事件
+      // 点击表面切换展开/收起
+      const summaryBar = card.querySelector('.sct-lora-summary-bar');
+      summaryBar.addEventListener('click', () => {
+        if (expandedLoraIndices.has(idx)) {
+          expandedLoraIndices.delete(idx);
+        } else {
+          expandedLoraIndices.add(idx);
+        }
+        renderLoraList(container);
+      });
+
+      // 底部收起按钮
+      const collapseBtn = card.querySelector('.sct-lora-collapse-btn');
+      if (collapseBtn) {
+        collapseBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          expandedLoraIndices.delete(idx);
+          renderLoraList(container);
+        });
+      }
+
+      // 实时响应关键词输入并同步到表面展示
+      const kwInput = card.querySelector('.sct-lora-keywords');
+      const kwDisplay = card.querySelector('.sct-lora-kw-display');
+      kwInput.addEventListener('input', (e) => {
+        const val = e.target.value;
+        loras[idx].keywords = val;
+        if (val.trim()) {
+          kwDisplay.innerHTML = `<span class="sct-lora-kw-text" title="${escapeHtml(val)}">${escapeHtml(val)}</span>`;
+        } else {
+          kwDisplay.innerHTML = '<i class="sct-lora-kw-empty">未设置角色关键词 (点此展开配置)</i>';
+        }
+        saveSettings({ comfyLoras: loras });
+      });
+
+      card.querySelector('.sct-lora-triggers').addEventListener('input', (e) => {
+        loras[idx].triggerWords = e.target.value;
+        saveSettings({ comfyLoras: loras });
+      });
+
       card.querySelector('.sct-lora-enable').addEventListener('change', (e) => {
         loras[idx].enabled = e.target.checked;
         saveSettings({ comfyLoras: loras });
+        renderLoraList(container);
       });
 
       card.querySelector('.sct-lora-always').addEventListener('change', (e) => {
         loras[idx].alwaysOn = e.target.checked;
         saveSettings({ comfyLoras: loras });
+        renderLoraList(container);
       });
 
       card.querySelector('.sct-lora-name').addEventListener('input', (e) => {
@@ -1345,18 +1423,10 @@
         saveSettings({ comfyLoras: loras });
       });
 
-      card.querySelector('.sct-lora-keywords').addEventListener('input', (e) => {
-        loras[idx].keywords = e.target.value;
-        saveSettings({ comfyLoras: loras });
-      });
-
-      card.querySelector('.sct-lora-triggers').addEventListener('input', (e) => {
-        loras[idx].triggerWords = e.target.value;
-        saveSettings({ comfyLoras: loras });
-      });
-
-      card.querySelector('.sct-lora-del-btn').addEventListener('click', () => {
+      card.querySelector('.sct-lora-del-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
         loras.splice(idx, 1);
+        expandedLoraIndices.delete(idx);
         saveSettings({ comfyLoras: loras });
         renderLoraList(container);
       });
@@ -1430,7 +1500,7 @@
               <span>🎭</span>
               <span>角色 LoRA 管理与关键词激活</span>
             </div>
-            <div class="sct-hint">配置角色专属 LoRA：当正文或提示词中出现配置的关键词时，插件自动将 LoRA 载入工作流，并将角色特征词精准注入正向提示词。</div>
+            <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词。</div>
 
             <div id="sct-lora-items-container" class="sct-lora-list"></div>
 
@@ -1656,6 +1726,7 @@
 
     container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
       const curLoras = getSettings().comfyLoras || [];
+      const newIdx = curLoras.length;
       curLoras.push({
         id: `lora_${Date.now()}`,
         name: cachedLoras[0] || '',
@@ -1666,6 +1737,7 @@
         enabled: true,
         alwaysOn: false
       });
+      expandedLoraIndices.add(newIdx);
       saveSettings({ comfyLoras: curLoras });
       renderLoraList(loraContainer);
     });
