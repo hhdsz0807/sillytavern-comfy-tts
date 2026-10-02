@@ -590,6 +590,267 @@
   let inpaintTool = 'brush'; // 'brush' | 'eraser'
   let inpaintBrushSize = 30;
 
+  // SAM 智能分割状态
+  let inpaintSamPointMode = false;      // 是否开启 SAM2 鼠标坐标点选模式
+  let inpaintSamBusy = false;           // 是否正在向 ComfyUI 请求分割任务
+  let currentInpaintUploadedName = null; // 缓存当前原图在 ComfyUI 中的文件名，避免重复上传
+
+  // 将返回的蒙版渲染并同步写入 inpaintMaskCanvas 与 inpaintDrawCanvas
+  async function applyMaskImageToCanvas(maskUrl, addMode) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const w = inpaintMaskCanvas.width;
+          const h = inpaintMaskCanvas.height;
+
+          // 1. 如果不是累加模式，先清空底层黑白蒙版和上层高亮涂抹层
+          if (!addMode) {
+            inpaintMaskCtx.fillStyle = '#000000';
+            inpaintMaskCtx.fillRect(0, 0, w, h);
+            inpaintDrawCtx.clearRect(0, 0, w, h);
+          }
+
+          // 2. 将蒙版图层同步到底层 inpaintMaskCanvas (白: 重绘区, 黑: 保留区)
+          if (addMode) {
+            inpaintMaskCtx.globalCompositeOperation = 'lighten';
+          } else {
+            inpaintMaskCtx.globalCompositeOperation = 'source-over';
+          }
+          inpaintMaskCtx.drawImage(img, 0, 0, w, h);
+          inpaintMaskCtx.globalCompositeOperation = 'source-over';
+
+          // 3. 将蒙版转换为半透明高亮品红色 (rgba(239, 68, 68, 0.55)) 渲染到视觉层 inpaintDrawCanvas
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = w;
+          tempCanvas.height = h;
+          const tempCtx = tempCanvas.getContext('2d');
+          tempCtx.drawImage(img, 0, 0, w, h);
+          tempCtx.globalCompositeOperation = 'source-in';
+          tempCtx.fillStyle = 'rgba(239, 68, 68, 0.55)';
+          tempCtx.fillRect(0, 0, w, h);
+
+          // 4. 将高亮层绘制到视觉画布
+          if (!addMode) {
+            inpaintDrawCtx.clearRect(0, 0, w, h);
+          }
+          inpaintDrawCtx.drawImage(tempCanvas, 0, 0, w, h);
+
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => reject(new Error('加载分割蒙版图像失败'));
+      img.src = maskUrl;
+    });
+  }
+
+  // 反转当前已有选区 (白变黑，黑变白)
+  function invertCurrentMask() {
+    if (!inpaintMaskCtx || !inpaintMaskCanvas || !inpaintDrawCtx) return;
+    const w = inpaintMaskCanvas.width;
+    const h = inpaintMaskCanvas.height;
+    const imgData = inpaintMaskCtx.getImageData(0, 0, w, h);
+    const data = imgData.data;
+
+    // 反转离屏黑白蒙版通道
+    for (let i = 0; i < data.length; i += 4) {
+      const v = 255 - data[i]; // 黑白反转
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+    inpaintMaskCtx.putImageData(imgData, 0, 0);
+
+    // 重新同步视觉高亮层
+    inpaintDrawCtx.clearRect(0, 0, w, h);
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = w;
+    tempCanvas.height = h;
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.putImageData(imgData, 0, 0);
+    tempCtx.globalCompositeOperation = 'source-in';
+    tempCtx.fillStyle = 'rgba(239, 68, 68, 0.55)';
+    tempCtx.fillRect(0, 0, w, h);
+
+    inpaintDrawCtx.drawImage(tempCanvas, 0, 0, w, h);
+  }
+
+  // 执行 ComfyUI 图像分割任务 (支持语义文本分割与 SAM2 鼠标坐标点选)
+  async function runComfySegmentationTask(options) {
+    const { type, promptText, point, label } = options;
+    const s = getSettings();
+    if (!s.comfyEnabled) {
+      showToast('ComfyUI 绘图服务未启用', 'warning');
+      return;
+    }
+
+    if (inpaintSamBusy) {
+      showToast('正在执行上一次分割识别，请稍候…', 'warning');
+      return;
+    }
+
+    const modal = inpaintModalEl;
+    if (!modal) return;
+
+    const samStatus = modal.querySelector('#sct-sam-status');
+    const samStatusText = modal.querySelector('#sct-sam-status-text');
+    const addModeCheckbox = modal.querySelector('#sct-sam-add-mode');
+    const isAddMode = !!(addModeCheckbox && addModeCheckbox.checked);
+
+    try {
+      inpaintSamBusy = true;
+      if (samStatus) {
+        samStatus.style.display = 'inline-flex';
+        samStatusText.textContent = `正在使用 SAM 识别提取【${label || promptText || '选区'}】...`;
+      }
+
+      const comfyHost = getCleanComfyHost();
+
+      // 1. 若尚未上传当前原图，则先上传原图至 ComfyUI
+      if (!currentInpaintUploadedName) {
+        let origBlob = null;
+        try {
+          const imgRes = await fetch(inpaintContext.imageUrl);
+          origBlob = await imgRes.blob();
+        } catch (_) {
+          const baseImg = modal.querySelector('#sct-inpaint-base-img');
+          if (baseImg) {
+            const tc = document.createElement('canvas');
+            tc.width = baseImg.naturalWidth;
+            tc.height = baseImg.naturalHeight;
+            tc.getContext('2d').drawImage(baseImg, 0, 0);
+            origBlob = await new Promise(res => tc.toBlob(res, 'image/png'));
+          }
+        }
+        if (!origBlob) throw new Error('无法读取当前图片用于分割');
+
+        const origFormData = new FormData();
+        origFormData.append('image', origBlob, `sam_orig_${Date.now()}.png`);
+        origFormData.append('overwrite', 'true');
+        const upRes = await fetch(`${comfyHost}/upload/image`, {
+          method: 'POST',
+          body: origFormData
+        });
+        if (!upRes.ok) throw new Error(`上传原图至 ComfyUI 失败 (${upRes.status})`);
+        const upData = await upRes.json();
+        currentInpaintUploadedName = upData.name;
+      }
+
+      // 2. 根据分割模式组装 ComfyUI 工作流
+      let promptWf = null;
+      let outputNodeId = '6';
+
+      if (type === 'text') {
+        const isBg = (promptText === '__background__');
+        const segPrompt = isBg ? 'girl, woman, person, boy, human' : promptText;
+
+        if (isBg) {
+          // 背景识别：以极高置信度锁定前景人物，并通过 InvertMask 得到纯净背景
+          outputNodeId = '6';
+          promptWf = {
+            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+            '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
+            '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+            '4': { inputs: { prompt: segPrompt, threshold: 0.3, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+            'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
+            '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
+            '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
+          };
+        } else {
+          // 常规物体/身体部位识别
+          outputNodeId = '6';
+          promptWf = {
+            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+            '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
+            '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+            '4': { inputs: { prompt: segPrompt, threshold: 0.3, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+            '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
+            '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
+          };
+        }
+      } else if (type === 'point') {
+        // SAM2 交互式坐标点选分割
+        outputNodeId = '5';
+        promptWf = {
+          '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+          '2': {
+            inputs: {
+              model: 'sam2_hiera_base_plus.safetensors',
+              segmentor: 'single_image',
+              device: 'cuda',
+              precision: 'fp16'
+            },
+            class_type: 'DownloadAndLoadSAM2Model'
+          },
+          '3': {
+            inputs: {
+              sam2_model: ['2', 0],
+              image: ['1', 0],
+              keep_model_loaded: true,
+              coordinates_positive: `[[${Math.round(point.x)}, ${Math.round(point.y)}]]`
+            },
+            class_type: 'Sam2Segmentation'
+          },
+          '4': { inputs: { mask: ['3', 0] }, class_type: 'MaskToImage' },
+          '5': { inputs: { filename_prefix: 'sct_sam2_seg', images: ['4', 0] }, class_type: 'SaveImage' }
+        };
+      }
+
+      // 3. 提交任务到 ComfyUI
+      const pRes = await fetch(`${comfyHost}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptWf })
+      });
+      if (!pRes.ok) throw new Error(`提交分割任务失败 (${pRes.status})`);
+      const pData = await pRes.json();
+      const promptId = pData.prompt_id;
+      if (!promptId) throw new Error('ComfyUI 未返回有效任务 ID');
+
+      // 4. 轮询历史记录获取生成结果 (GPU 推理约需 1~2.5 秒)
+      let outputImgInfo = null;
+      for (let i = 0; i < 35; i++) {
+        await new Promise(r => setTimeout(r, 900));
+        const hRes = await fetch(`${comfyHost}/history/${promptId}`);
+        if (!hRes.ok) continue;
+        const hData = await hRes.json();
+        if (hData[promptId]) {
+          const taskInfo = hData[promptId];
+          const outImgs = taskInfo.outputs?.[outputNodeId]?.images;
+          if (outImgs && outImgs.length > 0) {
+            outputImgInfo = outImgs[0];
+            break;
+          }
+          if (taskInfo.status?.status_str === 'error') {
+            const errMsg = taskInfo.status?.messages?.find(m => m[0] === 'execution_error')?.[1]?.exception_message || '未知分割错误';
+            throw new Error(errMsg);
+          }
+        }
+      }
+
+      if (!outputImgInfo) {
+        throw new Error('等待分割结果超时，请检查 ComfyUI 控制台');
+      }
+
+      // 5. 应用蒙版到画布
+      const maskUrl = `${comfyHost}/view?filename=${encodeURIComponent(outputImgInfo.filename)}&subfolder=${encodeURIComponent(outputImgInfo.subfolder || '')}&type=${encodeURIComponent(outputImgInfo.type || 'output')}&t=${Date.now()}`;
+      await applyMaskImageToCanvas(maskUrl, isAddMode);
+
+      showToast(`已成功提取【${label || promptText || '目标区域'}】`, 'success');
+
+    } catch (err) {
+      console.error('[SCT] SAM 分割失败:', err);
+      showToast(`SAM 分割失败: ${err.message}`, 'error');
+    } finally {
+      inpaintSamBusy = false;
+      if (samStatus) samStatus.style.display = 'none';
+    }
+  }
+
   function ensureInpaintModal() {
     if (inpaintModalEl) return inpaintModalEl;
 
@@ -626,6 +887,46 @@
               <div class="sct-tool-group sct-brush-size-group">
                 <span>笔刷粗细: <b id="sct-brush-size-val">30px</b></span>
                 <input type="range" id="sct-brush-size-slider" min="8" max="100" value="30" />
+              </div>
+            </div>
+
+            <!-- SAM 智能图像分割选区面板 (Segment Anything) -->
+            <div class="sct-inpaint-sam-panel">
+              <div class="sct-sam-header">
+                <span class="sct-sam-title">✨ SAM 智能分割选区 (Segment Anything)</span>
+                <div class="sct-sam-mode-toggle">
+                  <label class="sct-sam-mode-label" title="开启后，点击提取的选区将累加到当前涂抹上；关闭则单选替换">
+                    <input type="checkbox" id="sct-sam-add-mode" /> 累加模式
+                  </label>
+                  <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-tool-invert" title="反转当前所有选区 (前景变背景，背景变前景)">🔄 反选</button>
+                </div>
+              </div>
+
+              <div class="sct-sam-body">
+                <div class="sct-sam-tags-container">
+                  <span style="font-size:11.5px; opacity:0.75; display:inline-flex; align-items:center; margin-right:2px;">快捷部位:</span>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="face">😊 脸部</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="hair">💇 头发</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="top clothes, shirt, blouse, jacket">👕 上衣</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="dress, skirt">👗 裙子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="pants, trousers, shorts">👖 裤子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="arms, hands">🧤 手臂/双手</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="legs">🦵 腿部</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="shoes, boots, footwear">👟 鞋子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="1girl, 1boy, person, human">🧍 整个角色</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="__background__">🏞️ 背景</button>
+                </div>
+
+                <div class="sct-sam-custom-row">
+                  <input type="text" id="sct-sam-custom-input" placeholder="输入任意英文词识别 (如: glasses, cat ears, wings, sword, tail)" />
+                  <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-sam-custom-btn">🔍 智能抠出</button>
+                  <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-sam-point-btn" title="开启后，在上方图片中点击任意物体，SAM2 将自动提取该物体轮廓">🎯 鼠标点选 (SAM2)</button>
+                </div>
+
+                <div class="sct-sam-status" id="sct-sam-status" style="display:none; margin-top:4px;">
+                  <span class="sct-sam-spinner"></span>
+                  <span id="sct-sam-status-text">正在使用 Segment Anything 识别分割中...</span>
+                </div>
               </div>
             </div>
           </div>
@@ -672,18 +973,94 @@
       }
     });
 
-    // 笔刷切换
+    // 笔刷切换与 SAM2 模式联动
     const brushBtn = overlay.querySelector('#sct-tool-brush');
     const eraserBtn = overlay.querySelector('#sct-tool-eraser');
+    const pointBtn = overlay.querySelector('#sct-sam-point-btn');
+
     brushBtn.addEventListener('click', () => {
       inpaintTool = 'brush';
+      if (inpaintSamPointMode) {
+        inpaintSamPointMode = false;
+        pointBtn.classList.remove('active');
+        pointBtn.textContent = '🎯 鼠标点选 (SAM2)';
+        drawCanvas.style.cursor = 'default';
+      }
       brushBtn.classList.add('active');
       eraserBtn.classList.remove('active');
     });
+
     eraserBtn.addEventListener('click', () => {
       inpaintTool = 'eraser';
+      if (inpaintSamPointMode) {
+        inpaintSamPointMode = false;
+        pointBtn.classList.remove('active');
+        pointBtn.textContent = '🎯 鼠标点选 (SAM2)';
+        drawCanvas.style.cursor = 'default';
+      }
       eraserBtn.classList.add('active');
       brushBtn.classList.remove('active');
+    });
+
+    // SAM2 点选模式按钮
+    pointBtn.addEventListener('click', () => {
+      inpaintSamPointMode = !inpaintSamPointMode;
+      if (inpaintSamPointMode) {
+        pointBtn.classList.add('active');
+        pointBtn.textContent = '🎯 点击画面提取中… (点此退出)';
+        drawCanvas.style.cursor = 'crosshair';
+        brushBtn.classList.remove('active');
+        eraserBtn.classList.remove('active');
+        showToast('SAM2 点选模式已开启：请点击画面中的任意物体', 'info');
+      } else {
+        pointBtn.classList.remove('active');
+        pointBtn.textContent = '🎯 鼠标点选 (SAM2)';
+        drawCanvas.style.cursor = 'default';
+        if (inpaintTool === 'brush') brushBtn.classList.add('active');
+        else eraserBtn.classList.add('active');
+      }
+    });
+
+    // 反转当前选区
+    overlay.querySelector('#sct-tool-invert').addEventListener('click', () => {
+      invertCurrentMask();
+      showToast('已反转当前选区', 'info');
+    });
+
+    // 部位快捷芯片点击
+    overlay.querySelectorAll('.sct-sam-chip').forEach(chip => {
+      chip.addEventListener('click', async () => {
+        const promptText = chip.getAttribute('data-sam-prompt');
+        const labelText = chip.textContent.trim();
+        await runComfySegmentationTask({
+          type: 'text',
+          promptText: promptText,
+          label: labelText
+        });
+      });
+    });
+
+    // 自定义文本分割
+    const customInput = overlay.querySelector('#sct-sam-custom-input');
+    const customBtn = overlay.querySelector('#sct-sam-custom-btn');
+    const runCustomSeg = async () => {
+      const val = (customInput.value || '').trim();
+      if (!val) {
+        showToast('请输入需要识别分割的英文物体词 (例如: wings, glasses)', 'warning');
+        return;
+      }
+      await runComfySegmentationTask({
+        type: 'text',
+        promptText: val,
+        label: val
+      });
+    };
+    customBtn.addEventListener('click', runCustomSeg);
+    customInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runCustomSeg();
+      }
     });
 
     // 清空涂抹
@@ -817,8 +1194,16 @@
     drawCanvas.addEventListener('mousedown', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      inpaintIsDrawing = true;
       const c = getCanvasCoords(e);
+      if (inpaintSamPointMode) {
+        runComfySegmentationTask({
+          type: 'point',
+          point: { x: c.x, y: c.y },
+          label: `坐标(${Math.round(c.x)}, ${Math.round(c.y)})物体`
+        });
+        return;
+      }
+      inpaintIsDrawing = true;
       inpaintLastX = c.x;
       inpaintLastY = c.y;
       doPaintStroke(c.x, c.y);
@@ -839,8 +1224,16 @@
       e.preventDefault();
       e.stopPropagation();
       if (e.touches && e.touches.length === 1) {
-        inpaintIsDrawing = true;
         const c = getCanvasCoords(e);
+        if (inpaintSamPointMode) {
+          runComfySegmentationTask({
+            type: 'point',
+            point: { x: c.x, y: c.y },
+            label: `坐标(${Math.round(c.x)}, ${Math.round(c.y)})物体`
+          });
+          return;
+        }
+        inpaintIsDrawing = true;
         inpaintLastX = c.x;
         inpaintLastY = c.y;
         doPaintStroke(c.x, c.y);
@@ -882,7 +1275,7 @@
       }
 
       if (!hasMask) {
-        showToast('请先用画笔在画面上涂抹需要局部修改的区域', 'warning');
+        showToast('请先用智能分割或画笔涂抹需要局部修改的区域', 'warning');
         return;
       }
 
@@ -920,10 +1313,23 @@
     // 预填提示词
     promptInput.value = promptText || '';
 
-    // 重置工具为画笔
+    // 重置工具状态
     inpaintTool = 'brush';
+    inpaintSamPointMode = false;
+    currentInpaintUploadedName = null; // 重置当前上传图片名缓存
+
     modal.querySelector('#sct-tool-brush').classList.add('active');
     modal.querySelector('#sct-tool-eraser').classList.remove('active');
+
+    const pointBtn = modal.querySelector('#sct-sam-point-btn');
+    if (pointBtn) {
+      pointBtn.classList.remove('active');
+      pointBtn.textContent = '🎯 鼠标点选 (SAM2)';
+    }
+    drawCanvas.style.cursor = 'default';
+
+    const samStatus = modal.querySelector('#sct-sam-status');
+    if (samStatus) samStatus.style.display = 'none';
 
     // 加载图片并同步尺寸
     baseImg.onload = () => {
@@ -1622,17 +2028,21 @@
         throw new Error('导出重绘蒙版失败');
       }
 
-      // 3. 上传原图至 ComfyUI /upload/image
-      const origFormData = new FormData();
-      origFormData.append('image', origBlob, `inpaint_orig_${Date.now()}.png`);
-      origFormData.append('overwrite', 'true');
-      const origUploadRes = await fetch(`${comfyHost}/upload/image`, {
-        method: 'POST',
-        body: origFormData
-      });
-      if (!origUploadRes.ok) throw new Error(`上传原图至 ComfyUI 失败 (${origUploadRes.status})`);
-      const origUploadData = await origUploadRes.json();
-      const uploadedImageName = origUploadData.name;
+      // 3. 上传原图至 ComfyUI /upload/image (若已通过 SAM 智能分割上传则直接复用缓存)
+      let uploadedImageName = currentInpaintUploadedName;
+      if (!uploadedImageName) {
+        const origFormData = new FormData();
+        origFormData.append('image', origBlob, `inpaint_orig_${Date.now()}.png`);
+        origFormData.append('overwrite', 'true');
+        const origUploadRes = await fetch(`${comfyHost}/upload/image`, {
+          method: 'POST',
+          body: origFormData
+        });
+        if (!origUploadRes.ok) throw new Error(`上传原图至 ComfyUI 失败 (${origUploadRes.status})`);
+        const origUploadData = await origUploadRes.json();
+        uploadedImageName = origUploadData.name;
+        currentInpaintUploadedName = uploadedImageName;
+      }
 
       // 4. 上传蒙版至 ComfyUI /upload/image
       const maskFormData = new FormData();
