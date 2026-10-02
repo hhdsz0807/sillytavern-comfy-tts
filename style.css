@@ -808,4 +808,175 @@
   box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
 }
 
+/* --------------------------------------------------------------------------
+   9. 图像局部重绘弹窗 (Inpainting Modal & Canvas)
+   -------------------------------------------------------------------------- */
+.sct-inpaint-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+  user-select: none !important;
+}
+
+.sct-inpaint-dialog {
+  background: #13141f;
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 860px;
+  max-height: 94vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(168, 85, 247, 0.2);
+  overflow: hidden;
+}
+
+.sct-inpaint-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sct-inpaint-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.sct-inpaint-close-btn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.sct-inpaint-close-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.sct-inpaint-body {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sct-inpaint-stage-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.sct-inpaint-canvas-container {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 480px;
+  overflow: hidden;
+  border-radius: 8px;
+  line-height: 0;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.sct-inpaint-canvas-container img {
+  max-width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  pointer-events: none;
+}
+
+.sct-inpaint-canvas-container canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.sct-inpaint-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 600px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sct-tool-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sct-brush-size-group {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.sct-inpaint-toolbar .sct-tool-btn.active {
+  background: rgba(168, 85, 247, 0.35);
+  border-color: #a855f7;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
+}
+
+.sct-inpaint-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.sct-inpaint-footer-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.sct-primary-btn {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.35), rgba(99, 102, 241, 0.35)) !important;
+  border-color: #a855f7 !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  padding: 6px 16px !important;
+}
+
+.sct-primary-btn:hover {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(99, 102, 241, 0.5)) !important;
+  box-shadow: 0 0 14px rgba(168, 85, 247, 0.4) !important;
+}
+
+
 

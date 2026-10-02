@@ -234,6 +234,8 @@
      3. 全屏大图灯箱预览 (Lightbox Viewer)
      ========================================================================== */
 
+  let currentLightboxContext = null;
+
   function ensureLightbox() {
     if (lightboxEl) return lightboxEl;
     const overlay = document.createElement('div');
@@ -244,6 +246,7 @@
         <button type="button" class="sct-lightbox-close-btn" title="关闭 (Esc)">✕</button>
         <img id="sct-lightbox-img" src="" alt="ComfyUI Preview" />
         <div class="sct-lightbox-toolbar">
+          <button type="button" class="sct-comfy-btn" id="sct-lightbox-inpaint">🖌️ 局部重绘</button>
           <button type="button" class="sct-comfy-btn" id="sct-lightbox-open-raw">🔗 查看原图</button>
           <button type="button" class="sct-comfy-btn" id="sct-lightbox-download">💾 保存图片</button>
         </div>
@@ -258,6 +261,16 @@
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && overlay.classList.contains('active')) {
         closeLightbox();
+      }
+    });
+
+    overlay.querySelector('#sct-lightbox-inpaint').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const ctx = currentLightboxContext;
+      closeLightbox();
+      if (ctx) {
+        openInpaintModal(ctx);
       }
     });
 
@@ -283,7 +296,13 @@
     return overlay;
   }
 
-  function openLightbox(imgUrl) {
+  function openLightbox(imgUrl, promptText = '', activeLoras = [], container = null) {
+    currentLightboxContext = {
+      imageUrl: imgUrl,
+      promptText: promptText,
+      activeLoras: activeLoras,
+      container: container
+    };
     const lb = ensureLightbox();
     const img = lb.querySelector('#sct-lightbox-img');
     img.src = imgUrl;
@@ -292,6 +311,453 @@
 
   function closeLightbox() {
     if (lightboxEl) lightboxEl.classList.remove('active');
+  }
+
+  // 长按交互辅助绑定 (支持鼠标长按与触屏长按，防滑动误触)
+  function bindLongPress(el, onLongPress, onClick) {
+    if (!el) return;
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let isLongPress = false;
+
+    const start = (clientX, clientY, e) => {
+      isLongPress = false;
+      startX = clientX;
+      startY = clientY;
+      timer = setTimeout(() => {
+        isLongPress = true;
+        try { if (navigator.vibrate) navigator.vibrate(50); } catch (_) {}
+        if (onLongPress) onLongPress(e);
+      }, 500);
+    };
+
+    const clear = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    el.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      start(e.clientX, e.clientY, e);
+    });
+
+    el.addEventListener('mousemove', (e) => {
+      if (!timer) return;
+      if (Math.hypot(e.clientX - startX, e.clientY - startY) > 10) {
+        clear();
+      }
+    });
+
+    el.addEventListener('mouseup', (e) => {
+      const wasLong = isLongPress;
+      clear();
+      if (!wasLong && onClick) {
+        onClick(e);
+      }
+    });
+
+    el.addEventListener('mouseleave', clear);
+
+    el.addEventListener('touchstart', (e) => {
+      if (e.touches && e.touches.length === 1) {
+        start(e.touches[0].clientX, e.touches[0].clientY, e);
+      }
+    }, { passive: true });
+
+    el.addEventListener('touchmove', (e) => {
+      if (!timer) return;
+      if (e.touches && e.touches.length === 1) {
+        if (Math.hypot(e.touches[0].clientX - startX, e.touches[0].clientY - startY) > 12) {
+          clear();
+        }
+      }
+    }, { passive: true });
+
+    el.addEventListener('touchend', (e) => {
+      const wasLong = isLongPress;
+      clear();
+      if (!wasLong && onClick) {
+        onClick(e);
+      }
+    });
+
+    el.addEventListener('touchcancel', clear);
+  }
+
+  /* ==========================================================================
+     3.1 图像局部重绘弹窗与画板 (Inpainting Canvas & Modal)
+     ========================================================================== */
+
+  let inpaintModalEl = null;
+  let inpaintContext = null;
+  let inpaintDrawCtx = null;
+  let inpaintMaskCanvas = null;
+  let inpaintMaskCtx = null;
+  let inpaintIsDrawing = false;
+  let inpaintLastX = 0;
+  let inpaintLastY = 0;
+  let inpaintTool = 'brush'; // 'brush' | 'eraser'
+  let inpaintBrushSize = 30;
+
+  function ensureInpaintModal() {
+    if (inpaintModalEl) return inpaintModalEl;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'sct-inpaint-modal';
+    overlay.className = 'sct-inpaint-overlay';
+    overlay.style.display = 'none';
+    overlay.setAttribute('aria-hidden', 'true');
+
+    overlay.innerHTML = `
+      <div class="sct-inpaint-dialog">
+        <div class="sct-inpaint-header">
+          <div class="sct-inpaint-title">
+            <span>🖌️</span>
+            <span>ComfyUI 图像局部重绘 (Inpainting)</span>
+          </div>
+          <button type="button" class="sct-inpaint-close-btn" title="关闭 (Esc)">✕</button>
+        </div>
+
+        <div class="sct-inpaint-body">
+          <div class="sct-inpaint-stage-wrapper">
+            <div class="sct-inpaint-canvas-container" id="sct-inpaint-canvas-container">
+              <img id="sct-inpaint-base-img" crossOrigin="anonymous" alt="Inpaint Base" />
+              <canvas id="sct-inpaint-draw-canvas"></canvas>
+            </div>
+
+            <div class="sct-inpaint-toolbar">
+              <div class="sct-tool-group">
+                <button type="button" class="sct-comfy-btn sct-tool-btn active" id="sct-tool-brush">🖌️ 涂抹</button>
+                <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-tool-eraser">🧹 橡皮擦</button>
+                <button type="button" class="sct-comfy-btn" id="sct-tool-clear">🗑️ 清空涂抹</button>
+              </div>
+
+              <div class="sct-tool-group sct-brush-size-group">
+                <span>笔刷粗细: <b id="sct-brush-size-val">30px</b></span>
+                <input type="range" id="sct-brush-size-slider" min="8" max="100" value="30" />
+              </div>
+            </div>
+          </div>
+
+          <div class="sct-inpaint-form">
+            <div class="sct-setting-col" style="margin-bottom: 8px;">
+              <label for="sct-inpaint-prompt-input">局部重绘提示词 (修改或补充涂抹区域特征)</label>
+              <textarea id="sct-inpaint-prompt-input" class="text_pole sct-textarea-autowrap" rows="2" placeholder="描述涂抹区域期望呈现的画面内容…"></textarea>
+            </div>
+
+            <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom: 10px;">
+              <div style="flex:1; min-width:180px;">
+                <label style="font-size:12px;">重绘幅度 (Denoise): <b id="sct-inpaint-denoise-val">0.70</b></label>
+                <input type="range" id="sct-inpaint-denoise-slider" min="0.2" max="1.0" step="0.05" value="0.70" style="width:100%;" />
+                <div style="font-size:11px; opacity:0.6; margin-top:2px;">0.35 微调修复 | 0.70 替换细节(推荐) | 0.95 重新构图</div>
+              </div>
+
+              <div style="flex:1; min-width:160px;">
+                <label style="font-size:12px;">蒙版边缘外扩: <b id="sct-inpaint-grow-val">6px</b></label>
+                <input type="range" id="sct-inpaint-grow-slider" min="0" max="24" step="1" value="6" style="width:100%;" />
+                <div style="font-size:11px; opacity:0.6; margin-top:2px;">向外羽化融合，避免接缝明显</div>
+              </div>
+            </div>
+
+            <div class="sct-inpaint-footer-btns">
+              <button type="button" class="sct-comfy-btn" id="sct-inpaint-cancel-btn">取消</button>
+              <button type="button" class="sct-comfy-btn sct-primary-btn" id="sct-inpaint-submit-btn">🎨 开始局部重绘</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // 绑定关闭
+    overlay.querySelector('.sct-inpaint-close-btn').addEventListener('click', closeInpaintModal);
+    overlay.querySelector('#sct-inpaint-cancel-btn').addEventListener('click', closeInpaintModal);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeInpaintModal();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.style.display !== 'none') {
+        closeInpaintModal();
+      }
+    });
+
+    // 笔刷切换
+    const brushBtn = overlay.querySelector('#sct-tool-brush');
+    const eraserBtn = overlay.querySelector('#sct-tool-eraser');
+    brushBtn.addEventListener('click', () => {
+      inpaintTool = 'brush';
+      brushBtn.classList.add('active');
+      eraserBtn.classList.remove('active');
+    });
+    eraserBtn.addEventListener('click', () => {
+      inpaintTool = 'eraser';
+      eraserBtn.classList.add('active');
+      brushBtn.classList.remove('active');
+    });
+
+    // 清空涂抹
+    overlay.querySelector('#sct-tool-clear').addEventListener('click', () => {
+      const drawCanvas = overlay.querySelector('#sct-inpaint-draw-canvas');
+      if (inpaintDrawCtx && drawCanvas) {
+        inpaintDrawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+      }
+      if (inpaintMaskCtx && inpaintMaskCanvas) {
+        inpaintMaskCtx.fillStyle = '#000000';
+        inpaintMaskCtx.fillRect(0, 0, inpaintMaskCanvas.width, inpaintMaskCanvas.height);
+      }
+    });
+
+    // 笔刷粗细滑块
+    const brushSizeSlider = overlay.querySelector('#sct-brush-size-slider');
+    const brushSizeVal = overlay.querySelector('#sct-brush-size-val');
+    brushSizeSlider.addEventListener('input', (e) => {
+      inpaintBrushSize = parseInt(e.target.value, 10) || 30;
+      brushSizeVal.textContent = `${inpaintBrushSize}px`;
+    });
+
+    // 重绘幅度与蒙版外扩滑块
+    const denoiseSlider = overlay.querySelector('#sct-inpaint-denoise-slider');
+    const denoiseVal = overlay.querySelector('#sct-inpaint-denoise-val');
+    denoiseSlider.addEventListener('input', (e) => {
+      denoiseVal.textContent = parseFloat(e.target.value).toFixed(2);
+    });
+
+    const growSlider = overlay.querySelector('#sct-inpaint-grow-slider');
+    const growVal = overlay.querySelector('#sct-inpaint-grow-val');
+    growSlider.addEventListener('input', (e) => {
+      growVal.textContent = `${e.target.value}px`;
+    });
+
+    // 画布涂抹事件绑定
+    const drawCanvas = overlay.querySelector('#sct-inpaint-draw-canvas');
+    inpaintDrawCtx = drawCanvas.getContext('2d');
+    inpaintMaskCanvas = document.createElement('canvas');
+    inpaintMaskCtx = inpaintMaskCanvas.getContext('2d');
+
+    function getCanvasCoords(e) {
+      const rect = drawCanvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const scaleX = drawCanvas.width / (rect.width || 1);
+      const scaleY = drawCanvas.height / (rect.height || 1);
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
+      };
+    }
+
+    function doPaintStroke(x, y) {
+      const rect = drawCanvas.getBoundingClientRect();
+      const scaleRatio = drawCanvas.width / (rect.width || drawCanvas.width || 1);
+      const rad = inpaintBrushSize * scaleRatio;
+
+      // 视觉层画布 (半透明品红/红高亮涂抹)
+      inpaintDrawCtx.save();
+      if (inpaintTool === 'brush') {
+        inpaintDrawCtx.globalCompositeOperation = 'source-over';
+        inpaintDrawCtx.fillStyle = 'rgba(239, 68, 68, 0.55)';
+        inpaintDrawCtx.beginPath();
+        inpaintDrawCtx.arc(x, y, rad / 2, 0, Math.PI * 2);
+        inpaintDrawCtx.fill();
+
+        inpaintDrawCtx.strokeStyle = 'rgba(239, 68, 68, 0.55)';
+        inpaintDrawCtx.lineWidth = rad;
+        inpaintDrawCtx.lineCap = 'round';
+        inpaintDrawCtx.lineJoin = 'round';
+        inpaintDrawCtx.beginPath();
+        inpaintDrawCtx.moveTo(inpaintLastX, inpaintLastY);
+        inpaintDrawCtx.lineTo(x, y);
+        inpaintDrawCtx.stroke();
+      } else {
+        // 橡皮擦
+        inpaintDrawCtx.globalCompositeOperation = 'destination-out';
+        inpaintDrawCtx.beginPath();
+        inpaintDrawCtx.arc(x, y, rad / 2, 0, Math.PI * 2);
+        inpaintDrawCtx.fill();
+
+        inpaintDrawCtx.lineWidth = rad;
+        inpaintDrawCtx.lineCap = 'round';
+        inpaintDrawCtx.lineJoin = 'round';
+        inpaintDrawCtx.beginPath();
+        inpaintDrawCtx.moveTo(inpaintLastX, inpaintLastY);
+        inpaintDrawCtx.lineTo(x, y);
+        inpaintDrawCtx.stroke();
+      }
+      inpaintDrawCtx.restore();
+
+      // 离屏黑白蒙版画布 (黑底 0，白区域 255)
+      inpaintMaskCtx.save();
+      if (inpaintTool === 'brush') {
+        inpaintMaskCtx.fillStyle = '#ffffff';
+        inpaintMaskCtx.beginPath();
+        inpaintMaskCtx.arc(x, y, rad / 2, 0, Math.PI * 2);
+        inpaintMaskCtx.fill();
+
+        inpaintMaskCtx.strokeStyle = '#ffffff';
+        inpaintMaskCtx.lineWidth = rad;
+        inpaintMaskCtx.lineCap = 'round';
+        inpaintMaskCtx.lineJoin = 'round';
+        inpaintMaskCtx.beginPath();
+        inpaintMaskCtx.moveTo(inpaintLastX, inpaintLastY);
+        inpaintMaskCtx.lineTo(x, y);
+        inpaintMaskCtx.stroke();
+      } else {
+        inpaintMaskCtx.fillStyle = '#000000';
+        inpaintMaskCtx.beginPath();
+        inpaintMaskCtx.arc(x, y, rad / 2, 0, Math.PI * 2);
+        inpaintMaskCtx.fill();
+
+        inpaintMaskCtx.strokeStyle = '#000000';
+        inpaintMaskCtx.lineWidth = rad;
+        inpaintMaskCtx.lineCap = 'round';
+        inpaintMaskCtx.lineJoin = 'round';
+        inpaintMaskCtx.beginPath();
+        inpaintMaskCtx.moveTo(inpaintLastX, inpaintLastY);
+        inpaintMaskCtx.lineTo(x, y);
+        inpaintMaskCtx.stroke();
+      }
+      inpaintMaskCtx.restore();
+
+      inpaintLastX = x;
+      inpaintLastY = y;
+    }
+
+    // 鼠标事件
+    drawCanvas.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      inpaintIsDrawing = true;
+      const c = getCanvasCoords(e);
+      inpaintLastX = c.x;
+      inpaintLastY = c.y;
+      doPaintStroke(c.x, c.y);
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!inpaintIsDrawing) return;
+      const c = getCanvasCoords(e);
+      doPaintStroke(c.x, c.y);
+    });
+
+    window.addEventListener('mouseup', () => {
+      inpaintIsDrawing = false;
+    });
+
+    // 触屏事件
+    drawCanvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.touches && e.touches.length === 1) {
+        inpaintIsDrawing = true;
+        const c = getCanvasCoords(e);
+        inpaintLastX = c.x;
+        inpaintLastY = c.y;
+        doPaintStroke(c.x, c.y);
+      }
+    }, { passive: false });
+
+    drawCanvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (inpaintIsDrawing && e.touches && e.touches.length === 1) {
+        const c = getCanvasCoords(e);
+        doPaintStroke(c.x, c.y);
+      }
+    }, { passive: false });
+
+    drawCanvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      inpaintIsDrawing = false;
+    }, { passive: false });
+
+    // 提交局部重绘任务
+    overlay.querySelector('#sct-inpaint-submit-btn').addEventListener('click', async () => {
+      if (!inpaintContext) return;
+      const { imageUrl, promptText, activeLoras, container } = inpaintContext;
+
+      // 验证是否涂抹了蒙版
+      let hasMask = false;
+      try {
+        const pData = inpaintMaskCtx.getImageData(0, 0, inpaintMaskCanvas.width, inpaintMaskCanvas.height).data;
+        for (let i = 0; i < pData.length; i += 4) {
+          if (pData[i] > 30) {
+            hasMask = true;
+            break;
+          }
+        }
+      } catch (_) {
+        hasMask = true;
+      }
+
+      if (!hasMask) {
+        showToast('请先用画笔在画面上涂抹需要局部修改的区域', 'warning');
+        return;
+      }
+
+      const inpaintPrompt = (overlay.querySelector('#sct-inpaint-prompt-input').value || promptText || '').trim();
+      const denoiseVal = parseFloat(overlay.querySelector('#sct-inpaint-denoise-slider').value) || 0.70;
+      const growVal = parseInt(overlay.querySelector('#sct-inpaint-grow-slider').value, 10) || 6;
+
+      closeInpaintModal();
+
+      await triggerComfyInpaint({
+        imageUrl: imageUrl,
+        inpaintPrompt: inpaintPrompt,
+        denoise: denoiseVal,
+        growMaskBy: growVal,
+        activeLoras: activeLoras,
+        container: container,
+        maskCanvas: inpaintMaskCanvas
+      });
+    });
+
+    (document.body || document.documentElement).appendChild(overlay);
+    inpaintModalEl = overlay;
+    return overlay;
+  }
+
+  function openInpaintModal(options) {
+    const { imageUrl, promptText, activeLoras, container } = options;
+    inpaintContext = options;
+
+    const modal = ensureInpaintModal();
+    const baseImg = modal.querySelector('#sct-inpaint-base-img');
+    const drawCanvas = modal.querySelector('#sct-inpaint-draw-canvas');
+    const promptInput = modal.querySelector('#sct-inpaint-prompt-input');
+
+    // 预填提示词
+    promptInput.value = promptText || '';
+
+    // 重置工具为画笔
+    inpaintTool = 'brush';
+    modal.querySelector('#sct-tool-brush').classList.add('active');
+    modal.querySelector('#sct-tool-eraser').classList.remove('active');
+
+    // 加载图片并同步尺寸
+    baseImg.onload = () => {
+      const natW = baseImg.naturalWidth || 512;
+      const natH = baseImg.naturalHeight || 768;
+
+      drawCanvas.width = natW;
+      drawCanvas.height = natH;
+      inpaintMaskCanvas.width = natW;
+      inpaintMaskCanvas.height = natH;
+
+      inpaintDrawCtx.clearRect(0, 0, natW, natH);
+      inpaintMaskCtx.fillStyle = '#000000';
+      inpaintMaskCtx.fillRect(0, 0, natW, natH);
+    };
+
+    baseImg.src = imageUrl;
+    modal.style.display = 'flex';
+  }
+
+  function closeInpaintModal() {
+    if (inpaintModalEl) inpaintModalEl.style.display = 'none';
   }
 
   /* ==========================================================================
@@ -612,6 +1078,141 @@
     return workflow;
   }
 
+  // 动态组装 ComfyUI 局部重绘工作流 (Inpainting + VAEEncodeForInpaint + LoadImageMask + 多 LoRA)
+  function buildComfyInpaintWorkflow(params) {
+    const {
+      checkpoint,
+      positivePrompt,
+      negativePrompt,
+      uploadedImage,
+      uploadedMask,
+      denoise = 0.70,
+      growMaskBy = 6,
+      steps = 20,
+      cfg = 7.0,
+      sampler = 'euler',
+      scheduler = 'normal',
+      activeLoras = [],
+      seed = Math.floor(Math.random() * 1000000000)
+    } = params;
+
+    const workflow = {};
+
+    // 1. Checkpoint Loader (Node 4)
+    workflow["4"] = {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": {
+        "ckpt_name": checkpoint
+      }
+    };
+
+    let currentModel = ["4", 0];
+    let currentClip = ["4", 1];
+    let currentVae = ["4", 2];
+
+    // 2. 多 LoRA 链式装载器 (Nodes 100, 101, 102...)
+    if (activeLoras && activeLoras.length > 0) {
+      activeLoras.forEach((lora, idx) => {
+        const loraNodeId = String(100 + idx);
+        workflow[loraNodeId] = {
+          "class_type": "LoraLoader",
+          "inputs": {
+            "model": currentModel,
+            "clip": currentClip,
+            "lora_name": lora.name,
+            "strength_model": parseFloat(lora.strengthModel) || 0.8,
+            "strength_clip": parseFloat(lora.strengthClip) || 0.8
+          }
+        };
+        currentModel = [loraNodeId, 0];
+        currentClip = [loraNodeId, 1];
+      });
+    }
+
+    // 3. LoadImage 原图 (Node 10)
+    workflow["10"] = {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": uploadedImage
+      }
+    };
+
+    // 4. LoadImageMask 蒙版图 (Node 11) - 读取红色通道 (绘制区域为纯白色 255)
+    workflow["11"] = {
+      "class_type": "LoadImageMask",
+      "inputs": {
+        "image": uploadedMask,
+        "channel": "red"
+      }
+    };
+
+    // 5. VAEEncodeForInpaint 局部重绘专用潜空间编码 (Node 12)
+    workflow["12"] = {
+      "class_type": "VAEEncodeForInpaint",
+      "inputs": {
+        "pixels": ["10", 0],
+        "vae": currentVae,
+        "mask": ["11", 0],
+        "grow_mask_by": Math.max(0, parseInt(growMaskBy, 10) || 6)
+      }
+    };
+
+    // 6. Positive CLIPTextEncode (Node 6)
+    workflow["6"] = {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": currentClip,
+        "text": positivePrompt
+      }
+    };
+
+    // 7. Negative CLIPTextEncode (Node 7)
+    workflow["7"] = {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "clip": currentClip,
+        "text": negativePrompt
+      }
+    };
+
+    // 8. KSampler 采样 (Node 3)
+    workflow["3"] = {
+      "class_type": "KSampler",
+      "inputs": {
+        "cfg": cfg,
+        "denoise": parseFloat(denoise) || 0.70,
+        "latent_image": ["12", 0],
+        "model": currentModel,
+        "negative": ["7", 0],
+        "positive": ["6", 0],
+        "sampler_name": sampler,
+        "scheduler": scheduler,
+        "seed": seed,
+        "steps": steps
+      }
+    };
+
+    // 9. VAE Decode (Node 8)
+    workflow["8"] = {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": ["3", 0],
+        "vae": currentVae
+      }
+    };
+
+    // 10. SaveImage (Node 9)
+    workflow["9"] = {
+      "class_type": "SaveImage",
+      "inputs": {
+        "filename_prefix": "SillyTavern_Inpaint",
+        "images": ["8", 0]
+      }
+    };
+
+    return workflow;
+  }
+
   /* ==========================================================================
      6. 轮播展示卡片与生图调度 (Carousel Card & Generation Dispatcher)
      ========================================================================== */
@@ -653,7 +1254,7 @@
           </div>
         </div>
         <div class="sct-comfy-viewport" id="vp_${cardId}">
-          <img src="${currentUrl}" alt="ComfyUI Image ${safeIdx + 1}" />
+          <img src="${currentUrl}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看 · 长按开启局部重绘" />
           ${total > 1 ? `<div class="sct-comfy-counter-badge">${safeIdx + 1} / ${total}</div>` : ''}
         </div>
         <div class="sct-comfy-footer">
@@ -663,8 +1264,10 @@
               ${images.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
             </div>
             <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
+            <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
           ` : `
-            <span style="font-size: 11px; opacity: 0.5;">点击图片放大查看</span>
+            <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
+            <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
           `}
         </div>
@@ -673,10 +1276,21 @@
 
     const vp = container.querySelector(`#vp_${cardId}`);
     vp.addEventListener('click', (e) => e.stopPropagation());
-    vp.querySelector('img').addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openLightbox(currentUrl);
+
+    const imgEl = vp.querySelector('img');
+    bindLongPress(imgEl, (e) => {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+      openInpaintModal({
+        imageUrl: currentUrl,
+        promptText: promptText,
+        activeLoras: activeLoras,
+        container: container
+      });
+    }, (e) => {
+      e?.preventDefault?.();
+      e?.stopPropagation?.();
+      openLightbox(currentUrl, promptText, activeLoras, container);
     });
 
     // 触摸滑动 (Touch Swipe)
@@ -732,6 +1346,20 @@
       });
     });
 
+    const inpaintBtn = container.querySelector('.sct-inpaint-btn');
+    if (inpaintBtn) {
+      inpaintBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openInpaintModal({
+          imageUrl: currentUrl,
+          promptText: promptText,
+          activeLoras: activeLoras,
+          container: container
+        });
+      });
+    }
+
     const retryBtn = container.querySelector('.sct-retry-btn');
     if (retryBtn) {
       retryBtn.addEventListener('click', (e) => {
@@ -741,6 +1369,203 @@
         if (tk) sctDrawingTasks.delete(tk);
         triggerComfyDraw(promptText, container, activeLoras, tk);
       });
+    }
+  }
+
+  // 提交并调度 ComfyUI 局部重绘任务 (Inpainting)
+  async function triggerComfyInpaint(params) {
+    const {
+      imageUrl,
+      inpaintPrompt,
+      denoise = 0.70,
+      growMaskBy = 6,
+      activeLoras = [],
+      container,
+      maskCanvas
+    } = params;
+
+    const s = getSettings();
+    if (!s.comfyEnabled) {
+      showToast('ComfyUI 绘图功能未开启', 'warning');
+      return;
+    }
+
+    const cardId = container?.dataset?.sctCardId || `card_${Date.now()}`;
+    const taskKey = `inpaint_${cardId}_${Date.now()}`;
+
+    renderLoadingCard(container, inpaintPrompt, '🎨 正在上传原图与重绘蒙版至 ComfyUI…', taskKey);
+
+    const comfyHost = getCleanComfyHost();
+
+    try {
+      // 1. 获取原图 Blob
+      let origBlob = null;
+      try {
+        const imgRes = await fetch(imageUrl);
+        origBlob = await imgRes.blob();
+      } catch (_) {
+        const baseImg = document.getElementById('sct-inpaint-base-img');
+        if (baseImg) {
+          const tc = document.createElement('canvas');
+          tc.width = baseImg.naturalWidth;
+          tc.height = baseImg.naturalHeight;
+          tc.getContext('2d').drawImage(baseImg, 0, 0);
+          origBlob = await new Promise(res => tc.toBlob(res, 'image/png'));
+        }
+      }
+
+      if (!origBlob) {
+        throw new Error('无法读取原图数据用于重绘');
+      }
+
+      // 2. 获取蒙版 Blob
+      const maskBlob = await new Promise((res) => maskCanvas.toBlob(res, 'image/png'));
+      if (!maskBlob) {
+        throw new Error('导出重绘蒙版失败');
+      }
+
+      // 3. 上传原图至 ComfyUI /upload/image
+      const origFormData = new FormData();
+      origFormData.append('image', origBlob, `inpaint_orig_${Date.now()}.png`);
+      origFormData.append('overwrite', 'true');
+      const origUploadRes = await fetch(`${comfyHost}/upload/image`, {
+        method: 'POST',
+        body: origFormData
+      });
+      if (!origUploadRes.ok) throw new Error(`上传原图至 ComfyUI 失败 (${origUploadRes.status})`);
+      const origUploadData = await origUploadRes.json();
+      const uploadedImageName = origUploadData.name;
+
+      // 4. 上传蒙版至 ComfyUI /upload/image
+      const maskFormData = new FormData();
+      maskFormData.append('image', maskBlob, `inpaint_mask_${Date.now()}.png`);
+      maskFormData.append('overwrite', 'true');
+      const maskUploadRes = await fetch(`${comfyHost}/upload/image`, {
+        method: 'POST',
+        body: maskFormData
+      });
+      if (!maskUploadRes.ok) throw new Error(`上传蒙版至 ComfyUI 失败 (${maskUploadRes.status})`);
+      const maskUploadData = await maskUploadRes.json();
+      const uploadedMaskName = maskUploadData.name;
+
+      renderLoadingCard(container, inpaintPrompt, '🎨 正在构建局部重绘工作流并执行采样…', taskKey);
+
+      // 5. 探查可用 Checkpoint
+      let ckpt = s.comfyCheckpoint || '';
+      if (!ckpt) {
+        if (cachedCheckpoints.length === 0) {
+          await scanComfyAssets(comfyHost);
+        }
+        ckpt = cachedCheckpoints[0] || 'v1-5-pruned-emaonly.safetensors';
+      }
+
+      // 注入 LoRA 特征词
+      const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
+      const loraInjection = loraTriggerWords ? `${loraTriggerWords}, ` : '';
+      const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim();
+      const negativePrompt = s.comfyFixedNegative || '';
+
+      // 6. 动态生成局部重绘工作流
+      const workflow = buildComfyInpaintWorkflow({
+        checkpoint: ckpt,
+        positivePrompt: fullPositivePrompt,
+        negativePrompt: negativePrompt,
+        uploadedImage: uploadedImageName,
+        uploadedMask: uploadedMaskName,
+        denoise: denoise,
+        growMaskBy: growMaskBy,
+        steps: s.comfySteps || 20,
+        cfg: s.comfyCfg || 7.0,
+        sampler: s.comfySampler || 'euler',
+        scheduler: s.comfyScheduler || 'normal',
+        activeLoras: activeLoras,
+        seed: Math.floor(Math.random() * 1000000000)
+      });
+
+      const clientId = 'st_inpaint_' + Math.random().toString(36).slice(2, 10);
+
+      // 7. WebSocket 进度追踪
+      let ws = null;
+      try {
+        const wsUrl = comfyHost.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`;
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'progress') {
+              const { value, max } = msg.data;
+              const percent = Math.round((value / max) * 100);
+              renderLoadingCard(container, inpaintPrompt, `🎨 局部重绘渲染进度: ${value}/${max} 步 (${percent}%)`, taskKey);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {}
+
+      // 8. 提交任务至 /prompt
+      const promptRes = await fetch(`${comfyHost}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: workflow, client_id: clientId })
+      });
+
+      if (!promptRes.ok) {
+        throw new Error(`ComfyUI 提交失败 HTTP ${promptRes.status}: ${promptRes.statusText}`);
+      }
+
+      const promptData = await promptRes.json();
+      const promptId = promptData.prompt_id;
+      if (!promptId) throw new Error('未获取到局部重绘任务 ID');
+
+      // 9. 轮询结果
+      let pollCount = 0;
+      const maxPolls = 180;
+      const pollInterval = setInterval(async () => {
+        pollCount++;
+        if (pollCount > maxPolls) {
+          clearInterval(pollInterval);
+          if (ws) ws.close();
+          renderErrorCard(container, inpaintPrompt, '局部重绘任务超时', activeLoras, taskKey);
+          return;
+        }
+
+        try {
+          const histRes = await fetch(`${comfyHost}/history/${promptId}`);
+          if (!histRes.ok) return;
+          const histData = await histRes.json();
+          if (histData[promptId]) {
+            clearInterval(pollInterval);
+            if (ws) ws.close();
+
+            const outputs = histData[promptId].outputs || {};
+            const resultImages = [];
+            Object.values(outputs).forEach((out) => {
+              if (out.images && Array.isArray(out.images)) {
+                out.images.forEach((img) => {
+                  const url = `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&type=${encodeURIComponent(img.type || 'output')}${img.subfolder ? '&subfolder=' + encodeURIComponent(img.subfolder) : ''}`;
+                  resultImages.push(url);
+                });
+              }
+            });
+
+            if (resultImages.length > 0) {
+              const state = cardStateMap.get(cardId);
+              if (state && state.images) {
+                state.images.push(...resultImages);
+                state.currentIdx = state.images.length - 1; // 自动跳到新生成的重绘图
+                renderCarouselCard(container, state.images, inpaintPrompt, activeLoras);
+              } else {
+                renderCarouselCard(container, resultImages, inpaintPrompt, activeLoras);
+              }
+              showToast('✨ 局部重绘成功！已加入轮播展示', 'success');
+            } else {
+              renderErrorCard(container, inpaintPrompt, 'ComfyUI 未返回重绘图像输出', activeLoras, taskKey);
+            }
+          }
+        } catch (_) {}
+      }, 1000);
+
+    } catch (err) {
+      renderErrorCard(container, inpaintPrompt, `局部重绘失败: ${err.message}`, activeLoras, taskKey);
     }
   }
 
@@ -1206,7 +2031,10 @@
         .sct-mes-action-btn,
         .sct-floating-tts,
         .sct-tts-status-badge,
-        .sct-tts-pill-btn
+        .sct-tts-pill-btn,
+        .sct-inpaint-overlay,
+        .sct-inpaint-dialog,
+        .sct-inpaint-btn
       `).forEach((el) => el.remove());
       return cleanTextForTts(clone.textContent || '');
     } catch (_) {
@@ -1239,6 +2067,8 @@
     text = text.replace(/[🔄◀▶\s]*重新生成/g, '');
     text = text.replace(/[◀▶\s]*上一张/g, '');
     text = text.replace(/[◀▶\s]*下一张/g, '');
+    text = text.replace(/[🖌️\s]*局部重绘/g, '');
+    text = text.replace(/长按重绘[·\s]*点击放大/g, '');
     text = text.replace(/检测到绘画提示词[:：]?[\s\S]*?立即开始生图/gi, '');
     text = text.replace(/立即开始生图/g, '');
     text = text.replace(/ComfyUI\s*正在后台生成画面中[….]*/gi, '');
