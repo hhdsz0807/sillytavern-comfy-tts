@@ -732,3 +732,68 @@
   min-height: 84px !important;
 }
 
+/* --------------------------------------------------------------------------
+   8. 引擎切换与小米 TTS 专属卡片 (Engine Box & Xiaomi TTS Card)
+   -------------------------------------------------------------------------- */
+.sct-engine-box {
+  background: rgba(239, 68, 68, 0.05);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 10px;
+  padding: 12px;
+  margin-top: 8px;
+  margin-bottom: 10px;
+}
+
+.sct-engine-box-header {
+  font-weight: 600;
+  font-size: 13px;
+  color: #fca5a5;
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sct-engine-chips .sct-engine-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 8px;
+}
+
+.sct-engine-chips .sct-engine-btn[data-engine="xiaomi"].active {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+}
+
+.sct-engine-chips .sct-engine-btn[data-engine="webspeech"].active {
+  background: rgba(59, 130, 246, 0.25);
+  border-color: #3b82f6;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+}
+
+.sct-engine-chips .sct-engine-btn[data-engine="openai"].active {
+  background: rgba(16, 185, 129, 0.25);
+  border-color: #10b981;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.sct-voice-chips .sct-v-chip {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.sct-voice-chips .sct-v-chip.active {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: #f87171;
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
+}
+
+
