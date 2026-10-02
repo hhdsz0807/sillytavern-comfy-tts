@@ -672,15 +672,22 @@
     `;
 
     const vp = container.querySelector(`#vp_${cardId}`);
-    vp.querySelector('img').addEventListener('click', () => openLightbox(currentUrl));
+    vp.addEventListener('click', (e) => e.stopPropagation());
+    vp.querySelector('img').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openLightbox(currentUrl);
+    });
 
     // 触摸滑动 (Touch Swipe)
     let touchStartX = 0;
     vp.addEventListener('touchstart', (e) => {
+      e.stopPropagation();
       if (e.touches && e.touches.length > 0) touchStartX = e.touches[0].clientX;
     }, { passive: true });
 
     vp.addEventListener('touchend', (e) => {
+      e.stopPropagation();
       if (e.changedTouches && e.changedTouches.length > 0 && total > 1) {
         const diff = e.changedTouches[0].clientX - touchStartX;
         if (diff > 45) {
@@ -696,6 +703,7 @@
     const prevBtn = container.querySelector('.sct-prev-btn');
     if (prevBtn) {
       prevBtn.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
         state.currentIdx = (state.currentIdx - 1 + total) % total;
         renderCarouselCard(container, images, promptText, activeLoras);
@@ -705,6 +713,7 @@
     const nextBtn = container.querySelector('.sct-next-btn');
     if (nextBtn) {
       nextBtn.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
         state.currentIdx = (state.currentIdx + 1) % total;
         renderCarouselCard(container, images, promptText, activeLoras);
@@ -713,6 +722,7 @@
 
     container.querySelectorAll('.sct-comfy-dot').forEach((dot) => {
       dot.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
         const idx = parseInt(dot.dataset.idx, 10);
         if (!isNaN(idx)) {
@@ -725,6 +735,7 @@
     const retryBtn = container.querySelector('.sct-retry-btn');
     if (retryBtn) {
       retryBtn.addEventListener('click', (e) => {
+        e.preventDefault();
         e.stopPropagation();
         const tk = container.dataset.sctTaskKey;
         if (tk) sctDrawingTasks.delete(tk);
@@ -783,6 +794,7 @@
     const cancelBtn = container.querySelector('.sct-cancel-draw-btn');
     if (cancelBtn) {
       cancelBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
         e.stopPropagation();
         await clearComfyQueue();
         if (taskKey) sctDrawingTasks.delete(taskKey);
@@ -807,11 +819,15 @@
         </div>
       </div>
     `;
-    container.querySelector('.sct-error-retry').addEventListener('click', () => {
+    container.querySelector('.sct-error-retry')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       if (taskKey) sctDrawingTasks.delete(taskKey);
       triggerComfyDraw(promptText, container, activeLoras, taskKey);
     });
-    container.querySelector('.sct-error-clear').addEventListener('click', async () => {
+    container.querySelector('.sct-error-clear')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       await clearComfyQueue();
     });
   }
@@ -1058,6 +1074,15 @@
           cardContainer.className = 'sct-comfy-card-container';
           cardContainer.dataset.sctPrompt = item.prompt;
           cardContainer.dataset.sctTaskKey = taskKey;
+          cardContainer.setAttribute('aria-hidden', 'true');
+          cardContainer.setAttribute('translate', 'no');
+
+          // 核心事件隔离：阻断卡片内所有交互事件向外层消息容器冒泡，彻底避免触发酒馆朗读消息或意外划选
+          ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend'].forEach(evt => {
+            cardContainer.addEventListener(evt, (e) => {
+              e.stopPropagation();
+            }, { passive: evt.startsWith('touch') });
+          });
 
           const slot = textEl.querySelector(`.sct-comfy-slot[data-sct-mes="${mesId}"][data-sct-idx="${idx}"]`);
           if (slot) {
@@ -1102,7 +1127,9 @@
                 </div>
               </div>
             `;
-            cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
+            cardContainer.querySelector('.sct-start-draw').addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
               triggerComfyDraw(item.prompt, cardContainer, activeLoras, taskKey);
             });
           }
@@ -1120,7 +1147,7 @@
         ttsBtn.title = '朗读此条消息';
         ttsBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          const cleanText = cleanTextForTts(textEl.textContent || '');
+          const cleanText = getCleanMessageText(textEl);
           speakText(cleanText);
         });
         btnBar.appendChild(ttsBtn);
@@ -1141,6 +1168,13 @@
             if (!container) {
               container = document.createElement('div');
               container.className = 'sct-comfy-card-container';
+              container.setAttribute('aria-hidden', 'true');
+              container.setAttribute('translate', 'no');
+              ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend'].forEach(evt => {
+                container.addEventListener(evt, (e) => {
+                  e.stopPropagation();
+                }, { passive: evt.startsWith('touch') });
+              });
               textEl.appendChild(container);
             }
             const activeLoras = detectActiveLoras(textEl.textContent || '', userPrompt.trim());
@@ -1160,6 +1194,26 @@
      8. TTS 语音朗读核心实现 (Web Speech API & OpenAI Audio)
      ========================================================================== */
 
+  // 从消息 DOM 容器中提取纯净正文（克隆节点并彻底移除生图卡片、操作按钮、提示标签等所有扩展注入元素）
+  function getCleanMessageText(textEl) {
+    if (!textEl) return '';
+    try {
+      const clone = textEl.cloneNode(true);
+      clone.querySelectorAll(`
+        .sct-comfy-card-container,
+        .sct-comfy-card,
+        .sct-comfy-slot,
+        .sct-mes-action-btn,
+        .sct-floating-tts,
+        .sct-tts-status-badge,
+        .sct-tts-pill-btn
+      `).forEach((el) => el.remove());
+      return cleanTextForTts(clone.textContent || '');
+    } catch (_) {
+      return cleanTextForTts(textEl.textContent || '');
+    }
+  }
+
   function cleanTextForTts(rawText) {
     if (!rawText) return '';
     let text = rawText;
@@ -1168,12 +1222,31 @@
       text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
       text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
     }
+    // 过滤生图标签 (闭合与未闭合)
     text = text.replace(/<image>[\s\S]*?<\/image>/gi, '');
     text = text.replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, '');
+    text = text.replace(/<image>[\s\S]*?$/gi, '');
     text = text.replace(/<img_prompt>[\s\S]*?<\/img_prompt>/gi, '');
     text = text.replace(/&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;/gi, '');
     text = text.replace(/image###[\s\S]*?###/gi, '');
+    text = text.replace(/image###[\s\S]*?$/gi, '');
     text = text.replace(/###[\s\S]*?###/gi, '');
+
+    // 彻底剥离 ComfyUI 轮播卡片与操作按钮残留文本 (杜绝在朗读时念出卡片上的操作标签与 LoRA 名字)
+    text = text.replace(/🎨?\s*ComfyUI\s*(生图|绘图)?/gi, '');
+    text = text.replace(/LoRA:\s*[^,\n\r，。！\s]+([,\n\r，。！\s]|$)/gi, '');
+    text = text.replace(/点击图片放大查看/g, '');
+    text = text.replace(/[🔄◀▶\s]*重新生成/g, '');
+    text = text.replace(/[◀▶\s]*上一张/g, '');
+    text = text.replace(/[◀▶\s]*下一张/g, '');
+    text = text.replace(/检测到绘画提示词[:：]?[\s\S]*?立即开始生图/gi, '');
+    text = text.replace(/立即开始生图/g, '');
+    text = text.replace(/ComfyUI\s*正在后台生成画面中[….]*/gi, '');
+    text = text.replace(/生图失败/g, '');
+    text = text.replace(/🛑?\s*中止此次生图并清空排队/g, '');
+    text = text.replace(/🛑?\s*清空后台排队/g, '');
+    text = text.replace(/\b\d+\s*\/\s*\d+\b/g, '');
+
     text = text.replace(/```[\s\S]*?```/g, ' [代码块已省略] ');
     text = text.replace(/`([^`]+)`/g, '$1');
     text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
@@ -1566,6 +1639,13 @@
       showToast(`已提交 ComfyUI 生图: ${p.slice(0, 30)}...`, 'info');
       const container = document.createElement('div');
       container.className = 'sct-comfy-card-container';
+      container.setAttribute('aria-hidden', 'true');
+      container.setAttribute('translate', 'no');
+      ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend'].forEach(evt => {
+        container.addEventListener(evt, (e) => {
+          e.stopPropagation();
+        }, { passive: evt.startsWith('touch') });
+      });
       const chat = document.getElementById('chat');
       if (chat) chat.appendChild(container);
       const activeLoras = detectActiveLoras(p, p);
