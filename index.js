@@ -29,7 +29,7 @@
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹)
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\n<image>image###sfw, 英文tag提示词###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\n格式：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \\(re:zero\\)), 图片英文tag###</image>\n示例：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -136,6 +136,9 @@
         if (!Array.isArray(extSettings[MODULE_NAME].comfyLoras)) {
           extSettings[MODULE_NAME].comfyLoras = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.comfyLoras));
         }
+        if (!extSettings[MODULE_NAME].imageInstructionText || !extSettings[MODULE_NAME].imageInstructionText.includes('emilia')) {
+          extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
+        }
       }
       return extSettings[MODULE_NAME];
     }
@@ -161,6 +164,16 @@
       host = 'http://' + host;
     }
     return host;
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   function showToast(msg, type = 'info') {
@@ -1632,7 +1645,7 @@
 
             <div class="sct-setting-col">
               <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
-              <div class="sct-code-box" id="sct-inst-preview">${s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION}</div>
+              <div class="sct-code-box" id="sct-inst-preview">${escapeHtml(s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION)}</div>
               <div style="margin-top:4px;">
                 <button type="button" class="sct-comfy-btn" id="sct-btn-copy-inst">📋 复制自动配图提示词</button>
               </div>
@@ -1811,7 +1824,7 @@
     container.querySelector('#sct-cfg-auto-inject-inst').addEventListener('change', (e) => saveSettings({ autoInjectImageInstruction: e.target.checked }));
 
     container.querySelector('#sct-btn-copy-inst').addEventListener('click', () => {
-      const text = container.querySelector('#sct-inst-preview').textContent;
+      const text = getSettings().imageInstructionText || DEFAULT_IMAGE_INSTRUCTION;
       navigator.clipboard.writeText(text).then(() => {
         showToast('已复制自动配图提示词到剪贴板！', 'success');
       }).catch(() => {

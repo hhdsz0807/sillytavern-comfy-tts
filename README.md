@@ -19,14 +19,16 @@
 ### 2. 🖼️ 自动标签解析与配图指示规范
 - **精确标签识别**：智能捕获正文中的 `<image>` 配图标签：
   ```xml
-  <image>image###sfw, 英文tag提示词###</image>
+  <image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
   ```
-  自动清洗并提取核心提示词驱动后台异步生图，并在正文原位就地替换为精致的轮播生图卡片（即使模型漏写 `<image>` 或被浏览器解析转换也能完美识别触发）。
+  自动清洗并提取核心提示词驱动后台异步生图，并在正文原位就地替换为精致的轮播生图卡片。
 - **系统级上下文自动注入**：
   插件自动向酒馆上下文注入标准【自动配图指示】，模型无需繁琐配置即可稳定触发：
   ```text
   【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：
-  <image>image###sfw, 英文tag提示词###</image>
+  格式：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \(re:zero\)), 图片英文tag###</image>
+  示例：
+  <image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
   【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！
   ```
 - **一键复制提示词**：配置面板内提供一键复制按钮，可随时复制配图指示直接粘贴至角色卡、Persona 或世界书。
@@ -115,7 +117,7 @@ SillyTavern/
 ### 1. 自动配图
 只需保持配置面板中的「自动向 AI 上下文注入【自动配图指示】」开启，AI 在生成精彩情节时便会输出：
 ```text
-<image>image###sfw, 1girl, solo, cute smile, classroom, sunny afternoon, anime aesthetic###</image>
+<image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
 ```
 插件会即时捕获该标签，将其渲染为优雅的轮播卡片，并向 ComfyUI 提交渲染任务。
 
