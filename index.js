@@ -605,39 +605,66 @@
           const w = inpaintMaskCanvas.width;
           const h = inpaintMaskCanvas.height;
 
-          // 1. 如果不是累加模式，先清空底层黑白蒙版和上层高亮涂抹层
-          if (!addMode) {
-            inpaintMaskCtx.fillStyle = '#000000';
-            inpaintMaskCtx.fillRect(0, 0, w, h);
-            inpaintDrawCtx.clearRect(0, 0, w, h);
-          }
-
-          // 2. 将蒙版图层同步到底层 inpaintMaskCanvas (白: 重绘区, 黑: 保留区)
-          if (addMode) {
-            inpaintMaskCtx.globalCompositeOperation = 'lighten';
-          } else {
-            inpaintMaskCtx.globalCompositeOperation = 'source-over';
-          }
-          inpaintMaskCtx.drawImage(img, 0, 0, w, h);
-          inpaintMaskCtx.globalCompositeOperation = 'source-over';
-
-          // 3. 将蒙版转换为半透明高亮品红色 (rgba(239, 68, 68, 0.55)) 渲染到视觉层 inpaintDrawCanvas
+          // 1. 读取返回的蒙版图片像素数据 (ComfyUI 输出的是 RGB 黑白二值图)
           const tempCanvas = document.createElement('canvas');
           tempCanvas.width = w;
           tempCanvas.height = h;
           const tempCtx = tempCanvas.getContext('2d');
           tempCtx.drawImage(img, 0, 0, w, h);
-          tempCtx.globalCompositeOperation = 'source-in';
-          tempCtx.fillStyle = 'rgba(239, 68, 68, 0.55)';
-          tempCtx.fillRect(0, 0, w, h);
+          const imgData = tempCtx.getImageData(0, 0, w, h);
+          const d = imgData.data;
 
-          // 4. 将高亮层绘制到视觉画布
-          if (!addMode) {
-            inpaintDrawCtx.clearRect(0, 0, w, h);
+          // 获取底层黑白蒙版和顶层半透明视觉层的像素数组
+          const maskImgData = inpaintMaskCtx.getImageData(0, 0, w, h);
+          const md = maskImgData.data;
+
+          const visualImgData = inpaintDrawCtx.getImageData(0, 0, w, h);
+          const vd = visualImgData.data;
+
+          let hasSelectedPixels = false;
+
+          // 2. 逐像素按亮度提取选区，将黑底转换为完全透明 (Alpha=0)，白色选区转为半透明品红
+          for (let i = 0; i < d.length; i += 4) {
+            // 灰度亮度判定：大于 40 则视为模型识别出的目标分割区域
+            const isMaskArea = d[i] > 40;
+
+            if (isMaskArea) {
+              hasSelectedPixels = true;
+
+              // 底层离屏蒙版设为纯白 (#ffffff，Alpha=255)
+              md[i] = 255;
+              md[i + 1] = 255;
+              md[i + 2] = 255;
+              md[i + 3] = 255;
+
+              // 视觉层设为半透明红色高亮 (rgba(239, 68, 68, 0.55))
+              vd[i] = 239;
+              vd[i + 1] = 68;
+              vd[i + 2] = 68;
+              vd[i + 3] = 140; // 0.55 * 255 ≈ 140
+            } else if (!addMode) {
+              // 非累加模式下，背景区域设为纯黑并使视觉层完全透明
+              md[i] = 0;
+              md[i + 1] = 0;
+              md[i + 2] = 0;
+              md[i + 3] = 255;
+
+              vd[i] = 0;
+              vd[i + 1] = 0;
+              vd[i + 2] = 0;
+              vd[i + 3] = 0; // 关键：完全透明，绝不遮挡画面！
+            }
           }
-          inpaintDrawCtx.drawImage(tempCanvas, 0, 0, w, h);
 
-          resolve();
+          // 3. 将转换后的像素数据写回画布
+          inpaintMaskCtx.putImageData(maskImgData, 0, 0);
+          inpaintDrawCtx.putImageData(visualImgData, 0, 0);
+
+          if (!hasSelectedPixels) {
+            showToast('提示：未在当前画面中检测到该目标，建议使用【🎯 鼠标点选】或手动涂抹', 'warning');
+          }
+
+          resolve(hasSelectedPixels);
         } catch (err) {
           reject(err);
         }
@@ -652,31 +679,41 @@
     if (!inpaintMaskCtx || !inpaintMaskCanvas || !inpaintDrawCtx) return;
     const w = inpaintMaskCanvas.width;
     const h = inpaintMaskCanvas.height;
-    const imgData = inpaintMaskCtx.getImageData(0, 0, w, h);
-    const data = imgData.data;
+    const maskImgData = inpaintMaskCtx.getImageData(0, 0, w, h);
+    const md = maskImgData.data;
 
-    // 反转离屏黑白蒙版通道
-    for (let i = 0; i < data.length; i += 4) {
-      const v = 255 - data[i]; // 黑白反转
-      data[i] = v;
-      data[i + 1] = v;
-      data[i + 2] = v;
-      data[i + 3] = 255;
+    const visualImgData = inpaintDrawCtx.createImageData(w, h);
+    const vd = visualImgData.data;
+
+    for (let i = 0; i < md.length; i += 4) {
+      const isSelected = md[i] > 40;
+      if (isSelected) {
+        // 原来是选区 -> 变为背景保留区 (黑底、完全透明)
+        md[i] = 0;
+        md[i + 1] = 0;
+        md[i + 2] = 0;
+        md[i + 3] = 255;
+
+        vd[i] = 0;
+        vd[i + 1] = 0;
+        vd[i + 2] = 0;
+        vd[i + 3] = 0;
+      } else {
+        // 原来是背景 -> 变为重绘选区 (白底、半透明红)
+        md[i] = 255;
+        md[i + 1] = 255;
+        md[i + 2] = 255;
+        md[i + 3] = 255;
+
+        vd[i] = 239;
+        vd[i + 1] = 68;
+        vd[i + 2] = 68;
+        vd[i + 3] = 140;
+      }
     }
-    inpaintMaskCtx.putImageData(imgData, 0, 0);
 
-    // 重新同步视觉高亮层
-    inpaintDrawCtx.clearRect(0, 0, w, h);
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = w;
-    tempCanvas.height = h;
-    const tempCtx = tempCanvas.getContext('2d');
-    tempCtx.putImageData(imgData, 0, 0);
-    tempCtx.globalCompositeOperation = 'source-in';
-    tempCtx.fillStyle = 'rgba(239, 68, 68, 0.55)';
-    tempCtx.fillRect(0, 0, w, h);
-
-    inpaintDrawCtx.drawImage(tempCanvas, 0, 0, w, h);
+    inpaintMaskCtx.putImageData(maskImgData, 0, 0);
+    inpaintDrawCtx.putImageData(visualImgData, 0, 0);
   }
 
   // 执行 ComfyUI 图像分割任务 (支持语义文本分割与 SAM2 鼠标坐标点选)
@@ -755,7 +792,7 @@
             '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
             '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
             '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
-            '4': { inputs: { prompt: segPrompt, threshold: 0.3, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+            '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
             '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
             '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
@@ -767,7 +804,7 @@
             '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
             '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
             '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
-            '4': { inputs: { prompt: segPrompt, threshold: 0.3, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+            '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
             '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
           };
@@ -905,15 +942,15 @@
               <div class="sct-sam-body">
                 <div class="sct-sam-tags-container">
                   <span style="font-size:11.5px; opacity:0.75; display:inline-flex; align-items:center; margin-right:2px;">快捷部位:</span>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="face">😊 脸部</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="hair">💇 头发</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="top clothes, shirt, blouse, jacket">👕 上衣</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="dress, skirt">👗 裙子</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="pants, trousers, shorts">👖 裤子</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="arms, hands">🧤 手臂/双手</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="legs">🦵 腿部</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="shoes, boots, footwear">👟 鞋子</button>
-                  <button type="button" class="sct-sam-chip" data-sam-prompt="1girl, 1boy, person, human">🧍 整个角色</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="anime face, face, head">😊 脸部</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="anime hair, hair, ponytail">💇 头发</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="shirt, top clothes, blouse, jacket, upper body clothes, anime clothes">👕 上衣</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="dress, skirt, pleated skirt, anime dress">👗 裙子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="pants, trousers, shorts, jeans">👖 裤子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="arms, hands, sleeve, gloves">🧤 手臂/双手</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="legs, thighs, stockings, pantyhose, socks">🦵 腿部</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="shoes, boots, footwear, sneakers">👟 鞋子</button>
+                  <button type="button" class="sct-sam-chip" data-sam-prompt="1girl, 1boy, anime character, girl, person">🧍 整个角色</button>
                   <button type="button" class="sct-sam-chip" data-sam-prompt="__background__">🏞️ 背景</button>
                 </div>
 
