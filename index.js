@@ -1648,12 +1648,12 @@
         <div class="sct-lora-detail-body" style="${isExpanded ? 'display:flex;' : 'display:none;'}">
           <div class="sct-setting-col">
             <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(正文/提示词出现该词自动挂载 LoRA)</span></label>
-            <input type="text" class="text_pole sct-lora-keywords" data-idx="${idx}" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发" value="${escapeHtml(item.keywords || '')}" />
+            <textarea class="text_pole sct-textarea-autowrap sct-lora-keywords" data-idx="${idx}" rows="2" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发">${escapeHtml(item.keywords || '')}</textarea>
           </div>
 
           <div class="sct-setting-col">
-            <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后自动注入正向提示词)</span></label>
-            <input type="text" class="text_pole sct-lora-triggers" data-idx="${idx}" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform" value="${escapeHtml(item.triggerWords || '')}" />
+            <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后自动注入正向提示词 · 宽屏多行自动换行)</span></label>
+            <textarea class="text_pole sct-textarea-autowrap sct-lora-triggers" data-idx="${idx}" rows="3" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform, white ribbon, looking at viewer, gentle smile">${escapeHtml(item.triggerWords || '')}</textarea>
           </div>
 
           <div class="sct-setting-col">
