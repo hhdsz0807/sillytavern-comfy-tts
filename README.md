@@ -9,7 +9,7 @@
 
 ### 1. 🎨 内置原生 ComfyUI 高阶工作流引擎
 - **文生图 + 链式多 LoRA + 高清潜空间放大（Hires Fix）**：
-  - **动态模型链式装载**：根据当前角色或情景命中规则，自动在 `CheckpointLoaderSimple` 之后级联多个 `LoraLoader` 节点，平滑传递 `MODEL` 与 `CLIP` 管道。
+  - **动态模型链式装载**：根据当前角色或情景命中规则，自动在 `CheckpointLoaderSimple` 之后级联多个 `LoraLoader` 节点，平滑传递 `MODEL` 与 `CLIP` 管道（**严格限制最多同时激活 2 个角色 LoRA**，杜绝多模型混杂导致的画风劣化与权重冲突）。
   - **智能特征词注入**：正文或标签中检测到角色 LoRA 关键词时，自动挂载对应 LoRA，并将配置的**角色特征触发词**精准注入到正向提示词中。
   - **潜空间二次放大 (Hires Fix)**：支持开启 `LatentUpscaleBy` + 二次 `KSampler` 重绘，放大倍数（1.1x ~ 2.0x）与重绘幅度（Denoise: 0.2 ~ 0.75）在面板中可精细微调，大幅提升画面细节与精细度。
 - **直连 ComfyUI 原生引擎**：直接与标准 ComfyUI 服务（默认 `http://127.0.0.1:8188` 或远程局域网 IP）通信，无需任何代理或桥接程序。
@@ -27,11 +27,12 @@
   ```text
   【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：
   1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！
-  2. **多角色动作互动规范**：如果是多个角色，必须描述这多个角色的具体互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。
-  3. **标签格式**：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \(re:zero\)), 如果是多个角色需要描述这多个角色的动作，比如2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上， 图片英文tag###</image>
+  2. **角色数量限制**：**单张图片最多只允许出现 2 个主要角色**（主体数量最多为 2 人，如 1girl、1boy、1girl, 1boy 或 2girls），**绝对严禁出现 3 个及以上角色**，确保画面构图精准聚焦与画质稳定！
+  3. **多角色动作互动规范**：当画面为 2 个角色时，必须具体描述这 2 个角色的互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。
+  4. **标签格式**：<image>image###sfw/nsfw, 主体数量(最多2人, 如 1girl / 1girl, 1boy / 2girls), 人物名称(最多2人, 如 emilia \(re:zero\)), 如果是2个角色需要描述两者的互动动作(比如 2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上)，图片英文tag###</image>
   【单人示例】：
   <image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
-  【多角色互动示例】：
+  【双人互动示例】：
   <image>image###sfw, 1girl, 1boy, emilia \(re:zero\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>
   【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！
   ```

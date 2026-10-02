@@ -28,8 +28,8 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入与多角色动作互动规范)
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **多角色动作互动规范**：如果是多个角色，必须描述这多个角色的具体互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。\n3. **标签格式**：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \\(re:zero\\)), 如果是多个角色需要描述这多个角色的动作，比如2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上， 图片英文tag###</image>\n【单人示例】：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【多角色互动示例】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
+  // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、最多2个主要角色与双角色动作规范)
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **角色数量限制**：**单张图片最多只允许出现 2 个主要角色**（主体数量最多为 2 人，如 1girl、1boy、1girl, 1boy 或 2girls），**绝对严禁出现 3 个及以上角色**，确保画面构图精准聚焦与画质稳定！\n3. **多角色动作互动规范**：当画面为 2 个角色时，必须具体描述这 2 个角色的互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。\n4. **标签格式**：<image>image###sfw/nsfw, 主体数量(最多2人, 如 1girl / 1girl, 1boy / 2girls), 人物名称(最多2人, 如 emilia \\(re:zero\\)), 如果是2个角色需要描述两者的互动动作(比如 2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上)，图片英文tag###</image>\n【单人示例】：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【双人互动示例】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -152,6 +152,7 @@
         }
         if (!extSettings[MODULE_NAME].imageInstructionText || 
             !extSettings[MODULE_NAME].imageInstructionText.includes('就地插入') || 
+            !extSettings[MODULE_NAME].imageInstructionText.includes('最多只允许出现 2 个主要角色') ||
             !extSettings[MODULE_NAME].imageInstructionText.includes('多个角色的动作')) {
           extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
         }
@@ -311,28 +312,36 @@
     return s;
   }
 
-  // 检测上下文正文或提示词中是否命中了 LoRA 激活关键词
+  // 检测上下文正文或提示词中是否命中了 LoRA 激活关键词 (严格限制角色 LoRA 最多同时激活 2 个)
   function detectActiveLoras(fullText, promptText) {
     const s = getSettings();
     const loras = s.comfyLoras || [];
     const activeList = [];
     const lowerContext = `${fullText} ${promptText}`.toLowerCase();
 
+    // 1. 优先收集常驻生效的 LoRA (Always On)
     loras.forEach((item) => {
       if (!item.enabled || !item.name) return;
       if (item.alwaysOn) {
-        activeList.push(item);
-        return;
+        if (!activeList.some(x => x.id === item.id)) {
+          activeList.push(item);
+        }
       }
+    });
+
+    // 2. 匹配正文或提示词中命中关键词的 LoRA
+    loras.forEach((item) => {
+      if (!item.enabled || !item.name || item.alwaysOn) return;
       if (!item.keywords) return;
       const kws = item.keywords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(Boolean);
       const isMatched = kws.some(k => lowerContext.includes(k));
-      if (isMatched) {
+      if (isMatched && !activeList.some(x => x.id === item.id)) {
         activeList.push(item);
       }
     });
 
-    return activeList;
+    // 3. 严格限制角色 LoRA 最多同时激活 2 个，防止模型权重过载冲突与画风崩坏
+    return activeList.slice(0, 2);
   }
 
   /* ==========================================================================
@@ -761,8 +770,8 @@
     const scheduler = s.comfyScheduler || 'normal';
     const seed = Math.floor(Math.random() * 1000000000);
 
-    // 确定启用的 LoRA 列表与特征词注入
-    const activeLoras = explicitActiveLoras || detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText);
+    // 确定启用的 LoRA 列表与特征词注入 (严格限制最多同时激活 2 个)
+    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 2) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
     
     // 注入 LoRA 角色特征词到正向提示词中
     const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
@@ -1766,7 +1775,7 @@
               <span>🎭</span>
               <span>角色 LoRA 管理与关键词激活</span>
             </div>
-            <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词。</div>
+            <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词（为保证出图画质与避免模型冲突，最多同时激活 2 个角色 LoRA）。</div>
 
             <div id="sct-lora-items-container" class="sct-lora-list"></div>
 
