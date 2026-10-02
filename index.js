@@ -264,14 +264,15 @@
      4. 标签解析与关键词匹配 (Tag Parsing & LoRA Keyword Matching)
      ========================================================================== */
 
-  // 解析并提取 <image> 标签内容（完美匹配 <image>image###sfw, tags###</image> 及常规格式）
+  // 解析并提取生图标签内容（兼容纯文本 image###...###、带标签 <image>image###...###</image> 及常规格式）
   function parseImageTagContent(rawContent) {
     let s = (rawContent || '').trim();
     // 反转义 HTML 实体字符
     s = s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-    // 清除可能存在的 markdown 代码块包裹
+    // 清除可能存在的 markdown 代码块包裹与反引号
     s = s.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
-    // 匹配 image###...### 模式
+    s = s.replace(/^`+|`+$/g, '').trim();
+    // 匹配并剥离 image###...### 或 ###...### 模式
     const m = s.match(/^image###([\s\S]*?)###$/i) || s.match(/###([\s\S]*?)###/);
     if (m) {
       s = m[1].trim();
@@ -802,67 +803,73 @@
      ========================================================================== */
 
   function processSingleMessage(mesEl) {
-    if (!mesEl || mesEl.dataset.sctProcessed) return;
-    mesEl.dataset.sctProcessed = 'true';
+    if (!mesEl) return;
 
     const s = getSettings();
     const textEl = mesEl.querySelector('.mes_text');
     if (!textEl) return;
 
-    // 1. 扫描并替换 <image>prompt</image> 标签 (支持 image###sfw, tag### 格式及 HTML 转义形态)
+    // 1. 扫描并替换生图标签 (同时完全兼容纯文本 image###...###、带标签 <image>...</image>、Markdown 代码包裹等多种形态)
     const textHtml = textEl.innerHTML;
-    const tagRegex = /<image>([\s\S]*?)<\/image>|&lt;image&gt;([\s\S]*?)&lt;\/image&gt;|<img_prompt>([\s\S]*?)<\/img_prompt>|&lt;img_prompt&gt;([\s\S]*?)&lt;\/img_prompt&gt;/gi;
-    let match;
-    const promptsToDraw = [];
+    if (textHtml.includes('image###') || textHtml.includes('<image') || textHtml.includes('&lt;image') || textHtml.includes('img_prompt')) {
+      const tagRegex = /(?:<pre>\s*)?(?:<code>)?\s*(?:<image>([\s\S]*?)<\/image>|&lt;image&gt;([\s\S]*?)&lt;\/image&gt;|<img_prompt>([\s\S]*?)<\/img_prompt>|&lt;img_prompt&gt;([\s\S]*?)&lt;\/img_prompt&gt;|(?:(?:\*\*|\*)?\s*)image###([\s\S]*?)###(?:\s*(?:\*\*|\*))?)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
+      let match;
+      const promptsToDraw = [];
 
-    while ((match = tagRegex.exec(textHtml)) !== null) {
-      const rawInner = match[1] || match[2] || match[3] || match[4] || '';
-      const cleanPrompt = parseImageTagContent(rawInner);
-      if (cleanPrompt) {
-        promptsToDraw.push({ raw: match[0], prompt: cleanPrompt });
+      while ((match = tagRegex.exec(textHtml)) !== null) {
+        const rawInner = match[1] || match[2] || match[3] || match[4] || match[5] || '';
+        const cleanPrompt = parseImageTagContent(rawInner);
+        if (cleanPrompt) {
+          promptsToDraw.push({ raw: match[0], prompt: cleanPrompt });
+        }
       }
-    }
 
-    if (promptsToDraw.length > 0) {
-      // 第一阶段：将所有匹配的标签一次性替换为插槽标记，避免循环内多次重写 innerHTML 破坏已插入的组件 DOM
-      let replacedHtml = textEl.innerHTML;
-      promptsToDraw.forEach((item, idx) => {
-        replacedHtml = replacedHtml.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
-      });
-      textEl.innerHTML = replacedHtml;
+      if (promptsToDraw.length > 0) {
+        // 第一阶段：将所有匹配的标签一次性替换为插槽标记，避免循环内多次重写 innerHTML 破坏已插入的组件 DOM
+        let replacedHtml = textEl.innerHTML;
+        promptsToDraw.forEach((item, idx) => {
+          replacedHtml = replacedHtml.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
+        });
+        textEl.innerHTML = replacedHtml;
 
-      // 第二阶段：在已更新的 DOM 中查找插槽并挂载卡片容器与启动生图
-      promptsToDraw.forEach((item, idx) => {
-        const cardContainer = document.createElement('div');
-        cardContainer.className = 'sct-comfy-card-container';
-        cardContainer.dataset.sctPrompt = item.prompt;
+        // 第二阶段：在已更新的 DOM 中查找插槽并挂载卡片容器与启动生图
+        promptsToDraw.forEach((item, idx) => {
+          const cardContainer = document.createElement('div');
+          cardContainer.className = 'sct-comfy-card-container';
+          cardContainer.dataset.sctPrompt = item.prompt;
 
-        const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
-        if (slot) {
-          slot.replaceWith(cardContainer);
-        } else {
-          textEl.appendChild(cardContainer);
-        }
+          const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
+          if (slot) {
+            const parent = slot.parentElement;
+            if (parent && parent.tagName === 'P' && parent.children.length === 1 && parent.textContent.trim() === '') {
+              parent.replaceWith(cardContainer);
+            } else {
+              slot.replaceWith(cardContainer);
+            }
+          } else {
+            textEl.appendChild(cardContainer);
+          }
 
-        // 检测上下文激活的 LoRA
-        const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
+          // 检测上下文激活的 LoRA
+          const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
 
-        if (s.comfyAutoDrawTags) {
-          triggerComfyDraw(item.prompt, cardContainer, activeLoras);
-        } else {
-          cardContainer.innerHTML = `
-            <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
-              <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
-              <div style="margin-top: 8px;">
-                <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
-              </div>
-            </div>
-          `;
-          cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
+          if (s.comfyAutoDrawTags) {
             triggerComfyDraw(item.prompt, cardContainer, activeLoras);
-          });
-        }
-      });
+          } else {
+            cardContainer.innerHTML = `
+              <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
+                <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
+                <div style="margin-top: 8px;">
+                  <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
+                </div>
+              </div>
+            `;
+            cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
+              triggerComfyDraw(item.prompt, cardContainer, activeLoras);
+            });
+          }
+        });
+      }
     }
 
     // 2. 注入消息工具栏操作按钮 (mes_buttons)
@@ -927,6 +934,8 @@
     text = text.replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, '');
     text = text.replace(/<img_prompt>[\s\S]*?<\/img_prompt>/gi, '');
     text = text.replace(/&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;/gi, '');
+    text = text.replace(/image###[\s\S]*?###/gi, '');
+    text = text.replace(/###[\s\S]*?###/gi, '');
     text = text.replace(/```[\s\S]*?```/g, ' [代码块已省略] ');
     text = text.replace(/`([^`]+)`/g, '$1');
     text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
