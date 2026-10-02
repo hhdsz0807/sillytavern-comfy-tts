@@ -1655,9 +1655,9 @@
     const lowerPrompt = (promptText || '').toLowerCase();
     const lowerFull = (fullText || '').toLowerCase();
 
-    // 核心准则：除非英文 tag 明确包含 2 个角色且有肢体接触或互动动作，否则每次坚决只允许激活 1 个角色 LoRA！
+    // 核心准则：双角色且有互动最多允许 3~4 个，单角色正常允许最多 3 个 (常驻 1~2 个 + 动态匹配 1 个)
     const isDual = isDualCharacterWithInteraction(lowerPrompt);
-    const maxAllowedLoras = isDual ? 2 : 1;
+    const maxTotalLoras = isDual ? 4 : 3;
 
     const matchedLoras = [];
 
@@ -1675,48 +1675,51 @@
         if (tws.some(k => text.includes(k))) return true;
       }
       // 检查 LoRA 文件名本身的主名
-      const cleanName = lora.name.replace(/\.[^/.]+$/, '').toLowerCase();
+      const cleanName = lora.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
       if (cleanName.length > 2 && text.includes(cleanName)) return true;
       return false;
     }
 
-    // 第一阶段【最高优先级】：严格只从 promptText (英文 tag 自身) 进行匹配！
-    // 只要生图标签指明了角色，就绝对不跨角色去匹配聊天正文中提到过的其他配角，彻底杜绝提示词与特征污染！
+    // 第 0 阶段【最高优先级 · 绝对常驻】：所有已启用且勾选了常驻生效 (alwaysOn) 的 LoRA 必须直接无条件全量挂载！
+    // 无论是画风 LoRA 还是固定角色 LoRA，永远稳定生效，绝不被任何关键词或单名额逻辑挤掉！
     for (const item of loras) {
-      if (matchedLoras.length >= maxAllowedLoras) break;
       if (!item.enabled || !item.name) continue;
-      if (matchLoraAgainstText(item, lowerPrompt)) {
-        if (!matchedLoras.some(x => x.id === item.id)) {
+      if (item.alwaysOn) {
+        if (!matchedLoras.some(x => x.id === item.id || x.name === item.name)) {
           matchedLoras.push(item);
         }
       }
     }
 
-    // 第二阶段：若 tag 未显式命中且仍有名额，检查是否有常驻生效 LoRA (Always On)
-    if (matchedLoras.length < maxAllowedLoras) {
+    // 第 1 阶段【动态匹配补充】：若总名额未满，优先从生图标签自身 (promptText) 识别专属角色或服装 LoRA
+    if (matchedLoras.length < maxTotalLoras) {
       for (const item of loras) {
-        if (matchedLoras.length >= maxAllowedLoras) break;
-        if (!item.enabled || !item.name) continue;
-        if (item.alwaysOn && !matchedLoras.some(x => x.id === item.id)) {
-          matchedLoras.push(item);
-        }
-      }
-    }
-
-    // 第三阶段：若依然未命中任何 LoRA，最后才使用消息正文上下文 (fullText) 兜底寻找 1 个最贴近的角色
-    if (matchedLoras.length === 0) {
-      for (const item of loras) {
-        if (matchedLoras.length >= maxAllowedLoras) break;
-        if (!item.enabled || !item.name || item.alwaysOn) continue;
-        if (matchLoraAgainstText(item, lowerFull)) {
-          if (!matchedLoras.some(x => x.id === item.id)) {
+        if (matchedLoras.length >= maxTotalLoras) break;
+        if (!item.enabled || !item.name || item.alwaysOn) continue; // 已常驻的不重复匹配
+        if (matchLoraAgainstText(item, lowerPrompt)) {
+          if (!matchedLoras.some(x => x.id === item.id || x.name === item.name)) {
             matchedLoras.push(item);
           }
         }
       }
     }
 
-    return matchedLoras.slice(0, maxAllowedLoras);
+    // 第 2 阶段【上下文兜底匹配】：若除常驻外尚未动态命中任何角色，再使用聊天消息正文 (fullText) 兜底寻找 1 个角色
+    const hasDynamicLora = matchedLoras.some(l => !l.alwaysOn);
+    if (!hasDynamicLora && matchedLoras.length < maxTotalLoras) {
+      for (const item of loras) {
+        if (matchedLoras.length >= maxTotalLoras) break;
+        if (!item.enabled || !item.name || item.alwaysOn) continue;
+        if (matchLoraAgainstText(item, lowerFull)) {
+          if (!matchedLoras.some(x => x.id === item.id || x.name === item.name)) {
+            matchedLoras.push(item);
+            break; // 正文兜底最多补充 1 个
+          }
+        }
+      }
+    }
+
+    return matchedLoras.slice(0, maxTotalLoras);
   }
 
   /* ==========================================================================
@@ -2536,6 +2539,13 @@
   }
 
   function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…', taskKey = null) {
+    if (!container) return;
+    const existingTextEl = container.querySelector('.sct-loading-text');
+    if (existingTextEl) {
+      existingTextEl.textContent = progressText;
+      return;
+    }
+
     container.innerHTML = `
       <div class="sct-comfy-card">
         <div class="sct-comfy-loading">
@@ -2597,7 +2607,17 @@
     });
   }
 
-  // 触发 ComfyUI 生图任务 (带唯一 taskKey 去重锁)
+  // 动态解析处于实时 DOM 树中的活跃卡片容器 (防止酒馆在流式结束时重写 Markdown 导致旧 DOM 脱节)
+  function getActiveCardContainer(taskKey, fallbackEl) {
+    if (taskKey) {
+      const live = document.querySelector(`.sct-comfy-card-container[data-sct-task-key="${taskKey}"]`);
+      if (live && live.isConnected) return live;
+    }
+    if (fallbackEl && fallbackEl.isConnected) return fallbackEl;
+    return fallbackEl;
+  }
+
+  // 触发 ComfyUI 生图任务 (带唯一 taskKey 去重锁与活跃 DOM 动态绑定)
   async function triggerComfyDraw(promptText, container, explicitActiveLoras = null, taskKey = null) {
     const s = getSettings();
     if (!s.comfyEnabled) {
@@ -2607,7 +2627,7 @@
 
     if (taskKey) {
       container.dataset.sctTaskKey = taskKey;
-      sctDrawingTasks.set(taskKey, { status: 'running', images: [], prompt: promptText });
+      sctDrawingTasks.set(taskKey, { status: 'running', images: [], prompt: promptText, container: container });
     }
 
     renderLoadingCard(container, promptText, '🎨 正在构建工作流并连接 ComfyUI…', taskKey);
@@ -2622,8 +2642,8 @@
     const scheduler = s.comfyScheduler || 'normal';
     const seed = Math.floor(Math.random() * 1000000000);
 
-    // 确定启用的 LoRA 列表与特征词注入 (严格限制最多同时激活 2 个)
-    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 2) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
+    // 确定启用的 LoRA 列表与特征词注入 (支持最多 3 个链式加载)
+    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 3) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
     
     // 注入 LoRA 角色特征词到正向提示词中
     const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
@@ -2680,12 +2700,27 @@
             if (msg.type === 'progress') {
               const { value, max } = msg.data;
               const percent = Math.round((value / max) * 100);
-              renderLoadingCard(container, promptText, `🎨 正在采样渲染: ${value}/${max} 步 (${percent}%)`, taskKey);
+              const txt = `🎨 正在采样渲染: ${value}/${max} 步 (${percent}%)`;
+              if (taskKey) {
+                const cur = sctDrawingTasks.get(taskKey);
+                if (cur) cur.lastProgressText = txt;
+              }
+              const target = getActiveCardContainer(taskKey, container);
+              renderLoadingCard(target, promptText, txt, taskKey);
             } else if (msg.type === 'executing') {
               const node = msg.data.node;
-              if (node === '3') renderLoadingCard(container, promptText, `🎨 执行基础 KSampler 采样…`, taskKey);
-              else if (node === '201') renderLoadingCard(container, promptText, `🔍 执行高清放大重绘采样…`, taskKey);
-              else if (node === '8') renderLoadingCard(container, promptText, `🎨 执行 VAE 解码输出…`, taskKey);
+              let txt = null;
+              if (node === '3') txt = `🎨 执行基础 KSampler 采样…`;
+              else if (node === '201') txt = `🔍 执行高清放大重绘采样…`;
+              else if (node === '8') txt = `🎨 执行 VAE 解码输出…`;
+              if (txt) {
+                if (taskKey) {
+                  const cur = sctDrawingTasks.get(taskKey);
+                  if (cur) cur.lastProgressText = txt;
+                }
+                const target = getActiveCardContainer(taskKey, container);
+                renderLoadingCard(target, promptText, txt, taskKey);
+              }
             }
           } catch (_) {}
         };
@@ -2722,7 +2757,8 @@
           if (taskKey) {
             sctDrawingTasks.set(taskKey, { status: 'error', error: '生图等待超时', prompt: promptText });
           }
-          renderErrorCard(container, promptText, '生图等待超时（超过 240 秒）', activeLoras, taskKey);
+          const target = getActiveCardContainer(taskKey, container);
+          renderErrorCard(target, promptText, '生图等待超时（超过 240 秒）', activeLoras, taskKey);
           return;
         }
 
@@ -2732,11 +2768,39 @@
           const hData = await hRes.json();
           const task = hData[promptId];
 
-          if (task && task.outputs && task.outputs['9'] && task.outputs['9'].images) {
+          // 核心拦截 1：ComfyUI 执行报错立刻退出并展示详细错误，绝不死等超时卡死！
+          if (task && task.status && task.status.status_str === 'error') {
+            clearInterval(pollTimer);
+            if (ws) ws.close();
+            const errMsg = task.status.messages?.find(m => m[0] === 'execution_error')?.[1]?.exception_message || 'ComfyUI 采样执行报错，请检查控制台';
+            if (taskKey) {
+              sctDrawingTasks.set(taskKey, { status: 'error', error: errMsg, prompt: promptText });
+            }
+            const target = getActiveCardContainer(taskKey, container);
+            renderErrorCard(target, promptText, errMsg, activeLoras, taskKey);
+            return;
+          }
+
+          // 核心拦截 2：多输出插槽兼容查找生成的图像
+          let foundImages = null;
+          if (task && task.outputs) {
+            if (task.outputs['9'] && task.outputs['9'].images && task.outputs['9'].images.length > 0) {
+              foundImages = task.outputs['9'].images;
+            } else {
+              for (const k of Object.keys(task.outputs)) {
+                if (task.outputs[k]?.images && task.outputs[k].images.length > 0) {
+                  foundImages = task.outputs[k].images;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (foundImages && foundImages.length > 0) {
             clearInterval(pollTimer);
             if (ws) ws.close();
 
-            const images = task.outputs['9'].images.map((img) => 
+            const images = foundImages.map((img) => 
               `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
             );
 
@@ -2750,8 +2814,9 @@
               }
             }
 
-            renderCarouselCard(container, images, promptText, activeLoras);
-            showToast(`ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个角色 LoRA)` : ''}`, 'success');
+            const target = getActiveCardContainer(taskKey, container);
+            renderCarouselCard(target, images, promptText, activeLoras);
+            showToast(`ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个 LoRA)` : ''}`, 'success');
           }
         } catch (_) {}
       }, 1500);
@@ -2760,7 +2825,8 @@
       if (taskKey) {
         sctDrawingTasks.set(taskKey, { status: 'error', error: e.message, prompt: promptText });
       }
-      renderErrorCard(container, promptText, e.message, activeLoras, taskKey);
+      const target = getActiveCardContainer(taskKey, container);
+      renderErrorCard(target, promptText, e.message, activeLoras, taskKey);
     }
   }
 
@@ -2840,6 +2906,19 @@
         promptsToDraw.forEach((item, idx) => {
           const taskKey = getTaskKey(mesId, idx, item.prompt);
           const existingTask = sctDrawingTasks.get(taskKey);
+          const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
+
+          // 核心拦截 0：检查 DOM 树中是否已经存在该 taskKey 的卡片容器，若有则直接复用
+          const existingInDom = textEl.querySelector(`.sct-comfy-card-container[data-sct-task-key="${taskKey}"]`);
+          if (existingInDom) {
+            if (existingTask && existingTask.status === 'running') {
+              existingTask.container = existingInDom;
+              renderLoadingCard(existingInDom, item.prompt, existingTask.lastProgressText || '🎨 ComfyUI 正在后台生成画面中…', taskKey);
+            } else if (existingTask && existingTask.status === 'completed' && existingTask.images && existingTask.images.length > 0) {
+              renderCarouselCard(existingInDom, existingTask.images, item.prompt, existingTask.activeLoras || activeLoras);
+            }
+            return;
+          }
 
           const cardContainer = document.createElement('div');
           cardContainer.className = 'sct-comfy-card-container';
@@ -2869,22 +2948,24 @@
             textEl.appendChild(cardContainer);
           }
 
-          // 检测上下文激活的 LoRA
-          const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
-
           // 核心防重复与持久化还原拦截：
-          // 1. 优先从内存、酒馆消息 extra 或本地 localStorage 读取已完成图像
+          // 1. 优先从内存已完成任务或本地存储中还原
+          if (existingTask && existingTask.status === 'completed' && existingTask.images && existingTask.images.length > 0) {
+            renderCarouselCard(cardContainer, existingTask.images, item.prompt, existingTask.activeLoras || activeLoras);
+            return;
+          }
+
           const cached = findCachedTask(taskKey, mesId, idx, item.prompt);
           if (cached && cached.images && cached.images.length > 0) {
-            // 该标签之前已经成功出过图，直接还原已生成的轮播卡片，绝不重复调用 ComfyUI！
-            renderCarouselCard(cardContainer, cached.images, item.prompt, activeLoras);
+            renderCarouselCard(cardContainer, cached.images, item.prompt, cached.activeLoras || activeLoras);
             return;
           }
 
           // 2. 检查内存中是否正在运行中
           if (existingTask && existingTask.status === 'running') {
-            // 任务正在执行中，卡片保持加载态，绝不重复提交！
-            renderLoadingCard(cardContainer, item.prompt, '🎨 ComfyUI 正在后台生成画面中…', taskKey);
+            // 实时将新挂载的 cardContainer 绑定给后台任务！
+            existingTask.container = cardContainer;
+            renderLoadingCard(cardContainer, item.prompt, existingTask.lastProgressText || '🎨 ComfyUI 正在后台生成画面中…', taskKey);
             return;
           }
 
