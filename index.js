@@ -28,8 +28,8 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认自动配图指示词 (必须使用 <image> 标签包裹)
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\n格式：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \\(re:zero\\)), 图片英文tag###</image>\n示例：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
+  // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入与多角色动作互动规范)
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **多角色动作互动规范**：如果是多个角色，必须描述这多个角色的具体互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。\n3. **标签格式**：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \\(re:zero\\)), 如果是多个角色需要描述这多个角色的动作，比如2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上， 图片英文tag###</image>\n【单人示例】：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【多角色互动示例】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -123,6 +123,11 @@
   let cachedSamplers = [];
   let cachedSchedulers = [];
 
+  // 全局生图任务去重与状态记录表 (杜绝重复触发与无限刷图)
+  // key: mesId + '::' + promptIndex + '::' + promptSignature
+  // val: { status: 'running'|'completed'|'error', images: [], prompt: string }
+  const sctDrawingTasks = new Map();
+
   /* ==========================================================================
      1. 上下文与设置管理 (Context & Settings)
      ========================================================================== */
@@ -145,7 +150,9 @@
         if (!Array.isArray(extSettings[MODULE_NAME].comfyLoras)) {
           extSettings[MODULE_NAME].comfyLoras = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.comfyLoras));
         }
-        if (!extSettings[MODULE_NAME].imageInstructionText || !extSettings[MODULE_NAME].imageInstructionText.includes('emilia')) {
+        if (!extSettings[MODULE_NAME].imageInstructionText || 
+            !extSettings[MODULE_NAME].imageInstructionText.includes('就地插入') || 
+            !extSettings[MODULE_NAME].imageInstructionText.includes('多个角色的动作')) {
           extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
         }
       }
@@ -639,24 +646,72 @@
     if (retryBtn) {
       retryBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        triggerComfyDraw(promptText, container, activeLoras);
+        const tk = container.dataset.sctTaskKey;
+        if (tk) sctDrawingTasks.delete(tk);
+        triggerComfyDraw(promptText, container, activeLoras, tk);
       });
     }
   }
 
-  function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…') {
+  // 中止并清空 ComfyUI 排队任务
+  async function clearComfyQueue() {
+    const comfyHost = getCleanComfyHost();
+    try {
+      await fetch(`${comfyHost}/interrupt`, { method: 'POST' }).catch(() => {});
+      await fetch(`${comfyHost}/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true })
+      }).catch(() => {});
+
+      // 将当前所有运行中的生图标记为已中止
+      sctDrawingTasks.forEach((val) => {
+        if (val && val.status === 'running') {
+          val.status = 'error';
+          val.error = '生图任务已被手动中止并已清空后台排队';
+        }
+      });
+
+      // 更新界面中所有正在加载的卡片
+      document.querySelectorAll('.sct-comfy-card-container').forEach((c) => {
+        const tk = c.dataset.sctTaskKey;
+        const prompt = c.dataset.sctPrompt || '';
+        if (tk && sctDrawingTasks.get(tk)?.status === 'error') {
+          renderErrorCard(c, prompt, '生图已被手动中止并已清空后台排队', [], tk);
+        }
+      });
+
+      showToast('已向 ComfyUI 发送中止信号并清空排队任务！', 'info');
+    } catch (e) {
+      showToast(`清空队列异常: ${e.message}`, 'error');
+    }
+  }
+
+  function renderLoadingCard(container, promptText, progressText = '🎨 ComfyUI 正在后台生成画面…', taskKey = null) {
     container.innerHTML = `
       <div class="sct-comfy-card">
         <div class="sct-comfy-loading">
           <div class="sct-spinner"></div>
-          <div class="sct-loading-text">${progressText}</div>
-          <div class="sct-loading-hint">提示词: ${promptText.slice(0, 50)}...</div>
+          <div class="sct-loading-text">${escapeHtml(progressText)}</div>
+          <div class="sct-loading-hint">提示词: ${escapeHtml(promptText.slice(0, 50))}...</div>
+          <div style="margin-top: 8px;">
+            <button type="button" class="sct-cancel-draw-btn" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #fca5a5; font-size: 11px; padding: 4px 12px; border-radius: 6px; cursor: pointer;">🛑 中止此次生图并清空排队</button>
+          </div>
         </div>
       </div>
     `;
+    const cancelBtn = container.querySelector('.sct-cancel-draw-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await clearComfyQueue();
+        if (taskKey) sctDrawingTasks.delete(taskKey);
+        renderErrorCard(container, promptText, '用户主动中止了生图任务', [], taskKey);
+      });
+    }
   }
 
-  function renderErrorCard(container, promptText, err, activeLoras) {
+  function renderErrorCard(container, promptText, err, activeLoras = [], taskKey = null) {
     container.innerHTML = `
       <div class="sct-comfy-card">
         <div class="sct-comfy-error">
@@ -664,25 +719,37 @@
             <span>⚠️</span>
             <span>ComfyUI 生图失败</span>
           </div>
-          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${err || '未能连接到 ComfyUI 服务'}</div>
-          <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
+          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${escapeHtml(err || '未能连接到 ComfyUI 服务')}</div>
+          <div style="display: flex; gap: 8px; justify-content: center;">
+            <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
+            <button type="button" class="sct-comfy-btn sct-error-clear" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.35); color: #fca5a5;">🛑 清空后台排队</button>
+          </div>
         </div>
       </div>
     `;
     container.querySelector('.sct-error-retry').addEventListener('click', () => {
-      triggerComfyDraw(promptText, container, activeLoras);
+      if (taskKey) sctDrawingTasks.delete(taskKey);
+      triggerComfyDraw(promptText, container, activeLoras, taskKey);
+    });
+    container.querySelector('.sct-error-clear').addEventListener('click', async () => {
+      await clearComfyQueue();
     });
   }
 
-  // 触发 ComfyUI 生图任务
-  async function triggerComfyDraw(promptText, container, explicitActiveLoras = null) {
+  // 触发 ComfyUI 生图任务 (带唯一 taskKey 去重锁)
+  async function triggerComfyDraw(promptText, container, explicitActiveLoras = null, taskKey = null) {
     const s = getSettings();
     if (!s.comfyEnabled) {
       showToast('ComfyUI 绘图功能未开启', 'warning');
       return;
     }
 
-    renderLoadingCard(container, promptText, '🎨 正在构建工作流并连接 ComfyUI…');
+    if (taskKey) {
+      container.dataset.sctTaskKey = taskKey;
+      sctDrawingTasks.set(taskKey, { status: 'running', images: [], prompt: promptText });
+    }
+
+    renderLoadingCard(container, promptText, '🎨 正在构建工作流并连接 ComfyUI…', taskKey);
 
     const comfyHost = getCleanComfyHost();
     const batch = Math.min(3, Math.max(1, s.comfyBatchCount || 1));
@@ -752,12 +819,12 @@
             if (msg.type === 'progress') {
               const { value, max } = msg.data;
               const percent = Math.round((value / max) * 100);
-              renderLoadingCard(container, promptText, `🎨 正在采样渲染: ${value}/${max} 步 (${percent}%)`);
+              renderLoadingCard(container, promptText, `🎨 正在采样渲染: ${value}/${max} 步 (${percent}%)`, taskKey);
             } else if (msg.type === 'executing') {
               const node = msg.data.node;
-              if (node === '3') renderLoadingCard(container, promptText, `🎨 执行基础 KSampler 采样…`);
-              else if (node === '201') renderLoadingCard(container, promptText, `🔍 执行高清放大重绘采样…`);
-              else if (node === '8') renderLoadingCard(container, promptText, `🎨 执行 VAE 解码输出…`);
+              if (node === '3') renderLoadingCard(container, promptText, `🎨 执行基础 KSampler 采样…`, taskKey);
+              else if (node === '201') renderLoadingCard(container, promptText, `🔍 执行高清放大重绘采样…`, taskKey);
+              else if (node === '8') renderLoadingCard(container, promptText, `🎨 执行 VAE 解码输出…`, taskKey);
             }
           } catch (_) {}
         };
@@ -791,7 +858,10 @@
         if (pollCount > maxPoll) {
           clearInterval(pollTimer);
           if (ws) ws.close();
-          renderErrorCard(container, promptText, '生图等待超时（超过 240 秒）', activeLoras);
+          if (taskKey) {
+            sctDrawingTasks.set(taskKey, { status: 'error', error: '生图等待超时', prompt: promptText });
+          }
+          renderErrorCard(container, promptText, '生图等待超时（超过 240 秒）', activeLoras, taskKey);
           return;
         }
 
@@ -809,6 +879,10 @@
               `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
             );
 
+            if (taskKey) {
+              sctDrawingTasks.set(taskKey, { status: 'completed', images: images, prompt: promptText });
+            }
+
             renderCarouselCard(container, images, promptText, activeLoras);
             showToast(`ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个角色 LoRA)` : ''}`, 'success');
           }
@@ -816,7 +890,10 @@
       }, 1500);
 
     } catch (e) {
-      renderErrorCard(container, promptText, e.message, activeLoras);
+      if (taskKey) {
+        sctDrawingTasks.set(taskKey, { status: 'error', error: e.message, prompt: promptText });
+      }
+      renderErrorCard(container, promptText, e.message, activeLoras, taskKey);
     }
   }
 
@@ -824,12 +901,44 @@
      7. 消息 DOM 扫描与自动化处理 (Message Scanning & Tag Processing)
      ========================================================================== */
 
+  // 判断 SillyTavern 是否正处于流式生成 / 打字中
+  function isSTGenerating() {
+    if (typeof is_send_press !== 'undefined' && is_send_press) return true;
+    const stopBtn = document.getElementById('stop_button');
+    if (stopBtn && (stopBtn.style.display !== 'none' && stopBtn.offsetParent !== null)) {
+      return true;
+    }
+    const typing = document.querySelector('#chat .typing_indicator, .mes.streaming, .mes[is_streaming="true"]');
+    if (typing) return true;
+    return false;
+  }
+
   function processSingleMessage(mesEl) {
     if (!mesEl) return;
+
+    // 核心防抖与防重复检查 1：如果此消息正在 AI 打字机流式生成中，绝不提前触发生图！
+    // 避免 AI 打字机每输出一个 Token / 字符就触发一次生图导致无限生成十几张图！
+    const isStreaming = mesEl.classList.contains('streaming') ||
+                        mesEl.querySelector('.streaming') ||
+                        (typeof is_send_press !== 'undefined' && is_send_press) ||
+                        mesEl.getAttribute('is_streaming') === 'true' ||
+                        mesEl.querySelector('.typing_indicator') ||
+                        (isSTGenerating() && (mesEl === document.querySelector('#chat .mes:last-child') || !mesEl.getAttribute('mesid')));
+    if (isStreaming) {
+      return;
+    }
 
     const s = getSettings();
     const textEl = mesEl.querySelector('.mes_text');
     if (!textEl) return;
+
+    // 消息唯一标识：优先获取酒馆的 mesid，没有则按其在父容器中的索引兜底
+    const mesId = mesEl.getAttribute('mesid') || mesEl.dataset.sctMesId || (() => {
+      const idx = Array.from(mesEl.parentElement?.children || []).indexOf(mesEl);
+      const genId = `mes_idx_${idx}`;
+      mesEl.dataset.sctMesId = genId;
+      return genId;
+    })();
 
     // 1. 扫描并替换生图标签 (同时完全兼容纯文本 image###...###、带标签 <image>...</image>、Markdown 代码包裹等多种形态)
     const textHtml = textEl.innerHTML;
@@ -847,20 +956,30 @@
       }
 
       if (promptsToDraw.length > 0) {
-        // 第一阶段：将所有匹配的标签一次性替换为插槽标记，避免循环内多次重写 innerHTML 破坏已插入的组件 DOM
+        // 第一阶段：将所有匹配的标签一次性替换为精准插槽标记
         let replacedHtml = textEl.innerHTML;
         promptsToDraw.forEach((item, idx) => {
-          replacedHtml = replacedHtml.replace(item.raw, `<div class="sct-comfy-slot" data-idx="${idx}"></div>`);
+          const slotToken = `<div class="sct-comfy-slot" data-sct-mes="${mesId}" data-sct-idx="${idx}"></div>`;
+          const rawIdx = replacedHtml.indexOf(item.raw);
+          if (rawIdx !== -1) {
+            replacedHtml = replacedHtml.slice(0, rawIdx) + slotToken + replacedHtml.slice(rawIdx + item.raw.length);
+          } else {
+            replacedHtml = replacedHtml.replace(item.raw, slotToken);
+          }
         });
         textEl.innerHTML = replacedHtml;
 
         // 第二阶段：在已更新的 DOM 中查找插槽并挂载卡片容器与启动生图
         promptsToDraw.forEach((item, idx) => {
+          const taskKey = `mes_${mesId}_slot_${idx}_${item.prompt.slice(0, 40)}`;
+          const existingTask = sctDrawingTasks.get(taskKey);
+
           const cardContainer = document.createElement('div');
           cardContainer.className = 'sct-comfy-card-container';
           cardContainer.dataset.sctPrompt = item.prompt;
+          cardContainer.dataset.sctTaskKey = taskKey;
 
-          const slot = textEl.querySelector(`.sct-comfy-slot[data-idx="${idx}"]`);
+          const slot = textEl.querySelector(`.sct-comfy-slot[data-sct-mes="${mesId}"][data-sct-idx="${idx}"]`);
           if (slot) {
             const parent = slot.parentElement;
             if (parent && parent.tagName === 'P' && parent.children.length === 1 && parent.textContent.trim() === '') {
@@ -875,19 +994,36 @@
           // 检测上下文激活的 LoRA
           const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
 
+          // 核心防重复拦截：
+          if (existingTask) {
+            if (existingTask.status === 'completed' && existingTask.images && existingTask.images.length > 0) {
+              // 该标签之前已经成功出过图，直接还原已生成的轮播卡片，绝不重复调用 ComfyUI！
+              renderCarouselCard(cardContainer, existingTask.images, item.prompt, activeLoras);
+              return;
+            }
+            if (existingTask.status === 'running') {
+              // 任务正在执行中，卡片保持加载态，绝不重复提交！
+              renderLoadingCard(cardContainer, item.prompt, '🎨 ComfyUI 正在后台生成画面中…', taskKey);
+              return;
+            }
+          }
+
+          // 记录任务状态为 running
+          sctDrawingTasks.set(taskKey, { status: 'running', images: [], container: cardContainer, prompt: item.prompt });
+
           if (s.comfyAutoDrawTags) {
-            triggerComfyDraw(item.prompt, cardContainer, activeLoras);
+            triggerComfyDraw(item.prompt, cardContainer, activeLoras, taskKey);
           } else {
             cardContainer.innerHTML = `
               <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
-                <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${item.prompt.slice(0, 35)}...</i></span>
+                <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${escapeHtml(item.prompt.slice(0, 35))}...</i></span>
                 <div style="margin-top: 8px;">
                   <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
                 </div>
               </div>
             `;
             cardContainer.querySelector('.sct-start-draw').addEventListener('click', () => {
-              triggerComfyDraw(item.prompt, cardContainer, activeLoras);
+              triggerComfyDraw(item.prompt, cardContainer, activeLoras, taskKey);
             });
           }
         });
@@ -1620,6 +1756,7 @@
 
             <div class="sct-test-btn-group">
               <button type="button" class="sct-comfy-btn" id="sct-btn-test-comfy">📡 测试 ComfyUI 连接与扫描全部模型</button>
+              <button type="button" class="sct-comfy-btn" id="sct-btn-clear-queue" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.35); color: #fca5a5;">🛑 中止当前生图并清空排队</button>
             </div>
           </div>
 
@@ -2047,6 +2184,10 @@
       }
     });
 
+    container.querySelector('#sct-btn-clear-queue')?.addEventListener('click', async () => {
+      await clearComfyQueue();
+    });
+
     // TTS 绑定
     const voiceSelect = container.querySelector('#sct-cfg-voice');
     populateVoiceList(voiceSelect);
@@ -2211,8 +2352,49 @@
       }
     }
 
-    const chatObserver = new MutationObserver(() => {
-      scanAllMessages();
+    let scanDebounceTimer = null;
+    function debouncedScanAllMessages(delay = 250) {
+      if (scanDebounceTimer) clearTimeout(scanDebounceTimer);
+      scanDebounceTimer = setTimeout(() => {
+        scanAllMessages();
+      }, delay);
+    }
+
+    const chatObserver = new MutationObserver((mutations) => {
+      // 检查变动是否全是插件自身的卡片、加载状态、TTS 浮条、消息按钮或插槽更新，若是则完全忽略，绝不触发重新扫描
+      let hasExternalChange = false;
+      for (const m of mutations) {
+        const target = m.target;
+        if (target && target.closest && target.closest('.sct-comfy-card, .sct-comfy-card-container, .sct-floating-tts, .sct-tts-status-badge, .sct-mes-action-btn, .sct-comfy-slot')) {
+          continue;
+        }
+        let allSctNodes = true;
+        if (m.addedNodes && m.addedNodes.length > 0) {
+          for (const node of m.addedNodes) {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              if (!node.classList?.contains('sct-comfy-card') && 
+                  !node.classList?.contains('sct-comfy-card-container') && 
+                  !node.classList?.contains('sct-comfy-slot') &&
+                  !node.classList?.contains('sct-mes-action-btn')) {
+                allSctNodes = false;
+                break;
+              }
+            } else {
+              allSctNodes = false;
+              break;
+            }
+          }
+        } else {
+          allSctNodes = false;
+        }
+        if (!allSctNodes) {
+          hasExternalChange = true;
+          break;
+        }
+      }
+      if (hasExternalChange) {
+        debouncedScanAllMessages(250);
+      }
     });
 
     const targetChat = document.getElementById('chat');

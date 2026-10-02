@@ -25,13 +25,21 @@
 - **系统级上下文自动注入**：
   插件自动向酒馆上下文注入标准【自动配图指示】，模型无需繁琐配置即可稳定触发：
   ```text
-  【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：
-  格式：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \(re:zero\)), 图片英文tag###</image>
-  示例：
+  【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：
+  1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！
+  2. **多角色动作互动规范**：如果是多个角色，必须描述这多个角色的具体互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。
+  3. **标签格式**：<image>image###sfw/nsfw, 主体数量(如 1girl / 1girl, 1boy / 2girls), 人物名称(如 emilia \(re:zero\)), 如果是多个角色需要描述这多个角色的动作，比如2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上， 图片英文tag###</image>
+  【单人示例】：
   <image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
-  【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！
+  【多角色互动示例】：
+  <image>image###sfw, 1girl, 1boy, emilia \(re:zero\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>
+  【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！
   ```
 - **一键复制提示词**：配置面板内提供一键复制按钮，可随时复制配图指示直接粘贴至角色卡、Persona 或世界书。
+- **防止重复生图与一键清空排队**：
+  - **流式输出防抖熔断**：在 AI 流式打字期间严密锁定生图触发，杜绝因 Token 刷新造成的重复与无限刷图；
+  - **唯一任务状态去重映射**：已生成或正在生成的插槽绝对不重复提交 ComfyUI；
+  - **🛑 一键中止当前生图并清空排队**：在配置面板和加载中卡片均提供一键中断（调用 ComfyUI 原生 `/interrupt` 与清空 `/queue`），遇到误触或积压可一键秒停。
 
 ### 3. 📱 移动端与桌面端交互轮播卡片
 - **多图手势滑动轮播**：支持单次生成 1 ~ 3 张图片，在移动设备上支持**手指左右滑动**切换，桌面端支持点击翻页与圆点直达。
