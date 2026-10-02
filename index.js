@@ -28,8 +28,8 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认自动配图指示词
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\n<image>image###sfw, 英文tag提示词###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
+  // 默认自动配图指示词 (纯文本标签规范)
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。如果不需要配图则正常回复文字；如果需要配图，请直接在正文相应精彩位置嵌入生图标签：\nimage###sfw, 英文tag提示词###\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -1616,7 +1616,7 @@
             </div>
 
             <div class="sct-setting-row">
-              <label for="sct-cfg-auto-draw">自动检测正文中 &lt;image&gt; 标签即时生图</label>
+              <label for="sct-cfg-auto-draw">自动检测正文中生图标签 (image###...###) 即时生图</label>
               <input type="checkbox" id="sct-cfg-auto-draw" ${s.comfyAutoDrawTags ? 'checked' : ''} />
             </div>
 
