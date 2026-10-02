@@ -25,14 +25,14 @@
 - **系统级上下文自动注入**：
   插件自动向酒馆上下文注入标准【自动配图指示】，模型无需繁琐配置即可稳定触发：
   ```text
-  【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：
+  【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：
   1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！
-  2. **角色数量限制**：**单张图片最多只允许出现 2 个主要角色**（主体数量最多为 2 人，如 1girl、1boy、1girl, 1boy 或 2girls），**绝对严禁出现 3 个及以上角色**，确保画面构图精准聚焦与画质稳定！
-  3. **多角色动作互动规范**：当画面为 2 个角色时，必须具体描述这 2 个角色的互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。
-  4. **标签格式**：<image>image###sfw/nsfw, 主体数量(最多2人, 如 1girl / 1girl, 1boy / 2girls), 人物名称(最多2人, 如 emilia \(re:zero\)), 如果是2个角色需要描述两者的互动动作(比如 2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上)，图片英文tag###</image>
-  【单人示例】：
-  <image>image###sfw, 1girl, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
-  【双人互动示例】：
+  2. **单主体与防污染规则（重要）**：**除非 2 个角色发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个角色主体**（如 1girl 或 1boy，搭配 solo）！英文 tag 必须完全聚焦于该单一角色，**绝对严禁在单人图片中混入其他任何角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止单人图误生其他角色的尾巴、发色或配饰）！
+  3. **双人接触互动严格受限**：仅当情节中 2 个角色存在**直接身体接触或明确互动动作**时，才允许使用双主体标签（如 1girl, 1boy 或 2girls），并且必须在 tag 中明确写出两者具体的互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！
+  4. **标签格式**：<image>image###sfw/nsfw, 主体数量(无身体接触必须为1人如 1girl, solo; 有接触时最多2人如 1girl, 1boy), 人物名称(无接触仅填当前1人; 有接触填2人), 动作与特征描述(如有2人必须描述具体互动动作), 图片英文tag###</image>
+  【单人示例（默认常规，纯净无污染）】：
+  <image>image###sfw, 1girl, solo, emilia \(re:zero\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>
+  【双人身体接触互动示例（仅在有明确接触动作时使用）】：
   <image>image###sfw, 1girl, 1boy, emilia \(re:zero\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>
   【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！
   ```

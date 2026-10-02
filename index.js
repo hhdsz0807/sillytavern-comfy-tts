@@ -28,8 +28,8 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
 
-  // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、最多2个主要角色与双角色动作规范)
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **角色数量限制**：**单张图片最多只允许出现 2 个主要角色**（主体数量最多为 2 人，如 1girl、1boy、1girl, 1boy 或 2girls），**绝对严禁出现 3 个及以上角色**，确保画面构图精准聚焦与画质稳定！\n3. **多角色动作互动规范**：当画面为 2 个角色时，必须具体描述这 2 个角色的互动动作（例如：2个女孩互相拥抱/hugging each other，1boy拉着1girl的手/holding hands，1girl坐在1boy腿上/sitting on lap等），避免角色之间孤立生硬。\n4. **标签格式**：<image>image###sfw/nsfw, 主体数量(最多2人, 如 1girl / 1girl, 1boy / 2girls), 人物名称(最多2人, 如 emilia \\(re:zero\\)), 如果是2个角色需要描述两者的互动动作(比如 2个女孩互相拥抱，1boy拉着1girl的手，1girl坐在1boy腿上)，图片英文tag###</image>\n【单人示例】：\n<image>image###sfw, 1girl, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【双人互动示例】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
+  // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **单主体与防污染规则（重要）**：**除非 2 个角色发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个角色主体**（如 1girl 或 1boy，搭配 solo）！英文 tag 必须完全聚焦于该单一角色，**绝对严禁在单人图片中混入其他任何角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止单人图误生其他角色的尾巴、发色或配饰）！\n3. **双人接触互动严格受限**：仅当情节中 2 个角色存在**直接身体接触或明确互动动作**时，才允许使用双主体标签（如 1girl, 1boy 或 2girls），并且必须在 tag 中明确写出两者具体的互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n4. **标签格式**：<image>image###sfw/nsfw, 主体数量(无身体接触必须为1人如 1girl, solo; 有接触时最多2人如 1girl, 1boy), 人物名称(无接触仅填当前1人; 有接触填2人), 动作与特征描述(如有2人必须描述具体互动动作), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【双人身体接触互动示例（仅在有明确接触动作时使用）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -152,8 +152,8 @@
         }
         if (!extSettings[MODULE_NAME].imageInstructionText || 
             !extSettings[MODULE_NAME].imageInstructionText.includes('就地插入') || 
-            !extSettings[MODULE_NAME].imageInstructionText.includes('最多只允许出现 2 个主要角色') ||
-            !extSettings[MODULE_NAME].imageInstructionText.includes('多个角色的动作')) {
+            !extSettings[MODULE_NAME].imageInstructionText.includes('防污染') ||
+            !extSettings[MODULE_NAME].imageInstructionText.includes('肢体接触')) {
           extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
         }
       }
@@ -312,36 +312,103 @@
     return s;
   }
 
-  // 检测上下文正文或提示词中是否命中了 LoRA 激活关键词 (严格限制角色 LoRA 最多同时激活 2 个)
+  // 判断 promptText 是否属于“明确的双角色且存在肢体接触或互动动作”
+  function isDualCharacterWithInteraction(promptText) {
+    if (!promptText) return false;
+    const lower = promptText.toLowerCase();
+
+    // 1. 检查是否存在双角色指示词 (如 1girl, 1boy / 2girls / couple 等)
+    const hasDualSubject = /(?:1girl\s*,\s*1boy|1boy\s*,\s*1girl|2girls|2boys|pair|couple)/i.test(lower);
+    if (!hasDualSubject) return false;
+
+    // 2. 检查是否存在具体的身体接触或互动动作关键词 (中英文全覆盖)
+    const interactionKeywords = [
+      'hug', 'hugging', 'embrace', 'embracing',
+      'holding hands', 'hand in hand', 'holding hand',
+      'kiss', 'kissing',
+      'lap', 'sitting on lap', 'on his lap', 'on her lap',
+      'cuddle', 'cuddling', 'snuggle',
+      'lean on', 'leaning on', 'leaning against',
+      'piggyback', 'princess carry', 'carrying',
+      'intertwined', 'arm around', 'arms around',
+      'touching', 'physical contact',
+      '拥抱', '牵手', '接吻', '坐在腿上', '依偎', '靠在', '抚摸'
+    ];
+
+    return interactionKeywords.some(kw => lower.includes(kw));
+  }
+
+  // 检测生图应激活的角色 LoRA (严格遵循防污染机制：除非双角色有动作或身体接触，否则每次只激活 1 个 LoRA，且优先精准匹配 tag 本身)
   function detectActiveLoras(fullText, promptText) {
     const s = getSettings();
     const loras = s.comfyLoras || [];
-    const activeList = [];
-    const lowerContext = `${fullText} ${promptText}`.toLowerCase();
+    if (!loras || loras.length === 0) return [];
 
-    // 1. 优先收集常驻生效的 LoRA (Always On)
-    loras.forEach((item) => {
-      if (!item.enabled || !item.name) return;
-      if (item.alwaysOn) {
-        if (!activeList.some(x => x.id === item.id)) {
-          activeList.push(item);
+    const lowerPrompt = (promptText || '').toLowerCase();
+    const lowerFull = (fullText || '').toLowerCase();
+
+    // 核心准则：除非英文 tag 明确包含 2 个角色且有肢体接触或互动动作，否则每次坚决只允许激活 1 个角色 LoRA！
+    const isDual = isDualCharacterWithInteraction(lowerPrompt);
+    const maxAllowedLoras = isDual ? 2 : 1;
+
+    const matchedLoras = [];
+
+    // Helper: 检查某个 LoRA 是否与指定文本匹配
+    function matchLoraAgainstText(lora, text) {
+      if (!lora.enabled || !lora.name) return false;
+      // 检查配置的关键词 (如 'emilia, 艾米莉亚')
+      if (lora.keywords) {
+        const kws = lora.keywords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(Boolean);
+        if (kws.some(k => text.includes(k))) return true;
+      }
+      // 检查触发词特定特征 (去除 1girl/1boy 等泛词)
+      if (lora.triggerWords) {
+        const tws = lora.triggerWords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(k => k.length > 2 && !['1girl', '1boy', 'solo', 'masterpiece', '2girls'].includes(k));
+        if (tws.some(k => text.includes(k))) return true;
+      }
+      // 检查 LoRA 文件名本身的主名
+      const cleanName = lora.name.replace(/\.[^/.]+$/, '').toLowerCase();
+      if (cleanName.length > 2 && text.includes(cleanName)) return true;
+      return false;
+    }
+
+    // 第一阶段【最高优先级】：严格只从 promptText (英文 tag 自身) 进行匹配！
+    // 只要生图标签指明了角色，就绝对不跨角色去匹配聊天正文中提到过的其他配角，彻底杜绝提示词与特征污染！
+    for (const item of loras) {
+      if (matchedLoras.length >= maxAllowedLoras) break;
+      if (!item.enabled || !item.name) continue;
+      if (matchLoraAgainstText(item, lowerPrompt)) {
+        if (!matchedLoras.some(x => x.id === item.id)) {
+          matchedLoras.push(item);
         }
       }
-    });
+    }
 
-    // 2. 匹配正文或提示词中命中关键词的 LoRA
-    loras.forEach((item) => {
-      if (!item.enabled || !item.name || item.alwaysOn) return;
-      if (!item.keywords) return;
-      const kws = item.keywords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(Boolean);
-      const isMatched = kws.some(k => lowerContext.includes(k));
-      if (isMatched && !activeList.some(x => x.id === item.id)) {
-        activeList.push(item);
+    // 第二阶段：若 tag 未显式命中且仍有名额，检查是否有常驻生效 LoRA (Always On)
+    if (matchedLoras.length < maxAllowedLoras) {
+      for (const item of loras) {
+        if (matchedLoras.length >= maxAllowedLoras) break;
+        if (!item.enabled || !item.name) continue;
+        if (item.alwaysOn && !matchedLoras.some(x => x.id === item.id)) {
+          matchedLoras.push(item);
+        }
       }
-    });
+    }
 
-    // 3. 严格限制角色 LoRA 最多同时激活 2 个，防止模型权重过载冲突与画风崩坏
-    return activeList.slice(0, 2);
+    // 第三阶段：若依然未命中任何 LoRA，最后才使用消息正文上下文 (fullText) 兜底寻找 1 个最贴近的角色
+    if (matchedLoras.length === 0) {
+      for (const item of loras) {
+        if (matchedLoras.length >= maxAllowedLoras) break;
+        if (!item.enabled || !item.name || item.alwaysOn) continue;
+        if (matchLoraAgainstText(item, lowerFull)) {
+          if (!matchedLoras.some(x => x.id === item.id)) {
+            matchedLoras.push(item);
+          }
+        }
+      }
+    }
+
+    return matchedLoras.slice(0, maxAllowedLoras);
   }
 
   /* ==========================================================================
