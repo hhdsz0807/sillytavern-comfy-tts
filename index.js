@@ -629,6 +629,7 @@
   let inpaintSamPointMode = false;      // 是否开启 SAM2 鼠标坐标点选模式
   let inpaintSamBusy = false;           // 是否正在向 ComfyUI 请求分割任务
   let currentInpaintUploadedName = null; // 缓存当前原图在 ComfyUI 中的文件名，避免重复上传
+  const inpaintSegMaskCache = new Map(); // 缓存当前图片的分割结果 (key -> maskUrl)，二次点击瞬间秒出并防止重复运算
 
   // 画板视图缩放状态
   let inpaintZoomLevel = 1.0;
@@ -812,6 +813,16 @@
         samStatusText.textContent = `正在使用 SAM 识别提取【${label || promptText || '选区'}】...`;
       }
 
+      // 0. 优先命中前端本地分割蒙版缓存 (原图相同时，相同部位或点选坐标毫秒级直出)
+      const cacheCoord = point ? `${Math.round(point.x)}_${Math.round(point.y)}` : '';
+      const segCacheKey = `${currentInpaintUploadedName || inpaintContext.imageUrl}_${type}_${promptText || ''}_${cacheCoord}`;
+      if (inpaintSegMaskCache.has(segCacheKey)) {
+        const cachedMaskUrl = inpaintSegMaskCache.get(segCacheKey);
+        await applyMaskImageToCanvas(cachedMaskUrl, isAddMode);
+        showToast(`已从缓存快速提取【${label || promptText || '选区'}】`, 'success');
+        return;
+      }
+
       const comfyHost = getCleanComfyHost();
 
       // 1. 若尚未上传当前原图，则先上传原图至 ComfyUI
@@ -844,9 +855,10 @@
         currentInpaintUploadedName = upData.name;
       }
 
-      // 2. 根据分割模式组装 ComfyUI 工作流
+      // 2. 根据分割模式组装 ComfyUI 工作流 (SaveImage 增加动态时间戳，强制破除全节点缓存导致的 outputs 为空)
       let promptWf = null;
       let outputNodeId = '6';
+      const ts = Date.now();
 
       if (type === 'text') {
         const isBg = (promptText === '__background__');
@@ -862,7 +874,7 @@
             '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
             '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
-            '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
+            '6': { inputs: { filename_prefix: `sct_sam_bg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
           };
         } else {
           // 常规物体/身体部位识别
@@ -873,7 +885,7 @@
             '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
             '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
-            '6': { inputs: { filename_prefix: 'sct_sam_seg', images: ['5', 0] }, class_type: 'SaveImage' }
+            '6': { inputs: { filename_prefix: `sct_sam_seg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
           };
         }
       } else if (type === 'point') {
@@ -900,7 +912,7 @@
             class_type: 'Sam2Segmentation'
           },
           '4': { inputs: { mask: ['3', 0] }, class_type: 'MaskToImage' },
-          '5': { inputs: { filename_prefix: 'sct_sam2_seg', images: ['4', 0] }, class_type: 'SaveImage' }
+          '5': { inputs: { filename_prefix: `sct_sam2_seg_${ts}`, images: ['4', 0] }, class_type: 'SaveImage' }
         };
       }
 
@@ -915,10 +927,10 @@
       const promptId = pData.prompt_id;
       if (!promptId) throw new Error('ComfyUI 未返回有效任务 ID');
 
-      // 4. 轮询历史记录获取生成结果 (GPU 推理约需 1~2.5 秒)
+      // 4. 轮询历史记录获取生成结果 (GPU 推理约需 1~2.5 秒，缓存命中约 0.3 秒)
       let outputImgInfo = null;
       for (let i = 0; i < 35; i++) {
-        await new Promise(r => setTimeout(r, 900));
+        await new Promise(r => setTimeout(r, 600));
         const hRes = await fetch(`${comfyHost}/history/${promptId}`);
         if (!hRes.ok) continue;
         const hData = await hRes.json();
@@ -933,6 +945,17 @@
             const errMsg = taskInfo.status?.messages?.find(m => m[0] === 'execution_error')?.[1]?.exception_message || '未知分割错误';
             throw new Error(errMsg);
           }
+          if (taskInfo.status?.completed) {
+            // 已完成但未能从 outputs[outputNodeId] 找到图片（尝试在 outputs 所有 key 中寻找）
+            for (const k of Object.keys(taskInfo.outputs || {})) {
+              if (taskInfo.outputs[k]?.images && taskInfo.outputs[k].images.length > 0) {
+                outputImgInfo = taskInfo.outputs[k].images[0];
+                break;
+              }
+            }
+            if (outputImgInfo) break;
+            throw new Error('ComfyUI 任务已完成但未返回生成图像');
+          }
         }
       }
 
@@ -940,8 +963,9 @@
         throw new Error('等待分割结果超时，请检查 ComfyUI 控制台');
       }
 
-      // 5. 应用蒙版到画布
+      // 5. 应用蒙版到画布并缓存结果
       const maskUrl = `${comfyHost}/view?filename=${encodeURIComponent(outputImgInfo.filename)}&subfolder=${encodeURIComponent(outputImgInfo.subfolder || '')}&type=${encodeURIComponent(outputImgInfo.type || 'output')}&t=${Date.now()}`;
+      inpaintSegMaskCache.set(segCacheKey, maskUrl);
       await applyMaskImageToCanvas(maskUrl, isAddMode);
 
       showToast(`已成功提取【${label || promptText || '目标区域'}】`, 'success');
@@ -1518,6 +1542,7 @@
     inpaintTool = 'brush';
     inpaintSamPointMode = false;
     currentInpaintUploadedName = null; // 重置当前上传图片名缓存
+    inpaintSegMaskCache.clear();        // 清空当前图片的分割蒙版缓存
 
     modal.querySelector('#sct-tool-brush').classList.add('active');
     modal.querySelector('#sct-tool-eraser').classList.remove('active');
