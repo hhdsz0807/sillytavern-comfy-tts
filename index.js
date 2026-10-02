@@ -1890,8 +1890,9 @@
             <div class="sct-setting-col">
               <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
               <div class="sct-code-box" id="sct-inst-preview">${escapeHtml(s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION)}</div>
-              <div style="margin-top:4px;">
+              <div style="margin-top:4px; display:flex; gap:6px;">
                 <button type="button" class="sct-comfy-btn" id="sct-btn-copy-inst">📋 复制自动配图提示词</button>
+                <button type="button" class="sct-comfy-btn" id="sct-btn-reset-inst" style="opacity:0.85;">🔄 恢复最新默认规范</button>
               </div>
             </div>
           </div>
@@ -2145,6 +2146,13 @@
       }).catch(() => {
         showToast('复制失败，请手动划选复制', 'warning');
       });
+    });
+
+    container.querySelector('#sct-btn-reset-inst')?.addEventListener('click', () => {
+      saveSettings({ imageInstructionText: DEFAULT_IMAGE_INSTRUCTION });
+      const preview = container.querySelector('#sct-inst-preview');
+      if (preview) preview.textContent = DEFAULT_IMAGE_INSTRUCTION;
+      showToast('已将自动配图提示词恢复为最新规范！', 'success');
     });
 
     // 探查 ComfyUI 资产
