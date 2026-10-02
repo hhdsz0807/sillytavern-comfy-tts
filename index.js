@@ -124,9 +124,14 @@
   let cachedSchedulers = [];
 
   // 全局生图任务去重与状态记录表 (杜绝重复触发与无限刷图)
-  // key: mesId + '::' + promptIndex + '::' + promptSignature
-  // val: { status: 'running'|'completed'|'error', images: [], prompt: string }
+  // key: taskKey
+  // val: { status: 'running'|'completed'|'error', images: [], prompt: string, activeLoras: [] }
   const sctDrawingTasks = new Map();
+
+  // 初始加载保护与会话实时消息追踪：彻底杜绝浏览器刷新时狂刷所有历史消息生图
+  let isInitialLoad = true;
+  let isChatSwitching = false;
+  const newlyReceivedMesIds = new Set();
 
   /* ==========================================================================
      1. 上下文与设置管理 (Context & Settings)
@@ -206,6 +211,189 @@
       return;
     }
     console.log(`[${DISPLAY_NAME}] [${type}]`, msg);
+  }
+
+  /* ==========================================================================
+     持久化生图缓存与生命周期管理 (Persistent Image Cache & Lifecycle)
+     ========================================================================== */
+
+  const SCT_STORAGE_KEY = 'sct_completed_tasks_v2';
+
+  // 将图像 URL 规范化为当前配置的 ComfyUI 主机，彻底避免因 IP、端口或局域网切换导致的旧图裂图
+  function normalizeComfyImageUrl(url) {
+    if (!url || typeof url !== 'string') return '';
+    const currentHost = getCleanComfyHost();
+    if (url.startsWith('/view?')) {
+      return `${currentHost}${url}`;
+    }
+    const match = url.match(/\/view\?[\s\S]*$/);
+    if (match) {
+      return `${currentHost}${match[0]}`;
+    }
+    return url;
+  }
+
+  // 获取当前酒馆会话/角色作用域唯一前缀
+  function getChatScopeKey() {
+    const ctx = getSTContext();
+    if (ctx) {
+      if (ctx.chatId) return `chat_${String(ctx.chatId).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      if (ctx.characterId !== undefined && ctx.characterId !== null) return `char_${ctx.characterId}`;
+    }
+    return 'global';
+  }
+
+  // 生成统一规范的任务唯一键
+  function getTaskKey(mesId, slotIdx, promptText) {
+    const scope = getChatScopeKey();
+    const cleanPrompt = (promptText || '').trim().replace(/\s+/g, ' ').slice(0, 50);
+    return `sct_${scope}_mes_${mesId}_slot_${slotIdx}_${cleanPrompt}`;
+  }
+
+  // 读取所有持久化的任务
+  function getPersistentTasks() {
+    try {
+      const raw = localStorage.getItem(SCT_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // 保存任务结果 (持久化到 localStorage)
+  function savePersistentTask(taskKey, data) {
+    if (!taskKey) return;
+    try {
+      const all = getPersistentTasks();
+      all[taskKey] = {
+        images: (data.images || []).map(normalizeComfyImageUrl),
+        prompt: data.prompt || '',
+        activeLoras: data.activeLoras || [],
+        status: data.status || 'completed',
+        updatedAt: Date.now()
+      };
+      // 保留最近 500 条生图记录，防止 localStorage 膨胀
+      const keys = Object.keys(all);
+      if (keys.length > 500) {
+        keys.sort((a, b) => (all[a]?.updatedAt || 0) - (all[b]?.updatedAt || 0));
+        while (keys.length > 400) {
+          delete all[keys.shift()];
+        }
+      }
+      localStorage.setItem(SCT_STORAGE_KEY, JSON.stringify(all));
+    } catch (e) {
+      console.warn(`[${DISPLAY_NAME}] 保存生图本地缓存失败:`, e);
+    }
+  }
+
+  // 删除任务缓存 (例如点击重新生成时)
+  function removePersistentTask(taskKey) {
+    if (!taskKey) return;
+    try {
+      const all = getPersistentTasks();
+      delete all[taskKey];
+      localStorage.setItem(SCT_STORAGE_KEY, JSON.stringify(all));
+    } catch (_) {}
+  }
+
+  // 从酒馆消息上下文 extra 获取生图缓存
+  function getChatMessageExtraImages(mesId, slotIdx) {
+    try {
+      const ctx = getSTContext();
+      if (!ctx || !ctx.chat) return null;
+      const numId = parseInt(mesId, 10);
+      if (isNaN(numId) || !ctx.chat[numId]) return null;
+      const extra = ctx.chat[numId].extra;
+      if (!extra || !extra.sct_images) return null;
+      const slotData = extra.sct_images[slotIdx];
+      if (slotData && Array.isArray(slotData.images) && slotData.images.length > 0) {
+        return slotData;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 保存生图结果到酒馆消息上下文 extra 并保存聊天记录
+  function saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras = []) {
+    try {
+      const ctx = getSTContext();
+      if (!ctx || !ctx.chat) return;
+      const numId = parseInt(mesId, 10);
+      if (isNaN(numId) || !ctx.chat[numId]) return;
+      if (!ctx.chat[numId].extra) {
+        ctx.chat[numId].extra = {};
+      }
+      if (!ctx.chat[numId].extra.sct_images) {
+        ctx.chat[numId].extra.sct_images = {};
+      }
+      ctx.chat[numId].extra.sct_images[slotIdx] = {
+        images: (images || []).map(normalizeComfyImageUrl),
+        prompt: promptText,
+        activeLoras: activeLoras,
+        savedAt: Date.now()
+      };
+      if (typeof ctx.saveChatDebounced === 'function') {
+        ctx.saveChatDebounced();
+      }
+    } catch (_) {}
+  }
+
+  // 从酒馆消息上下文 extra 移除生图缓存
+  function removeChatMessageExtraImages(mesId, slotIdx) {
+    try {
+      const ctx = getSTContext();
+      if (!ctx || !ctx.chat) return;
+      const numId = parseInt(mesId, 10);
+      if (isNaN(numId) || !ctx.chat[numId] || !ctx.chat[numId].extra?.sct_images) return;
+      delete ctx.chat[numId].extra.sct_images[slotIdx];
+      if (typeof ctx.saveChatDebounced === 'function') {
+        ctx.saveChatDebounced();
+      }
+    } catch (_) {}
+  }
+
+  // 多层级查找已生成的任务 (内存 -> 酒馆 extra -> 本地 localStorage)
+  function findCachedTask(taskKey, mesId, slotIdx, rawPrompt) {
+    // 1. 检查内存缓存 sctDrawingTasks
+    const inMem = sctDrawingTasks.get(taskKey);
+    if (inMem && inMem.status === 'completed' && inMem.images && inMem.images.length > 0) {
+      return inMem;
+    }
+
+    // 2. 检查酒馆消息 extra
+    const fromExtra = getChatMessageExtraImages(mesId, slotIdx);
+    if (fromExtra && fromExtra.images && fromExtra.images.length > 0) {
+      const entry = {
+        status: 'completed',
+        images: fromExtra.images.map(normalizeComfyImageUrl),
+        prompt: fromExtra.prompt || '',
+        activeLoras: fromExtra.activeLoras || []
+      };
+      sctDrawingTasks.set(taskKey, entry);
+      return entry;
+    }
+
+    // 3. 检查 localStorage 持久化缓存 (新格式键名)
+    const pTasks = getPersistentTasks();
+    let fromStorage = pTasks[taskKey];
+    // 兼顾旧版键名格式兜底 (mes_${mesId}_slot_${idx}_${item.prompt.slice(0, 40)})
+    if (!fromStorage && rawPrompt) {
+      const legacyKey = `mes_${mesId}_slot_${slotIdx}_${rawPrompt.slice(0, 40)}`;
+      fromStorage = pTasks[legacyKey];
+    }
+
+    if (fromStorage && fromStorage.images && fromStorage.images.length > 0) {
+      const entry = {
+        status: 'completed',
+        images: fromStorage.images.map(normalizeComfyImageUrl),
+        prompt: fromStorage.prompt || '',
+        activeLoras: fromStorage.activeLoras || []
+      };
+      sctDrawingTasks.set(taskKey, entry);
+      return entry;
+    }
+
+    return null;
   }
 
   /* ==========================================================================
@@ -1221,21 +1409,22 @@
 
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
+    const normalizedImages = (images || []).map(normalizeComfyImageUrl);
     const cardId = container.dataset.sctCardId || `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     container.dataset.sctCardId = cardId;
 
     let state = cardStateMap.get(cardId);
     if (!state) {
-      state = { currentIdx: 0, images: images, prompt: promptText, loras: activeLoras };
+      state = { currentIdx: 0, images: normalizedImages, prompt: promptText, loras: activeLoras };
       cardStateMap.set(cardId, state);
     } else {
-      state.images = images;
+      state.images = normalizedImages;
     }
 
-    const total = images.length;
+    const total = normalizedImages.length;
     const safeIdx = ((state.currentIdx % total) + total) % total;
     state.currentIdx = safeIdx;
-    const currentUrl = images[safeIdx];
+    const currentUrl = normalizedImages[safeIdx];
 
     const loraBadgeHtml = activeLoras && activeLoras.length > 0 
       ? `<span style="font-size:10px; background:rgba(168,85,247,0.3); border:1px solid rgba(168,85,247,0.5); padding:1px 6px; border-radius:8px; color:#f0abfc;">LoRA: ${activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', ')}</span>`
@@ -1261,10 +1450,11 @@
           ${total > 1 ? `
             <button type="button" class="sct-comfy-btn sct-prev-btn">◀ 上一张</button>
             <div class="sct-comfy-dots">
-              ${images.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
+              ${normalizedImages.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
             </div>
             <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
+            <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成所有图片">🔄 重新生成</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
@@ -1306,10 +1496,10 @@
         const diff = e.changedTouches[0].clientX - touchStartX;
         if (diff > 45) {
           state.currentIdx = (state.currentIdx - 1 + total) % total;
-          renderCarouselCard(container, images, promptText, activeLoras);
+          renderCarouselCard(container, state.images, promptText, activeLoras);
         } else if (diff < -45) {
           state.currentIdx = (state.currentIdx + 1) % total;
-          renderCarouselCard(container, images, promptText, activeLoras);
+          renderCarouselCard(container, state.images, promptText, activeLoras);
         }
       }
     }, { passive: true });
@@ -1320,7 +1510,7 @@
         e.preventDefault();
         e.stopPropagation();
         state.currentIdx = (state.currentIdx - 1 + total) % total;
-        renderCarouselCard(container, images, promptText, activeLoras);
+        renderCarouselCard(container, state.images, promptText, activeLoras);
       });
     }
 
@@ -1330,7 +1520,7 @@
         e.preventDefault();
         e.stopPropagation();
         state.currentIdx = (state.currentIdx + 1) % total;
-        renderCarouselCard(container, images, promptText, activeLoras);
+        renderCarouselCard(container, state.images, promptText, activeLoras);
       });
     }
 
@@ -1341,7 +1531,7 @@
         const idx = parseInt(dot.dataset.idx, 10);
         if (!isNaN(idx)) {
           state.currentIdx = idx;
-          renderCarouselCard(container, images, promptText, activeLoras);
+          renderCarouselCard(container, state.images, promptText, activeLoras);
         }
       });
     });
@@ -1366,7 +1556,15 @@
         e.preventDefault();
         e.stopPropagation();
         const tk = container.dataset.sctTaskKey;
-        if (tk) sctDrawingTasks.delete(tk);
+        const mesId = container.dataset.sctMesId || container.closest('.mes')?.getAttribute('mesid');
+        const slotIdx = container.dataset.sctSlotIdx || '0';
+        if (tk) {
+          sctDrawingTasks.delete(tk);
+          removePersistentTask(tk);
+        }
+        if (mesId !== undefined && mesId !== null) {
+          removeChatMessageExtraImages(mesId, slotIdx);
+        }
         triggerComfyDraw(promptText, container, activeLoras, tk);
       });
     }
@@ -1549,13 +1747,28 @@
 
             if (resultImages.length > 0) {
               const state = cardStateMap.get(cardId);
+              let allImages = resultImages;
               if (state && state.images) {
                 state.images.push(...resultImages);
                 state.currentIdx = state.images.length - 1; // 自动跳到新生成的重绘图
+                allImages = state.images;
                 renderCarouselCard(container, state.images, inpaintPrompt, activeLoras);
               } else {
                 renderCarouselCard(container, resultImages, inpaintPrompt, activeLoras);
               }
+
+              // 保存重绘结果到持久化存储与酒馆消息 extra，确保刷新浏览器不丢失且不重复调用
+              const tk = container?.dataset?.sctTaskKey || taskKey;
+              const mesId = container?.dataset?.sctMesId || container?.closest('.mes')?.getAttribute('mesid');
+              const slotIdx = container?.dataset?.sctSlotIdx || '0';
+              if (tk) {
+                sctDrawingTasks.set(tk, { status: 'completed', images: allImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+                savePersistentTask(tk, { status: 'completed', images: allImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+              }
+              if (mesId !== undefined && mesId !== null) {
+                saveChatMessageExtraImages(mesId, slotIdx, allImages, inpaintPrompt, activeLoras);
+              }
+
               showToast('✨ 局部重绘成功！已加入轮播展示', 'success');
             } else {
               renderErrorCard(container, inpaintPrompt, 'ComfyUI 未返回重绘图像输出', activeLoras, taskKey);
@@ -1647,7 +1860,15 @@
     container.querySelector('.sct-error-retry')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (taskKey) sctDrawingTasks.delete(taskKey);
+      const mesId = container.dataset.sctMesId || container.closest('.mes')?.getAttribute('mesid');
+      const slotIdx = container.dataset.sctSlotIdx || '0';
+      if (taskKey) {
+        sctDrawingTasks.delete(taskKey);
+        removePersistentTask(taskKey);
+      }
+      if (mesId !== undefined && mesId !== null) {
+        removeChatMessageExtraImages(mesId, slotIdx);
+      }
       triggerComfyDraw(promptText, container, activeLoras, taskKey);
     });
     container.querySelector('.sct-error-clear')?.addEventListener('click', async (e) => {
@@ -1801,7 +2022,13 @@
             );
 
             if (taskKey) {
-              sctDrawingTasks.set(taskKey, { status: 'completed', images: images, prompt: promptText });
+              sctDrawingTasks.set(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
+              savePersistentTask(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
+              const mesId = container.dataset.sctMesId || container.closest('.mes')?.getAttribute('mesid');
+              const slotIdx = container.dataset.sctSlotIdx || '0';
+              if (mesId !== undefined && mesId !== null) {
+                saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras);
+              }
             }
 
             renderCarouselCard(container, images, promptText, activeLoras);
@@ -1892,13 +2119,15 @@
 
         // 第二阶段：在已更新的 DOM 中查找插槽并挂载卡片容器与启动生图
         promptsToDraw.forEach((item, idx) => {
-          const taskKey = `mes_${mesId}_slot_${idx}_${item.prompt.slice(0, 40)}`;
+          const taskKey = getTaskKey(mesId, idx, item.prompt);
           const existingTask = sctDrawingTasks.get(taskKey);
 
           const cardContainer = document.createElement('div');
           cardContainer.className = 'sct-comfy-card-container';
           cardContainer.dataset.sctPrompt = item.prompt;
           cardContainer.dataset.sctTaskKey = taskKey;
+          cardContainer.dataset.sctMesId = String(mesId);
+          cardContainer.dataset.sctSlotIdx = String(idx);
           cardContainer.setAttribute('aria-hidden', 'true');
           cardContainer.setAttribute('translate', 'no');
 
@@ -1924,26 +2153,39 @@
           // 检测上下文激活的 LoRA
           const activeLoras = detectActiveLoras(textEl.textContent || '', item.prompt);
 
-          // 核心防重复拦截：
-          if (existingTask) {
-            if (existingTask.status === 'completed' && existingTask.images && existingTask.images.length > 0) {
-              // 该标签之前已经成功出过图，直接还原已生成的轮播卡片，绝不重复调用 ComfyUI！
-              renderCarouselCard(cardContainer, existingTask.images, item.prompt, activeLoras);
-              return;
-            }
-            if (existingTask.status === 'running') {
-              // 任务正在执行中，卡片保持加载态，绝不重复提交！
-              renderLoadingCard(cardContainer, item.prompt, '🎨 ComfyUI 正在后台生成画面中…', taskKey);
-              return;
-            }
+          // 核心防重复与持久化还原拦截：
+          // 1. 优先从内存、酒馆消息 extra 或本地 localStorage 读取已完成图像
+          const cached = findCachedTask(taskKey, mesId, idx, item.prompt);
+          if (cached && cached.images && cached.images.length > 0) {
+            // 该标签之前已经成功出过图，直接还原已生成的轮播卡片，绝不重复调用 ComfyUI！
+            renderCarouselCard(cardContainer, cached.images, item.prompt, activeLoras);
+            return;
           }
 
-          // 记录任务状态为 running
-          sctDrawingTasks.set(taskKey, { status: 'running', images: [], container: cardContainer, prompt: item.prompt });
+          // 2. 检查内存中是否正在运行中
+          if (existingTask && existingTask.status === 'running') {
+            // 任务正在执行中，卡片保持加载态，绝不重复提交！
+            renderLoadingCard(cardContainer, item.prompt, '🎨 ComfyUI 正在后台生成画面中…', taskKey);
+            return;
+          }
 
-          if (s.comfyAutoDrawTags) {
+          // 3. 核心冷启动/历史消息防刷保护：
+          // 严禁在浏览器刷新/初始载入历史消息 (isInitialLoad) 或正在切换角色聊天 (isChatSwitching) 时自动狂刷所有历史消息！
+          // 仅允许在当前会话中实时接收到的新消息 (newlyReceivedMesIds) 且开启了 comfyAutoDrawTags 时自动开跑。
+          const isNewlyReceived = newlyReceivedMesIds.has(String(mesId));
+          const isLastMessage = mesEl === document.querySelector('#chat .mes:last-child') || 
+                                mesEl.matches('#chat .mes:nth-last-child(-n+2)');
+          const allowAutoDraw = s.comfyAutoDrawTags && 
+                                !isInitialLoad && 
+                                !isChatSwitching && 
+                                (isNewlyReceived || isLastMessage);
+
+          if (allowAutoDraw) {
+            // 记录任务状态为 running
+            sctDrawingTasks.set(taskKey, { status: 'running', images: [], container: cardContainer, prompt: item.prompt });
             triggerComfyDraw(item.prompt, cardContainer, activeLoras, taskKey);
           } else {
+            // 对于历史消息（未曾生图或页面刷新后）或者关闭了自动生图的情况，仅渲染引导卡片与【立即开始生图】按钮，绝不自作主张发起网络请求！
             cardContainer.innerHTML = `
               <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
                 <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${escapeHtml(item.prompt.slice(0, 35))}...</i></span>
@@ -3381,18 +3623,39 @@
 
     if (es && typeof es.on === 'function' && et) {
       if (et.CHARACTER_MESSAGE_RENDERED) {
-        es.on(et.CHARACTER_MESSAGE_RENDERED, () => {
+        es.on(et.CHARACTER_MESSAGE_RENDERED, (arg) => {
+          if (!isInitialLoad && !isChatSwitching) {
+            let id = (typeof arg === 'number' || typeof arg === 'string') ? String(arg) : null;
+            if (!id) {
+              const lastMes = document.querySelector('#chat .mes:last-child');
+              id = lastMes?.getAttribute('mesid') || lastMes?.dataset?.sctMesId;
+            }
+            if (id) newlyReceivedMesIds.add(String(id));
+          }
           setTimeout(scanAllMessages, 100);
         });
       }
       if (et.MESSAGE_RECEIVED) {
-        es.on(et.MESSAGE_RECEIVED, () => {
+        es.on(et.MESSAGE_RECEIVED, (arg) => {
+          if (!isInitialLoad && !isChatSwitching) {
+            let id = (typeof arg === 'number' || typeof arg === 'string') ? String(arg) : null;
+            if (!id) {
+              const lastMes = document.querySelector('#chat .mes:last-child');
+              id = lastMes?.getAttribute('mesid') || lastMes?.dataset?.sctMesId;
+            }
+            if (id) newlyReceivedMesIds.add(String(id));
+          }
           setTimeout(scanAllMessages, 150);
         });
       }
       if (et.CHAT_CHANGED) {
         es.on(et.CHAT_CHANGED, () => {
           stopTts();
+          isChatSwitching = true;
+          newlyReceivedMesIds.clear();
+          setTimeout(() => {
+            isChatSwitching = false;
+          }, 2500);
           setTimeout(scanAllMessages, 300);
           updateExtensionPrompt();
         });
@@ -3400,6 +3663,11 @@
       if (et.CHAT_COMPLETION_PROMPT_READY) {
         es.on(et.CHAT_COMPLETION_PROMPT_READY, () => {
           updateExtensionPrompt();
+        });
+      }
+      if (et.GENERATION_AFTER_COMMANDS) {
+        es.on(et.GENERATION_AFTER_COMMANDS, () => {
+          setTimeout(scanAllMessages, 100);
         });
       }
     }
@@ -3464,6 +3732,12 @@
 
       if (initChecks > 10) clearInterval(initTimer);
     }, 800);
+
+    // 初始加载保护期：在进入页面/刷新页面的前 3.5 秒内，所有历史消息只恢复已生成图像，未生成的仅显示手动触发按钮
+    setTimeout(() => {
+      isInitialLoad = false;
+      console.log(`[${DISPLAY_NAME}] 初始历史消息载入完成，已进入实时会话生图监听模式。`);
+    }, 3500);
 
     console.log(`[${DISPLAY_NAME}] 原生插件就绪！`);
   }
