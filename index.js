@@ -1989,33 +1989,8 @@
     return s;
   }
 
-  // 判断 promptText 是否属于“明确的双角色且存在肢体接触或互动动作”
-  function isDualCharacterWithInteraction(promptText) {
-    if (!promptText) return false;
-    const lower = promptText.toLowerCase();
-
-    // 1. 检查是否存在双角色指示词 (如 1girl, 1boy / 2girls / couple 等)
-    const hasDualSubject = /(?:1girl\s*,\s*1boy|1boy\s*,\s*1girl|2girls|2boys|pair|couple)/i.test(lower);
-    if (!hasDualSubject) return false;
-
-    // 2. 检查是否存在具体的身体接触或互动动作关键词 (中英文全覆盖)
-    const interactionKeywords = [
-      'hug', 'hugging', 'embrace', 'embracing',
-      'holding hands', 'hand in hand', 'holding hand',
-      'kiss', 'kissing',
-      'lap', 'sitting on lap', 'on his lap', 'on her lap',
-      'cuddle', 'cuddling', 'snuggle',
-      'lean on', 'leaning on', 'leaning against',
-      'piggyback', 'princess carry', 'carrying',
-      'intertwined', 'arm around', 'arms around',
-      'touching', 'physical contact',
-      '拥抱', '牵手', '接吻', '坐在腿上', '依偎', '靠在', '抚摸'
-    ];
-
-    return interactionKeywords.some(kw => lower.includes(kw));
-  }
-
-  // 检测生图应激活的角色 LoRA (严格遵循防污染机制：除非双角色有动作或身体接触，否则每次只激活 1 个 LoRA，且优先精准匹配 tag 本身)
+  // 检测生图应激活的角色 LoRA (核心防串台机制：正文可出现 1girl/1boy 双主体，
+  // 但动态匹配的角色 LoRA 每张图严格最多只激活 1 个，绝不互相污染；常驻 LoRA 不受此限全量直载)
   function detectActiveLoras(fullText, promptText) {
     const s = getSettings();
     const loras = s.comfyLoras || [];
@@ -2023,10 +1998,6 @@
 
     const lowerPrompt = (promptText || '').toLowerCase();
     const lowerFull = (fullText || '').toLowerCase();
-
-    // 核心准则：双角色且有互动最多允许 3~4 个，单角色正常允许最多 3 个 (常驻 1~2 个 + 动态匹配 1 个)
-    const isDual = isDualCharacterWithInteraction(lowerPrompt);
-    const maxTotalLoras = isDual ? 4 : 3;
 
     const matchedLoras = [];
 
@@ -2060,35 +2031,33 @@
       }
     }
 
-    // 第 1 阶段【动态匹配补充】：若总名额未满，优先从生图标签自身 (promptText) 识别专属角色或服装 LoRA
+    // 动态角色名额：常驻全量之外，严格只允许再加 1 个动态角色 LoRA (防串台核心铁律)
+    const maxTotalLoras = matchedLoras.length + 1;
+
+    // 第 1 阶段【单名额动态匹配】：优先从生图标签自身 (promptText) 识别专属角色/服装 LoRA，命中即止
     if (matchedLoras.length < maxTotalLoras) {
       for (const item of loras) {
-        if (matchedLoras.length >= maxTotalLoras) break;
         if (!item.enabled || !item.name || item.alwaysOn) continue; // 已常驻的不重复匹配
         if (matchLoraAgainstText(item, lowerPrompt)) {
-          if (!matchedLoras.some(x => x.id === item.id || x.name === item.name)) {
-            matchedLoras.push(item);
-          }
+          matchedLoras.push(item);
+          break; // 动态角色名额严格只用 1 个，绝不串台
         }
       }
     }
 
-    // 第 2 阶段【上下文兜底匹配】：若除常驻外尚未动态命中任何角色，再使用聊天消息正文 (fullText) 兜底寻找 1 个角色
+    // 第 2 阶段【正文兜底 · 同样严格单个】：动态未命中时才用聊天消息正文 (fullText) 兜底找 1 个
     const hasDynamicLora = matchedLoras.some(l => !l.alwaysOn);
     if (!hasDynamicLora && matchedLoras.length < maxTotalLoras) {
       for (const item of loras) {
-        if (matchedLoras.length >= maxTotalLoras) break;
         if (!item.enabled || !item.name || item.alwaysOn) continue;
         if (matchLoraAgainstText(item, lowerFull)) {
-          if (!matchedLoras.some(x => x.id === item.id || x.name === item.name)) {
-            matchedLoras.push(item);
-            break; // 正文兜底最多补充 1 个
-          }
+          matchedLoras.push(item);
+          break;
         }
       }
     }
 
-    return matchedLoras.slice(0, maxTotalLoras);
+    return matchedLoras;
   }
 
   /* ==========================================================================
@@ -3011,8 +2980,8 @@
     const scheduler = s.comfyScheduler || 'normal';
     const seed = Math.floor(Math.random() * 1000000000);
 
-    // 确定启用的 LoRA 列表与特征词注入 (支持最多 3 个链式加载)
-    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 3) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
+    // 确定启用的 LoRA 列表与特征词注入 (常驻全量 + 至多 1 个动态角色，链式加载上限 4 个)
+    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 4) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
     
     // 注入 LoRA 角色特征词到正向提示词中
     const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
@@ -4167,7 +4136,7 @@
               <span>🎭</span>
               <span>角色 LoRA 管理与关键词激活</span>
             </div>
-            <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词（为保证出图画质与避免模型冲突，最多同时激活 2 个角色 LoRA）。</div>
+            <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词（为防止 LoRA 特征词串台，动态角色 LoRA 每张图最多激活 1 个；常驻 LoRA 不受限全量生效）。</div>
 
             <div id="sct-lora-items-container" class="sct-lora-list"></div>
 
