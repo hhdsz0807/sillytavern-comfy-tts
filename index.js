@@ -233,6 +233,35 @@
     return url;
   }
 
+  // 提取 ComfyUI 图片的稳定文件标识 (忽略时间戳等缓存参数)，用于跨次去重
+  function comfyFileKey(url) {
+    if (!url || typeof url !== 'string') return '';
+    try {
+      const q = url.split('?')[1] || '';
+      const params = new URLSearchParams(q);
+      const fn = params.get('filename') || url;
+      const sub = params.get('subfolder') || '';
+      const type = params.get('type') || '';
+      return `${sub}/${fn}#${type}`;
+    } catch (_) {
+      return url;
+    }
+  }
+
+  // 按文件名去重：保留首次出现的顺序，但采用最新的带时间戳 URL (规避浏览器缓存读到旧图)
+  function dedupeComfyImages(list) {
+    const order = [];
+    const map = new Map();
+    (list || []).forEach(raw => {
+      const url = normalizeComfyImageUrl(raw);
+      if (!url) return;
+      const key = comfyFileKey(url);
+      if (!map.has(key)) order.push(key);
+      map.set(key, url);
+    });
+    return order.map(k => map.get(k));
+  }
+
   // 获取当前酒馆会话/角色作用域唯一前缀
   function getChatScopeKey() {
     const ctx = getSTContext();
@@ -314,7 +343,7 @@
   }
 
   // 保存生图结果到酒馆消息上下文 extra 并保存聊天记录
-  function saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras = []) {
+  function saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras = [], lastRepaintUrl = '') {
     try {
       const ctx = getSTContext();
       if (!ctx || !ctx.chat) return;
@@ -330,6 +359,7 @@
         images: (images || []).map(normalizeComfyImageUrl),
         prompt: promptText,
         activeLoras: activeLoras,
+        lastRepaintUrl: lastRepaintUrl || '',
         savedAt: Date.now()
       };
       if (typeof ctx.saveChatDebounced === 'function') {
@@ -2193,8 +2223,8 @@
     const samStatus = modal.querySelector('#sct-sam-status');
     if (samStatus) samStatus.style.display = 'none';
 
-    // 加载图片并同步尺寸
-    baseImg.onload = () => {
+    // 加载底图并同步画板尺寸 (含 CORS 失败自动回退，绝不出现空白弹窗)
+    const applyBaseImageLayout = () => {
       const natW = baseImg.naturalWidth || 512;
       const natH = baseImg.naturalHeight || 768;
 
@@ -2226,8 +2256,27 @@
       if (customHInput) customHInput.value = natH;
     };
 
+    baseImg.onload = applyBaseImageLayout;
+    baseImg.onerror = () => {
+      // ComfyUI 未开 CORS 头时 crossOrigin="anonymous" 会让图片被浏览器拦截而空白：去掉该属性重试一次
+      if (baseImg.getAttribute('crossorigin')) {
+        baseImg.removeAttribute('crossorigin');
+        console.warn('[SCT] 底图 CORS 加载失败，已改用普通模式重试');
+        baseImg.src = imageUrl;
+        return;
+      }
+      showToast('底图加载失败：请确认 ComfyUI 服务可访问 (建议加 --enable-cors-header 启动)', 'error');
+    };
+
     baseImg.src = imageUrl;
     modal.style.display = 'flex';
+
+    // 兜底：1.5 秒内仍未解码出尺寸时按默认尺寸先撑开画板，避免弹窗一片空白
+    setTimeout(() => {
+      if (modal.style.display !== 'none' && !drawCanvas.width) {
+        applyBaseImageLayout();
+      }
+    }, 1500);
   }
 
   function closeInpaintModal() {
@@ -2722,8 +2771,9 @@
 
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
-    // URL 去重兜底：无论上游哪个环节把同一张图重复塞进数组，轮播翻页也绝不再出现"同一张图连翻好几页"
-    const normalizedImages = [...new Set((images || []).map(normalizeComfyImageUrl).filter(Boolean))];
+    // 按文件名去重兜底：即使上游重复塞入同一张图(哪怕时间戳不同)，也绝不会出现"同一张图连翻好几页"
+    const normalizedImages = dedupeComfyImages(images);
+    if (normalizedImages.length === 0) return;
     const cardId = container.dataset.sctCardId || `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     container.dataset.sctCardId = cardId;
 
@@ -3074,27 +3124,38 @@
             });
 
             if (resultImages.length > 0) {
-              // 重绘结果整体替换：只展示最新重绘图，不再把旧图与新图混排造成"翻页全是重复图"的观感
+              // 保留原图基底 + 只保留最新一张重绘图：原图始终可见，反复重绘也绝不累积重复页
               const state = cardStateMap.get(cardId);
-              if (state) {
-                state.images = resultImages;
-                state.currentIdx = 0;
-              }
-              renderCarouselCard(container, resultImages, inpaintPrompt, activeLoras);
-
-              // 保存重绘结果到持久化存储与酒馆消息 extra，确保刷新浏览器不丢失且不重复调用
               const tk = container?.dataset?.sctTaskKey || taskKey;
               const mesId = container?.dataset?.sctMesId || container?.closest('.mes')?.getAttribute('mesid');
               const slotIdx = container?.dataset?.sctSlotIdx || '0';
+              const extraRec = (mesId !== undefined && mesId !== null) ? getChatMessageExtraImages(mesId, slotIdx) : null;
+              const prevRepaintUrl = container.dataset.sctLastRepaintUrl || extraRec?.lastRepaintUrl || '';
+
+              let baseImages = (state && Array.isArray(state.images)) ? state.images.slice() : [];
+              if (prevRepaintUrl) {
+                const prevKey = comfyFileKey(prevRepaintUrl);
+                baseImages = baseImages.filter(u => comfyFileKey(u) !== prevKey); // 剔除上一次的重绘图，只留原图
+              }
+              const displayImages = dedupeComfyImages([...baseImages, ...resultImages]);
+
+              container.dataset.sctLastRepaintUrl = resultImages[0];
+              if (state) {
+                state.images = displayImages;
+                state.currentIdx = Math.max(0, displayImages.length - 1); // 自动跳到最新重绘图
+              }
+              renderCarouselCard(container, displayImages, inpaintPrompt, activeLoras);
+
+              // 保存到持久化存储与酒馆消息 extra (含"上次重绘图"标记，刷新后继续按替换逻辑处理)
               if (tk) {
-                sctDrawingTasks.set(tk, { status: 'completed', images: resultImages, prompt: inpaintPrompt, activeLoras: activeLoras });
-                savePersistentTask(tk, { status: 'completed', images: resultImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+                sctDrawingTasks.set(tk, { status: 'completed', images: displayImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+                savePersistentTask(tk, { status: 'completed', images: displayImages, prompt: inpaintPrompt, activeLoras: activeLoras });
               }
               if (mesId !== undefined && mesId !== null) {
-                saveChatMessageExtraImages(mesId, slotIdx, resultImages, inpaintPrompt, activeLoras);
+                saveChatMessageExtraImages(mesId, slotIdx, displayImages, inpaintPrompt, activeLoras, resultImages[0]);
               }
 
-              showToast('✨ 局部重绘成功！已替换展示最新画面', 'success');
+              showToast(`✨ 局部重绘成功！原图已保留，最新重绘图在第 ${displayImages.length} 页`, 'success');
             } else {
               renderErrorCard(container, inpaintPrompt, 'ComfyUI 未返回重绘图像输出', activeLoras, taskKey);
             }
@@ -3416,6 +3477,8 @@
                 saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras);
               }
             }
+            // 全新一轮生成：清空上一轮的重绘标记，避免后续重绘误剔除新图
+            delete container.dataset.sctLastRepaintUrl;
 
             const target = getActiveCardContainer(taskKey, container);
             renderCarouselCard(target, images, promptText, activeLoras);
