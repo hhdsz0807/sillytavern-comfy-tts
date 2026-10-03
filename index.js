@@ -869,8 +869,8 @@
           outputNodeId = '6';
           promptWf = {
             '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
-            '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
-            '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+            '2': { inputs: { model_name: 'sam_hq_vit_h (2.57GB)' }, class_type: 'SAMModelLoader (segment anything)' },
+            '3': { inputs: { model_name: 'GroundingDINO_SwinB (938MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
             '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
             '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
@@ -881,8 +881,8 @@
           outputNodeId = '6';
           promptWf = {
             '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
-            '2': { inputs: { model_name: 'sam_vit_h (2.56GB)' }, class_type: 'SAMModelLoader (segment anything)' },
-            '3': { inputs: { model_name: 'GroundingDINO_SwinT_OGC (694MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+            '2': { inputs: { model_name: 'sam_hq_vit_h (2.57GB)' }, class_type: 'SAMModelLoader (segment anything)' },
+            '3': { inputs: { model_name: 'GroundingDINO_SwinB (938MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
             '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
             '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
             '6': { inputs: { filename_prefix: `sct_sam_seg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
@@ -895,7 +895,7 @@
           '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
           '2': {
             inputs: {
-              model: 'sam2_hiera_base_plus.safetensors',
+              model: 'sam2.1_hiera_large.safetensors',
               segmentor: 'single_image',
               device: 'cuda',
               precision: 'fp16'
