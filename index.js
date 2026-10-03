@@ -2317,12 +2317,11 @@
     return s;
   }
 
-  // 组装 LoRA 特征词注入串 = 通用角色关键词(常驻) + 每个被激活 LoRA 的触发词
-  // 规则：只要有任意 LoRA 激活，通用关键词就一并注入；按逗号分词去重，绝不重复堆叠
+  // 组装 LoRA 特征词注入串 = 通用角色关键词(全局常驻) + 每个被激活 LoRA 的触发词
+  // 规则：通用关键词与是否激活 LoRA 无关，始终注入；按逗号分词去重，绝不重复堆叠
   function buildLoraTriggerInjection(activeLoras) {
     const s = getSettings();
     const list = Array.isArray(activeLoras) ? activeLoras : [];
-    if (list.length === 0) return '';
 
     const parts = [];
     const globalKw = (s.comfyGlobalLoraKeywords || '').trim();
@@ -4544,7 +4543,7 @@
             <div class="sct-setting-col" style="margin-top:10px;">
               <label for="sct-cfg-global-lora-kw">🌐 通用角色关键词 (常驻注入 · 对所有 LoRA 生效)</label>
               <textarea id="sct-cfg-global-lora-kw" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: 1girl, solo, silver hair, purple eyes, school uniform">${s.comfyGlobalLoraKeywords || ''}</textarea>
-              <div class="sct-hint" style="margin-top:2px;">只要<b>任意一个 LoRA 被激活</b>（含常驻 LoRA），这组关键词就会自动注入正向提示词；重复词自动去重、只注入一次。没有任何 LoRA 激活时不会注入。</div>
+              <div class="sct-hint" style="margin-top:2px;">这组关键词<b>始终注入</b>正向提示词——无论是否激活任何 LoRA（与 LoRA 无关），且重复词自动去重、只注入一次。</div>
             </div>
 
             <div class="sct-setting-col" style="margin-top:8px;">
