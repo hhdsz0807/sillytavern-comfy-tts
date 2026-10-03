@@ -1116,3 +1116,55 @@
 
 
 
+
+/* ============ 画板常用英文提示词包 ============ */
+.sct-prompt-pack {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 92px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sct-prompt-pack .sct-pack-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  border-left: 2px solid rgba(139, 92, 246, 0.45);
+  padding-left: 6px;
+}
+
+.sct-pack-group-label {
+  font-size: 10.5px;
+  opacity: 0.65;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+
+.sct-pack-chip {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(88, 101, 242, 0.18);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: #c7ccff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sct-pack-chip:hover {
+  background: rgba(88, 101, 242, 0.32);
+  border-color: rgba(139, 92, 246, 0.7);
+}
+
+.sct-pack-chip:active {
+  transform: scale(0.94);
+}
+
+/* ============ 撤销/重做按钮禁用态 ============ */
+.sct-tool-btn:disabled {
+  cursor: not-allowed;
+}

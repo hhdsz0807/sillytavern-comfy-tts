@@ -663,8 +663,102 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 画板涂抹撤销/重做 (Undo/Redo)：以"一笔涂抹"、清空、反选、SAM 应用为撤销粒度，
+  // 对视觉层 + 离屏蒙版层做双层 PNG dataURL 快照（压缩存储、内存开销极低）
+  // ---------------------------------------------------------------------------
+  const sctInpaintHistory = { undo: [], redo: [], max: 30, busy: false };
+  let sctHistoryUIButtons = null;
+
+  function loadImgAsync(url) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('画布快照加载失败'));
+      im.src = url;
+    });
+  }
+
+  function updateInpaintHistoryButtons() {
+    if (!sctHistoryUIButtons) return;
+    if (sctHistoryUIButtons.undoBtn) {
+      sctHistoryUIButtons.undoBtn.disabled = sctInpaintHistory.undo.length === 0 || sctInpaintHistory.busy;
+      sctHistoryUIButtons.undoBtn.style.opacity = sctInpaintHistory.undo.length === 0 ? '0.4' : '1';
+    }
+    if (sctHistoryUIButtons.redoBtn) {
+      sctHistoryUIButtons.redoBtn.disabled = sctInpaintHistory.redo.length === 0 || sctInpaintHistory.busy;
+      sctHistoryUIButtons.redoBtn.style.opacity = sctInpaintHistory.redo.length === 0 ? '0.4' : '1';
+    }
+  }
+
+  // 记录一次操作前的画布状态 (双层原子快照；新操作自动清空重做栈，超出上限丢弃最早一条)
+  function captureInpaintHistoryPoint() {
+    try {
+      if (!inpaintMaskCtx || !inpaintDrawCtx) return;
+      const drawUrl = inpaintDrawCtx.canvas.toDataURL('image/png');
+      const maskUrl = inpaintMaskCtx.canvas.toDataURL('image/png');
+      if (!drawUrl || !maskUrl) return;
+      sctInpaintHistory.undo.push({ draw: drawUrl, mask: maskUrl });
+      if (sctInpaintHistory.undo.length > sctInpaintHistory.max) sctInpaintHistory.undo.shift();
+      sctInpaintHistory.redo.length = 0;
+      updateInpaintHistoryButtons();
+    } catch (_) {}
+  }
+
+  // 将某个历史点的双层快照写回两张画布
+  function restoreInpaintHistoryPoint(point) {
+    return Promise.all([loadImgAsync(point.draw), loadImgAsync(point.mask)]).then(([dImg, mImg]) => {
+      if (!inpaintDrawCtx || !inpaintMaskCtx) return;
+      const dc = inpaintDrawCtx.canvas;
+      const mc = inpaintMaskCtx.canvas;
+      inpaintDrawCtx.clearRect(0, 0, dc.width, dc.height);
+      inpaintDrawCtx.drawImage(dImg, 0, 0, dc.width, dc.height);
+      inpaintMaskCtx.clearRect(0, 0, mc.width, mc.height);
+      inpaintMaskCtx.drawImage(mImg, 0, 0, mc.width, mc.height);
+    });
+  }
+
+  // 撤销：弹出最近一条历史写回画布，并把当前状态压入重做栈
+  function undoInpaintStroke() {
+    if (sctInpaintHistory.busy || sctInpaintHistory.undo.length === 0) return;
+    let current = null;
+    try {
+      current = { draw: inpaintDrawCtx.canvas.toDataURL('image/png'), mask: inpaintMaskCtx.canvas.toDataURL('image/png') };
+    } catch (_) { return; }
+    const target = sctInpaintHistory.undo.pop();
+    if (!target) return;
+    sctInpaintHistory.redo.push(current);
+    sctInpaintHistory.busy = true;
+    updateInpaintHistoryButtons();
+    restoreInpaintHistoryPoint(target).catch(() => showToast('撤销失败', 'error')).finally(() => {
+      sctInpaintHistory.busy = false;
+      updateInpaintHistoryButtons();
+    });
+  }
+
+  // 重做：弹出重做栈写回画布，并把当前状态压回撤销栈（受上限约束）
+  function redoInpaintStroke() {
+    if (sctInpaintHistory.busy || sctInpaintHistory.redo.length === 0) return;
+    let current = null;
+    try {
+      current = { draw: inpaintDrawCtx.canvas.toDataURL('image/png'), mask: inpaintMaskCtx.canvas.toDataURL('image/png') };
+    } catch (_) { return; }
+    const target = sctInpaintHistory.redo.pop();
+    if (!target) return;
+    sctInpaintHistory.undo.push(current);
+    if (sctInpaintHistory.undo.length > sctInpaintHistory.max) sctInpaintHistory.undo.shift();
+    sctInpaintHistory.busy = true;
+    updateInpaintHistoryButtons();
+    restoreInpaintHistoryPoint(target).catch(() => showToast('重做失败', 'error')).finally(() => {
+      sctInpaintHistory.busy = false;
+      updateInpaintHistoryButtons();
+    });
+  }
+
   // 将返回的蒙版渲染并同步写入 inpaintMaskCanvas 与 inpaintDrawCanvas
   async function applyMaskImageToCanvas(maskUrl, addMode) {
+    // SAM/点选结果写入前先快照，作为可撤销的历史点
+    captureInpaintHistoryPoint();
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
@@ -745,6 +839,8 @@
   // 反转当前已有选区 (白变黑，黑变白)
   function invertCurrentMask() {
     if (!inpaintMaskCtx || !inpaintMaskCanvas || !inpaintDrawCtx) return;
+    // 反选动作本身也可撤销：先快照当前状态
+    captureInpaintHistoryPoint();
     const w = inpaintMaskCanvas.width;
     const h = inpaintMaskCanvas.height;
     const maskImgData = inpaintMaskCtx.getImageData(0, 0, w, h);
@@ -783,6 +879,98 @@
     inpaintMaskCtx.putImageData(maskImgData, 0, 0);
     inpaintDrawCtx.putImageData(visualImgData, 0, 0);
   }
+
+  // ---------------------------------------------------------------------------
+  // 分割模型回退链：主力组合失败(缺模型/OOM/下载失败/异常)时自动逐档降级，保证功能始终可用
+  // ---------------------------------------------------------------------------
+  const SEG_TEXT_FALLBACKS = [
+    { sam: 'sam_hq_vit_h (2.57GB)', dino: 'GroundingDINO_SwinB (938MB)' },
+    { sam: 'sam_vit_h (2.56GB)', dino: 'GroundingDINO_SwinB (938MB)' },
+    { sam: 'sam_vit_b (375MB)', dino: 'GroundingDINO_SwinT_OGC (694MB)' }
+  ];
+  const SEG_POINT_FALLBACKS = [
+    'sam2.1_hiera_large.safetensors',
+    'sam2_hiera_base_plus.safetensors'
+  ];
+  let lastSegModelInfo = '';
+
+  // 中文检测：GroundingDINO 只认英文，含中文即需翻译
+  function hasChineseText(str) {
+    return /[\u4e00-\u9fff\u3400-\u4dbf]/.test(str || '');
+  }
+
+  // 带超时的请求工具 (翻译源不可达时快速放弃，避免卡 UI)
+  async function fetchWithTimeout(url, ms = 9000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // 自定义关键词自动翻译成英文 (Google gtx → MyMemory → Lingva 三源兜底 + 内存缓存，全部失败则原样尽力回退)
+  const segTranslationCache = new Map();
+  async function translateSegPromptToEnglish(text) {
+    const raw = (text || '').trim();
+    if (!raw || !hasChineseText(raw)) return raw;
+    if (segTranslationCache.has(raw)) return segTranslationCache.get(raw);
+
+    let result = '';
+    const providers = [
+      async () => {
+        const q = encodeURIComponent(raw);
+        const res = await fetchWithTimeout(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=en&dt=t&q=${q}`);
+        if (!res.ok) throw new Error('gtx ' + res.status);
+        const data = await res.json();
+        const out = (data && Array.isArray(data[0])) ? data[0].map(seg => (seg && seg[0]) ? seg[0] : '').join(' ') : '';
+        if (!out.trim()) throw new Error('gtx empty');
+        return out;
+      },
+      async () => {
+        const q = encodeURIComponent(raw.slice(0, 450));
+        const res = await fetchWithTimeout(`https://api.mymemory.translated.net/get?q=${q}&langpair=zh-CN|en`);
+        if (!res.ok) throw new Error('mymemory ' + res.status);
+        const data = await res.json();
+        const out = data?.responseData?.translatedText || '';
+        if (!out.trim() || /MYMEMORY WARNING/i.test(out)) throw new Error('mymemory empty');
+        return out;
+      },
+      async () => {
+        const res = await fetchWithTimeout(`https://lingva.ml/api/v1/auto/en/${encodeURIComponent(raw)}`);
+        if (!res.ok) throw new Error('lingva ' + res.status);
+        const data = await res.json();
+        const out = data?.translation || '';
+        if (!out.trim()) throw new Error('lingva empty');
+        return out;
+      }
+    ];
+
+    for (const provider of providers) {
+      try {
+        const out = (await provider()).trim();
+        if (out) { result = out; break; }
+      } catch (_) {}
+    }
+
+    if (!result) {
+      // 三个翻译源都不可达：尽力保留英文部分，规避纯中文喂入导致 GroundingDINO 必然失败
+      result = raw.toLowerCase().replace(/[^a-z0-9,. \-_%()]+/gi, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    if (segTranslationCache.size > 120) segTranslationCache.clear();
+    segTranslationCache.set(raw, result);
+    return result;
+  }
+
+  // 常用英文提示词包 (画板自定义识别输入框下方点击即追加)
+  const SCT_PROMPT_PACK = [
+    { group: '五官', items: ['face', 'eyes', 'eyelashes', 'eyebrows', 'mouth', 'lips', 'nose', 'ears', 'head', 'hair', 'ponytail', 'twintails', 'bangs', 'long hair', 'short hair', 'blush', 'smile', 'open mouth', 'closed eyes'] },
+    { group: '服饰', items: ['dress', 'skirt', 'pleated skirt', 'school uniform', 'shirt', 'blouse', 'jacket', 'coat', 'hoodie', 'sweater', 'kimono', 'maid outfit', 'swimsuit', 'stockings', 'thighhighs', 'socks', 'gloves', 'scarf', 'ribbon', 'hat', 'necklace', 'earrings', 'bow tie'] },
+    { group: '手足', items: ['arms', 'hands', 'fingers', 'torso', 'chest', 'waist', 'hips', 'legs', 'thighs', 'knees', 'feet', 'shoes', 'boots', 'sandals', 'barefoot', 'skin'] },
+    { group: '场景物', items: ['background', 'sky', 'clouds', 'window', 'curtains', 'bed', 'sofa', 'desk', 'chair', 'mirror', 'door', 'bag', 'book', 'smartphone', 'cup', 'umbrella', 'flower', 'bouquet', 'tree', 'street', 'indoor', 'outdoor', 'sword', 'laptop'] }
+  ];
 
   // 执行 ComfyUI 图像分割任务 (支持语义文本分割与 SAM2 鼠标坐标点选)
   async function runComfySegmentationTask(options) {
@@ -855,112 +1043,145 @@
         currentInpaintUploadedName = upData.name;
       }
 
-      // 2. 根据分割模式组装 ComfyUI 工作流 (SaveImage 增加动态时间戳，强制破除全节点缓存导致的 outputs 为空)
-      let promptWf = null;
-      let outputNodeId = '6';
-      const ts = Date.now();
-
+      // 2. 词语文本分割时自动把提示词翻译为英文 (GroundingDINO 仅认英文；带缓存与多源兜底)
+      const isBg = (type === 'text' && promptText === '__background__');
+      let segPrompt = (promptText || '').trim();
       if (type === 'text') {
-        const isBg = (promptText === '__background__');
-        const segPrompt = isBg ? 'girl, woman, person, boy, human' : promptText;
-
         if (isBg) {
-          // 背景识别：以极高置信度锁定前景人物，并通过 InvertMask 得到纯净背景
-          outputNodeId = '6';
-          promptWf = {
-            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
-            '2': { inputs: { model_name: 'sam_hq_vit_h (2.57GB)' }, class_type: 'SAMModelLoader (segment anything)' },
-            '3': { inputs: { model_name: 'GroundingDINO_SwinB (938MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
-            '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
-            'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
-            '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
-            '6': { inputs: { filename_prefix: `sct_sam_bg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
-          };
-        } else {
-          // 常规物体/身体部位识别
-          outputNodeId = '6';
-          promptWf = {
-            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
-            '2': { inputs: { model_name: 'sam_hq_vit_h (2.57GB)' }, class_type: 'SAMModelLoader (segment anything)' },
-            '3': { inputs: { model_name: 'GroundingDINO_SwinB (938MB)' }, class_type: 'GroundingDinoModelLoader (segment anything)' },
-            '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
-            '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
-            '6': { inputs: { filename_prefix: `sct_sam_seg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
-          };
+          segPrompt = 'girl, woman, person, boy, human';
+        } else if (hasChineseText(segPrompt)) {
+          if (samStatusText) samStatusText.textContent = `正在将【${segPrompt}】翻译为英文…`;
+          try {
+            segPrompt = await translateSegPromptToEnglish(segPrompt) || segPrompt;
+          } catch (_) { /* 翻译失败将原词尽力回退 */ }
+          if (samStatusText) samStatusText.textContent = `正在使用 SAM 识别提取【${label || segPrompt || '选区'}】...`;
         }
-      } else if (type === 'point') {
-        // SAM2 交互式坐标点选分割
-        outputNodeId = '5';
-        promptWf = {
-          '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
-          '2': {
-            inputs: {
-              model: 'sam2.1_hiera_large.safetensors',
-              segmentor: 'single_image',
-              device: 'cuda',
-              precision: 'fp16'
-            },
-            class_type: 'DownloadAndLoadSAM2Model'
-          },
-          '3': {
-            inputs: {
-              sam2_model: ['2', 0],
-              image: ['1', 0],
-              keep_model_loaded: true,
-              coordinates_positive: `[[${Math.round(point.x)}, ${Math.round(point.y)}]]`
-            },
-            class_type: 'Sam2Segmentation'
-          },
-          '4': { inputs: { mask: ['3', 0] }, class_type: 'MaskToImage' },
-          '5': { inputs: { filename_prefix: `sct_sam2_seg_${ts}`, images: ['4', 0] }, class_type: 'SaveImage' }
-        };
+        segPrompt = segPrompt.toLowerCase().replace(/[，、]/g, ',').trim();
       }
 
-      // 3. 提交任务到 ComfyUI
-      const pRes = await fetch(`${comfyHost}/prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptWf })
-      });
-      if (!pRes.ok) throw new Error(`提交分割任务失败 (${pRes.status})`);
-      const pData = await pRes.json();
-      const promptId = pData.prompt_id;
-      if (!promptId) throw new Error('ComfyUI 未返回有效任务 ID');
-
-      // 4. 轮询历史记录获取生成结果 (GPU 推理约需 1~2.5 秒，缓存命中约 0.3 秒)
+      // 3. 模型回退链依次尝试：主力组合失败 (缺模型/OOM/下载失败/执行异常) 立即自动降级到下一档
+      const candidates = type === 'text' ? SEG_TEXT_FALLBACKS : SEG_POINT_FALLBACKS;
+      const formatCandidate = (c) => (type === 'text' ? `${c.sam} + ${c.dino}` : c);
       let outputImgInfo = null;
-      for (let i = 0; i < 35; i++) {
-        await new Promise(r => setTimeout(r, 600));
-        const hRes = await fetch(`${comfyHost}/history/${promptId}`);
-        if (!hRes.ok) continue;
-        const hData = await hRes.json();
-        if (hData[promptId]) {
-          const taskInfo = hData[promptId];
-          const outImgs = taskInfo.outputs?.[outputNodeId]?.images;
-          if (outImgs && outImgs.length > 0) {
-            outputImgInfo = outImgs[0];
-            break;
+      const attemptErrors = [];
+      const ts = Date.now();
+
+      for (let ci = 0; ci < candidates.length; ci++) {
+        const candidate = candidates[ci];
+        let promptWf = null;
+        let outputNodeId = '6';
+
+        if (type === 'text') {
+          if (isBg) {
+            // 背景识别：以极高置信度锁定前景人物，并通过 InvertMask 得到纯净背景
+            promptWf = {
+              '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+              '2': { inputs: { model_name: candidate.sam }, class_type: 'SAMModelLoader (segment anything)' },
+              '3': { inputs: { model_name: candidate.dino }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+              '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+              'inv': { inputs: { mask: ['4', 1] }, class_type: 'InvertMask' },
+              '5': { inputs: { mask: ['inv', 0] }, class_type: 'MaskToImage' },
+              '6': { inputs: { filename_prefix: `sct_sam_bg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
+            };
+          } else {
+            // 常规物体/身体部位识别
+            promptWf = {
+              '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+              '2': { inputs: { model_name: candidate.sam }, class_type: 'SAMModelLoader (segment anything)' },
+              '3': { inputs: { model_name: candidate.dino }, class_type: 'GroundingDinoModelLoader (segment anything)' },
+              '4': { inputs: { prompt: segPrompt, threshold: 0.22, sam_model: ['2', 0], grounding_dino_model: ['3', 0], image: ['1', 0] }, class_type: 'GroundingDinoSAMSegment (segment anything)' },
+              '5': { inputs: { mask: ['4', 1] }, class_type: 'MaskToImage' },
+              '6': { inputs: { filename_prefix: `sct_sam_seg_${ts}`, images: ['5', 0] }, class_type: 'SaveImage' }
+            };
           }
-          if (taskInfo.status?.status_str === 'error') {
-            const errMsg = taskInfo.status?.messages?.find(m => m[0] === 'execution_error')?.[1]?.exception_message || '未知分割错误';
-            throw new Error(errMsg);
-          }
-          if (taskInfo.status?.completed) {
-            // 已完成但未能从 outputs[outputNodeId] 找到图片（尝试在 outputs 所有 key 中寻找）
-            for (const k of Object.keys(taskInfo.outputs || {})) {
-              if (taskInfo.outputs[k]?.images && taskInfo.outputs[k].images.length > 0) {
-                outputImgInfo = taskInfo.outputs[k].images[0];
+        } else if (type === 'point') {
+          // SAM2 交互式坐标点选分割
+          outputNodeId = '5';
+          promptWf = {
+            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+            '2': {
+              inputs: {
+                model: candidate,
+                segmentor: 'single_image',
+                device: 'cuda',
+                precision: 'fp16'
+              },
+              class_type: 'DownloadAndLoadSAM2Model'
+            },
+            '3': {
+              inputs: {
+                sam2_model: ['2', 0],
+                image: ['1', 0],
+                keep_model_loaded: true,
+                coordinates_positive: `[[${Math.round(point.x)}, ${Math.round(point.y)}]]`
+              },
+              class_type: 'Sam2Segmentation'
+            },
+            '4': { inputs: { mask: ['3', 0] }, class_type: 'MaskToImage' },
+            '5': { inputs: { filename_prefix: `sct_sam2_seg_${ts}`, images: ['4', 0] }, class_type: 'SaveImage' }
+          };
+        }
+
+        if (samStatusText && ci > 0) {
+          samStatusText.textContent = `主力模型不可用，正在回退尝试第 ${ci + 1}/${candidates.length} 档：${formatCandidate(candidate)}…`;
+        }
+
+        try {
+          // 3a. 提交任务到 ComfyUI
+          const pRes = await fetch(`${comfyHost}/prompt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: promptWf })
+          });
+          if (!pRes.ok) throw new Error(`提交分割任务失败 (${pRes.status})`);
+          const pData = await pRes.json();
+          const promptId = pData.prompt_id;
+          if (!promptId) throw new Error('ComfyUI 未返回有效任务 ID');
+
+          // 3b. 轮询历史记录获取生成结果 (GPU 推理约需 1~2.5 秒，缓存命中约 0.3 秒)
+          for (let i = 0; i < 35; i++) {
+            await new Promise(r => setTimeout(r, 600));
+            const hRes = await fetch(`${comfyHost}/history/${promptId}`);
+            if (!hRes.ok) continue;
+            const hData = await hRes.json();
+            if (hData[promptId]) {
+              const taskInfo = hData[promptId];
+              const outImgs = taskInfo.outputs?.[outputNodeId]?.images;
+              if (outImgs && outImgs.length > 0) {
+                outputImgInfo = outImgs[0];
                 break;
               }
+              if (taskInfo.status?.status_str === 'error') {
+                const errMsg = taskInfo.status?.messages?.find(m => m[0] === 'execution_error')?.[1]?.exception_message || '未知分割错误';
+                throw new Error(errMsg);
+              }
+              if (taskInfo.status?.completed) {
+                // 已完成但未能从 outputs[outputNodeId] 找到图片（尝试在 outputs 所有 key 中寻找）
+                for (const k of Object.keys(taskInfo.outputs || {})) {
+                  if (taskInfo.outputs[k]?.images && taskInfo.outputs[k].images.length > 0) {
+                    outputImgInfo = taskInfo.outputs[k].images[0];
+                    break;
+                  }
+                }
+                if (outputImgInfo) break;
+                throw new Error('ComfyUI 任务已完成但未返回生成图像');
+              }
             }
-            if (outputImgInfo) break;
-            throw new Error('ComfyUI 任务已完成但未返回生成图像');
           }
+
+          if (outputImgInfo) {
+            lastSegModelInfo = formatCandidate(candidate);
+            break;
+          }
+          attemptErrors.push(`${formatCandidate(candidate)}: 等待结果超时`);
+        } catch (candErr) {
+          attemptErrors.push(`${formatCandidate(candidate)}: ${candErr.message}`);
         }
       }
 
       if (!outputImgInfo) {
-        throw new Error('等待分割结果超时，请检查 ComfyUI 控制台');
+        const detail = attemptErrors.length > 0 ? `（尝试过: ${attemptErrors.join('；')}）` : '';
+        throw new Error(`所有分割模型档位均失败，请检查 ComfyUI 控制台${detail}`);
       }
 
       // 5. 应用蒙版到画布并缓存结果
@@ -968,7 +1189,7 @@
       inpaintSegMaskCache.set(segCacheKey, maskUrl);
       await applyMaskImageToCanvas(maskUrl, isAddMode);
 
-      showToast(`已成功提取【${label || promptText || '目标区域'}】`, 'success');
+      showToast(`已成功提取【${label || promptText || '目标区域'}】${lastSegModelInfo ? ' · ' + lastSegModelInfo : ''}`, 'success');
 
     } catch (err) {
       console.error('[SCT] SAM 分割失败:', err);
@@ -1011,6 +1232,8 @@
               <div class="sct-tool-group">
                 <button type="button" class="sct-comfy-btn sct-tool-btn active" id="sct-tool-brush">🖌️ 涂抹</button>
                 <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-tool-eraser">🧹 橡皮擦</button>
+                <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-tool-undo" title="撤销上一笔涂抹或上一步蒙版操作">↩️ 撤销</button>
+                <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-tool-redo" title="重做被撤销的操作">↪️ 重做</button>
                 <button type="button" class="sct-comfy-btn" id="sct-tool-clear">🗑️ 清空涂抹</button>
               </div>
 
@@ -1056,8 +1279,10 @@
                   <button type="button" class="sct-sam-chip" data-sam-prompt="__background__">🏞️ 背景</button>
                 </div>
 
+                <div class="sct-prompt-pack" id="sct-prompt-pack"></div>
+
                 <div class="sct-sam-custom-row">
-                  <input type="text" id="sct-sam-custom-input" placeholder="输入任意英文词识别 (如: glasses, cat ears, wings, sword, tail)" />
+                  <input type="text" id="sct-sam-custom-input" placeholder="输入任意关键词 (支持中文自动译英文，如: 眼镜、猫耳、翅膀、刀、尾巴)" />
                   <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-sam-custom-btn">🔍 智能抠出</button>
                   <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-sam-point-btn" title="开启后，在上方图片中点击任意物体，SAM2 将自动提取该物体轮廓">🎯 鼠标点选 (SAM2)</button>
                 </div>
@@ -1184,6 +1409,27 @@
       }
     });
 
+    // 撤销/重做按钮绑定 (含禁用态管理)
+    sctHistoryUIButtons = {
+      undoBtn: overlay.querySelector('#sct-tool-undo'),
+      redoBtn: overlay.querySelector('#sct-tool-redo')
+    };
+    if (sctHistoryUIButtons.undoBtn) {
+      sctHistoryUIButtons.undoBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        undoInpaintStroke();
+      });
+    }
+    if (sctHistoryUIButtons.redoBtn) {
+      sctHistoryUIButtons.redoBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        redoInpaintStroke();
+      });
+    }
+    updateInpaintHistoryButtons();
+
     // 反转当前选区
     overlay.querySelector('#sct-tool-invert').addEventListener('click', () => {
       invertCurrentMask();
@@ -1209,7 +1455,7 @@
     const runCustomSeg = async () => {
       const val = (customInput.value || '').trim();
       if (!val) {
-        showToast('请输入需要识别分割的英文物体词 (例如: wings, glasses)', 'warning');
+        showToast('请输入需要识别分割的目标关键词 (支持中文，会自动翻译成英文)', 'warning');
         return;
       }
       await runComfySegmentationTask({
@@ -1226,8 +1472,39 @@
       }
     });
 
+    // 常用英文提示词包：按分组渲染芯片，点击追加到自定义输入框 (去重 + 逗号自动拼接)
+    const packWrap = overlay.querySelector('#sct-prompt-pack');
+    if (packWrap && typeof SCT_PROMPT_PACK !== 'undefined') {
+      SCT_PROMPT_PACK.forEach(group => {
+        const gRow = document.createElement('div');
+        gRow.className = 'sct-pack-group';
+        const gLabel = document.createElement('span');
+        gLabel.className = 'sct-pack-group-label';
+        gLabel.textContent = group.group;
+        gRow.appendChild(gLabel);
+        group.items.forEach(item => {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'sct-pack-chip';
+          chip.textContent = item;
+          chip.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const cur = customInput.value.trim().replace(/,+$/, '');
+            if (!cur.length) customInput.value = item;
+            else if (!customInput.value.toLowerCase().includes(item.toLowerCase())) customInput.value = cur + ', ' + item;
+            customInput.focus();
+          });
+          gRow.appendChild(chip);
+        });
+        packWrap.appendChild(gRow);
+      });
+    }
+
     // 清空涂抹
     overlay.querySelector('#sct-tool-clear').addEventListener('click', () => {
+      // 清空同样可撤销
+      captureInpaintHistoryPoint();
       const drawCanvas = overlay.querySelector('#sct-inpaint-draw-canvas');
       if (inpaintDrawCtx && drawCanvas) {
         inpaintDrawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
@@ -1411,6 +1688,9 @@
         });
         return;
       }
+      if (sctInpaintHistory.busy) return;
+      // 起笔前记录快照，作为一笔涂抹的可撤销历史点
+      captureInpaintHistoryPoint();
       inpaintIsDrawing = true;
       inpaintLastX = c.x;
       inpaintLastY = c.y;
@@ -1441,6 +1721,9 @@
           });
           return;
         }
+        if (sctInpaintHistory.busy) return;
+        // 起笔前记录快照，作为一笔涂抹的可撤销历史点
+        captureInpaintHistoryPoint();
         inpaintIsDrawing = true;
         inpaintLastX = c.x;
         inpaintLastY = c.y;
@@ -1543,6 +1826,11 @@
     inpaintSamPointMode = false;
     currentInpaintUploadedName = null; // 重置当前上传图片名缓存
     inpaintSegMaskCache.clear();        // 清空当前图片的分割蒙版缓存
+
+    // 新图新历史：清空涂抹撤销/重做栈
+    sctInpaintHistory.undo.length = 0;
+    sctInpaintHistory.redo.length = 0;
+    sctInpaintHistory.busy = false;
 
     modal.querySelector('#sct-tool-brush').classList.add('active');
     modal.querySelector('#sct-tool-eraser').classList.remove('active');
