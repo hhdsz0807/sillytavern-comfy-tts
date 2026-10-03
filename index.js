@@ -2455,7 +2455,8 @@
 
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
-    const normalizedImages = (images || []).map(normalizeComfyImageUrl);
+    // URL 去重兜底：无论上游哪个环节把同一张图重复塞进数组，轮播翻页也绝不再出现"同一张图连翻好几页"
+    const normalizedImages = [...new Set((images || []).map(normalizeComfyImageUrl).filter(Boolean))];
     const cardId = container.dataset.sctCardId || `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     container.dataset.sctCardId = cardId;
 
@@ -2798,38 +2799,35 @@
             const resultImages = [];
             Object.values(outputs).forEach((out) => {
               if (out.images && Array.isArray(out.images)) {
-                out.images.forEach((img) => {
-                  const url = `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&type=${encodeURIComponent(img.type || 'output')}${img.subfolder ? '&subfolder=' + encodeURIComponent(img.subfolder) : ''}`;
+                out.images.forEach((img, imgIdx) => {
+                  const url = `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&type=${encodeURIComponent(img.type || 'output')}${img.subfolder ? '&subfolder=' + encodeURIComponent(img.subfolder) : ''}&t=${Date.now()}_${imgIdx}`;
                   resultImages.push(url);
                 });
               }
             });
 
             if (resultImages.length > 0) {
+              // 重绘结果整体替换：只展示最新重绘图，不再把旧图与新图混排造成"翻页全是重复图"的观感
               const state = cardStateMap.get(cardId);
-              let allImages = resultImages;
-              if (state && state.images) {
-                state.images.push(...resultImages);
-                state.currentIdx = state.images.length - 1; // 自动跳到新生成的重绘图
-                allImages = state.images;
-                renderCarouselCard(container, state.images, inpaintPrompt, activeLoras);
-              } else {
-                renderCarouselCard(container, resultImages, inpaintPrompt, activeLoras);
+              if (state) {
+                state.images = resultImages;
+                state.currentIdx = 0;
               }
+              renderCarouselCard(container, resultImages, inpaintPrompt, activeLoras);
 
               // 保存重绘结果到持久化存储与酒馆消息 extra，确保刷新浏览器不丢失且不重复调用
               const tk = container?.dataset?.sctTaskKey || taskKey;
               const mesId = container?.dataset?.sctMesId || container?.closest('.mes')?.getAttribute('mesid');
               const slotIdx = container?.dataset?.sctSlotIdx || '0';
               if (tk) {
-                sctDrawingTasks.set(tk, { status: 'completed', images: allImages, prompt: inpaintPrompt, activeLoras: activeLoras });
-                savePersistentTask(tk, { status: 'completed', images: allImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+                sctDrawingTasks.set(tk, { status: 'completed', images: resultImages, prompt: inpaintPrompt, activeLoras: activeLoras });
+                savePersistentTask(tk, { status: 'completed', images: resultImages, prompt: inpaintPrompt, activeLoras: activeLoras });
               }
               if (mesId !== undefined && mesId !== null) {
-                saveChatMessageExtraImages(mesId, slotIdx, allImages, inpaintPrompt, activeLoras);
+                saveChatMessageExtraImages(mesId, slotIdx, resultImages, inpaintPrompt, activeLoras);
               }
 
-              showToast('✨ 局部重绘成功！已加入轮播展示', 'success');
+              showToast('✨ 局部重绘成功！已替换展示最新画面', 'success');
             } else {
               renderErrorCard(container, inpaintPrompt, 'ComfyUI 未返回重绘图像输出', activeLoras, taskKey);
             }
