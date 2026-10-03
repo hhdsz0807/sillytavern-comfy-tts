@@ -64,8 +64,8 @@
 
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
-    // 通用排除关键词 (常驻注入到负向提示词)：任意 LoRA 被激活时都会追加，仅注入一次且自动去重
-    comfyGlobalLoraNegatives: '',
+    // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
+    comfyGlobalExcludeKeywords: '',
 
     // 多 LoRA 规则库 (Array of LoRA objects)
     // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn }]
@@ -159,6 +159,13 @@
         extSettings[MODULE_NAME] = Object.assign({}, DEFAULT_SETTINGS, extSettings[MODULE_NAME]);
         if (!Array.isArray(extSettings[MODULE_NAME].comfyLoras)) {
           extSettings[MODULE_NAME].comfyLoras = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.comfyLoras));
+        }
+        // 兼容迁移：早期版本误把"通用排除关键词"存在负向字段里，这里搬回正向黑名单字段
+        if (extSettings[MODULE_NAME].comfyGlobalLoraNegatives) {
+          if (!extSettings[MODULE_NAME].comfyGlobalExcludeKeywords) {
+            extSettings[MODULE_NAME].comfyGlobalExcludeKeywords = extSettings[MODULE_NAME].comfyGlobalLoraNegatives;
+          }
+          delete extSettings[MODULE_NAME].comfyGlobalLoraNegatives;
         }
         // 如果旧版缓存了默认的 webspeech 或未设置，自动升级为推荐的小米 MiMo 在线 TTS
         if (!extSettings[MODULE_NAME].ttsEngine || extSettings[MODULE_NAME].ttsEngine === 'webspeech') {
@@ -2337,28 +2344,36 @@
     return tokens.length > 0 ? `${tokens.join(', ')}, ` : '';
   }
 
-  // 组装负向提示词 = 固定通用负向词 + 通用排除关键词(常驻注入)
-  // 规则：只要有任意 LoRA 激活就追加；与固定负向词按逗号分词去重，绝不重复堆叠
-  function buildLoraNegativeInjection(activeLoras) {
-    const s = getSettings();
-    const base = s.comfyFixedNegative || '';
-    const list = Array.isArray(activeLoras) ? activeLoras : [];
-    if (list.length === 0) return base;
-
-    const globalNeg = (s.comfyGlobalLoraNegatives || '').trim();
-    if (!globalNeg) return base;
-
-    const seen = new Set(base.toLowerCase().split(/[,，]/).map(t => t.trim()).filter(Boolean));
-    const extras = [];
-    globalNeg.split(/[,，]/).map(t => t.trim()).filter(Boolean).forEach(t => {
-      const key = t.toLowerCase();
-      if (seen.has(key)) return;
-      seen.add(key);
-      extras.push(t);
+  // 通用排除关键词：从最终正向提示词中把命中的词剔除掉 (正向黑名单，不限 LoRA，始终生效)
+  // 语法：逗号/换行分隔多个词；支持 * 通配 (hat* 前缀、*hat* 包含)；以"逗号分段 token"为粒度匹配，不误伤其它词
+  function buildPositiveExclusionRegex(list) {
+    const alts = list.map(word => {
+      const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '[^,，]*');
+      return escaped;
     });
+    return new RegExp(`(^|[,，])\\s*(?:${alts.join('|')})\\s*(?=[,，]|$)`, 'gi');
+  }
 
-    if (extras.length === 0) return base;
-    return `${extras.join(', ')}, ${base}`.trim();
+  function applyPositiveExclusions(positivePrompt) {
+    let text = positivePrompt || '';
+    const s = getSettings();
+    const raw = (s.comfyGlobalExcludeKeywords || '').trim();
+    if (!raw || !text) return text;
+
+    const list = raw.split(/[,，\n]/).map(t => t.trim()).filter(Boolean);
+    if (list.length === 0) return text;
+
+    try {
+      text = text.replace(buildPositiveExclusionRegex(list), '$1');
+      // 清理因剔除产生的多余逗号与空白
+      text = text
+        .replace(/[,，]\s*(?=[,，])/g, '')
+        .replace(/^\s*[,，]\s*/, '')
+        .replace(/[,，]\s*$/, '')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+    } catch (_) {}
+    return text;
   }
 
   // 检测生图应激活的角色 LoRA (核心防串台机制：正文可出现 1girl/1boy 双主体，
@@ -3091,8 +3106,8 @@
 
       // 注入 LoRA 特征词 (含通用角色关键词)
       const loraInjection = buildLoraTriggerInjection(activeLoras);
-      const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim();
-      const negativePrompt = buildLoraNegativeInjection(activeLoras);
+      const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim());
+      const negativePrompt = s.comfyFixedNegative || '';
 
       // 6. 动态生成局部重绘工作流
       const workflow = buildComfyInpaintWorkflow({
@@ -3367,9 +3382,9 @@
     // 注入 LoRA 角色特征词到正向提示词中 (含通用常驻角色关键词)
     const loraInjection = buildLoraTriggerInjection(activeLoras);
     
-    // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀
-    const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim();
-    const negativePrompt = buildLoraNegativeInjection(activeLoras);
+    // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀，最后套用通用排除关键词
+    const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim());
+    const negativePrompt = s.comfyFixedNegative || '';
 
     // 探查可用 Checkpoint
     let ckpt = s.comfyCheckpoint || '';
@@ -4533,9 +4548,9 @@
             </div>
 
             <div class="sct-setting-col" style="margin-top:8px;">
-              <label for="sct-cfg-global-lora-neg">🚫 通用排除关键词 (常驻注入 · 负向提示词)</label>
-              <textarea id="sct-cfg-global-lora-neg" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: glasses, hat, extra arms, twintails —— 只要任意 LoRA 激活就会追加到负向提示词">${s.comfyGlobalLoraNegatives || ''}</textarea>
-              <div class="sct-hint" style="margin-top:2px;">只要<b>任意一个 LoRA 被激活</b>，这组排除词就会追加到负向提示词（与固定负向词自动去重、只注入一次）。若希望<b>始终</b>排除，请直接写进下方「固定的通用负向提示词」。</div>
+              <label for="sct-cfg-global-exclude">🚫 通用排除关键词 (从正向提示词中剔除 · 黑名单)</label>
+              <textarea id="sct-cfg-global-exclude" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: hat, glasses, twintails, *sword* —— 最终正向提示词里出现这些词就自动删掉">${s.comfyGlobalExcludeKeywords || ''}</textarea>
+              <div class="sct-hint" style="margin-top:2px;">作用在<b>正向提示词</b>上：无论词来自画面标签、通用角色关键词还是各处注入，只要命中就自动剔除（按逗号分段匹配，不误伤其它词）。支持 <b>*</b> 通配：<code>hat*</code> 前缀、<code>*hat*</code> 包含。始终生效，与 LoRA 是否激活无关。</div>
             </div>
           </div>
 
@@ -4888,10 +4903,10 @@
       globalLoraKwInput.addEventListener('input', (e) => saveSettings({ comfyGlobalLoraKeywords: e.target.value }));
     }
 
-    // 通用排除关键词 (常驻注入到负向提示词，对所有 LoRA 生效)
-    const globalLoraNegInput = container.querySelector('#sct-cfg-global-lora-neg');
-    if (globalLoraNegInput) {
-      globalLoraNegInput.addEventListener('input', (e) => saveSettings({ comfyGlobalLoraNegatives: e.target.value }));
+    // 通用排除关键词 (正向提示词黑名单剔除)
+    const globalExcludeInput = container.querySelector('#sct-cfg-global-exclude');
+    if (globalExcludeInput) {
+      globalExcludeInput.addEventListener('input', (e) => saveSettings({ comfyGlobalExcludeKeywords: e.target.value }));
     }
     container.querySelector('#sct-cfg-fixed-neg').addEventListener('input', (e) => saveSettings({ comfyFixedNegative: e.target.value }));
     container.querySelector('#sct-cfg-width').addEventListener('change', (e) => saveSettings({ comfyWidth: parseInt(e.target.value, 10) || 512 }));
