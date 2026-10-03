@@ -62,6 +62,9 @@
     comfyHiresScale: 1.5,
     comfyHiresDenoise: 0.45,
 
+    // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
+    comfyGlobalLoraKeywords: '',
+
     // 多 LoRA 规则库 (Array of LoRA objects)
     // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn }]
     comfyLoras: [
@@ -2305,6 +2308,33 @@
     return s;
   }
 
+  // 组装 LoRA 特征词注入串 = 通用角色关键词(常驻) + 每个被激活 LoRA 的触发词
+  // 规则：只要有任意 LoRA 激活，通用关键词就一并注入；按逗号分词去重，绝不重复堆叠
+  function buildLoraTriggerInjection(activeLoras) {
+    const s = getSettings();
+    const list = Array.isArray(activeLoras) ? activeLoras : [];
+    if (list.length === 0) return '';
+
+    const parts = [];
+    const globalKw = (s.comfyGlobalLoraKeywords || '').trim();
+    if (globalKw) parts.push(globalKw);
+    list.forEach(l => {
+      const tw = ((l && l.triggerWords) || '').trim();
+      if (tw) parts.push(tw);
+    });
+
+    const seen = new Set();
+    const tokens = [];
+    parts.join(',').split(/[,，]/).map(t => t.trim()).filter(Boolean).forEach(t => {
+      const key = t.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      tokens.push(t);
+    });
+
+    return tokens.length > 0 ? `${tokens.join(', ')}, ` : '';
+  }
+
   // 检测生图应激活的角色 LoRA (核心防串台机制：正文可出现 1girl/1boy 双主体，
   // 但动态匹配的角色 LoRA 每张图严格最多只激活 1 个，绝不互相污染；常驻 LoRA 不受此限全量直载)
   function detectActiveLoras(fullText, promptText) {
@@ -3033,9 +3063,8 @@
         ckpt = cachedCheckpoints[0] || 'v1-5-pruned-emaonly.safetensors';
       }
 
-      // 注入 LoRA 特征词
-      const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
-      const loraInjection = loraTriggerWords ? `${loraTriggerWords}, ` : '';
+      // 注入 LoRA 特征词 (含通用角色关键词)
+      const loraInjection = buildLoraTriggerInjection(activeLoras);
       const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim();
       const negativePrompt = s.comfyFixedNegative || '';
 
@@ -3309,9 +3338,8 @@
     // 确定启用的 LoRA 列表与特征词注入 (常驻全量 + 至多 1 个动态角色，链式加载上限 4 个)
     const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 4) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
     
-    // 注入 LoRA 角色特征词到正向提示词中
-    const loraTriggerWords = activeLoras.map(l => l.triggerWords).filter(Boolean).join(', ');
-    const loraInjection = loraTriggerWords ? `${loraTriggerWords}, ` : '';
+    // 注入 LoRA 角色特征词到正向提示词中 (含通用常驻角色关键词)
+    const loraInjection = buildLoraTriggerInjection(activeLoras);
     
     // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀
     const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim();
@@ -4471,6 +4499,12 @@
             <div style="margin-top:6px;">
               <button type="button" class="sct-comfy-btn" id="sct-btn-add-lora">➕ 添加一条角色 LoRA 配置</button>
             </div>
+
+            <div class="sct-setting-col" style="margin-top:10px;">
+              <label for="sct-cfg-global-lora-kw">🌐 通用角色关键词 (常驻注入 · 对所有 LoRA 生效)</label>
+              <textarea id="sct-cfg-global-lora-kw" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: 1girl, solo, silver hair, purple eyes, school uniform">${s.comfyGlobalLoraKeywords || ''}</textarea>
+              <div class="sct-hint" style="margin-top:2px;">只要<b>任意一个 LoRA 被激活</b>（含常驻 LoRA），这组关键词就会自动注入正向提示词；重复词自动去重、只注入一次。没有任何 LoRA 激活时不会注入。</div>
+            </div>
           </div>
 
           <!-- 板块 3: 提示词与画面质量参数 -->
@@ -4815,6 +4849,12 @@
 
     container.querySelector('#sct-cfg-fixed-pos').addEventListener('input', (e) => saveSettings({ comfyFixedPositive: e.target.value }));
     container.querySelector('#sct-cfg-prompt-suffix').addEventListener('input', (e) => saveSettings({ comfyPromptSuffix: e.target.value }));
+
+    // 通用角色关键词 (常驻注入，对所有 LoRA 生效)
+    const globalLoraKwInput = container.querySelector('#sct-cfg-global-lora-kw');
+    if (globalLoraKwInput) {
+      globalLoraKwInput.addEventListener('input', (e) => saveSettings({ comfyGlobalLoraKeywords: e.target.value }));
+    }
     container.querySelector('#sct-cfg-fixed-neg').addEventListener('input', (e) => saveSettings({ comfyFixedNegative: e.target.value }));
     container.querySelector('#sct-cfg-width').addEventListener('change', (e) => saveSettings({ comfyWidth: parseInt(e.target.value, 10) || 512 }));
     container.querySelector('#sct-cfg-height').addEventListener('change', (e) => saveSettings({ comfyHeight: parseInt(e.target.value, 10) || 768 }));
