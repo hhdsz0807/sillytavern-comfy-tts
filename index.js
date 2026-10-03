@@ -64,6 +64,8 @@
 
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
+    // 通用排除关键词 (常驻注入到负向提示词)：任意 LoRA 被激活时都会追加，仅注入一次且自动去重
+    comfyGlobalLoraNegatives: '',
 
     // 多 LoRA 规则库 (Array of LoRA objects)
     // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn }]
@@ -2335,6 +2337,30 @@
     return tokens.length > 0 ? `${tokens.join(', ')}, ` : '';
   }
 
+  // 组装负向提示词 = 固定通用负向词 + 通用排除关键词(常驻注入)
+  // 规则：只要有任意 LoRA 激活就追加；与固定负向词按逗号分词去重，绝不重复堆叠
+  function buildLoraNegativeInjection(activeLoras) {
+    const s = getSettings();
+    const base = s.comfyFixedNegative || '';
+    const list = Array.isArray(activeLoras) ? activeLoras : [];
+    if (list.length === 0) return base;
+
+    const globalNeg = (s.comfyGlobalLoraNegatives || '').trim();
+    if (!globalNeg) return base;
+
+    const seen = new Set(base.toLowerCase().split(/[,，]/).map(t => t.trim()).filter(Boolean));
+    const extras = [];
+    globalNeg.split(/[,，]/).map(t => t.trim()).filter(Boolean).forEach(t => {
+      const key = t.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      extras.push(t);
+    });
+
+    if (extras.length === 0) return base;
+    return `${extras.join(', ')}, ${base}`.trim();
+  }
+
   // 检测生图应激活的角色 LoRA (核心防串台机制：正文可出现 1girl/1boy 双主体，
   // 但动态匹配的角色 LoRA 每张图严格最多只激活 1 个，绝不互相污染；常驻 LoRA 不受此限全量直载)
   function detectActiveLoras(fullText, promptText) {
@@ -3066,7 +3092,7 @@
       // 注入 LoRA 特征词 (含通用角色关键词)
       const loraInjection = buildLoraTriggerInjection(activeLoras);
       const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim();
-      const negativePrompt = s.comfyFixedNegative || '';
+      const negativePrompt = buildLoraNegativeInjection(activeLoras);
 
       // 6. 动态生成局部重绘工作流
       const workflow = buildComfyInpaintWorkflow({
@@ -3343,7 +3369,7 @@
     
     // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀
     const fullPositivePrompt = `${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim();
-    const negativePrompt = s.comfyFixedNegative || '';
+    const negativePrompt = buildLoraNegativeInjection(activeLoras);
 
     // 探查可用 Checkpoint
     let ckpt = s.comfyCheckpoint || '';
@@ -4505,6 +4531,12 @@
               <textarea id="sct-cfg-global-lora-kw" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: 1girl, solo, silver hair, purple eyes, school uniform">${s.comfyGlobalLoraKeywords || ''}</textarea>
               <div class="sct-hint" style="margin-top:2px;">只要<b>任意一个 LoRA 被激活</b>（含常驻 LoRA），这组关键词就会自动注入正向提示词；重复词自动去重、只注入一次。没有任何 LoRA 激活时不会注入。</div>
             </div>
+
+            <div class="sct-setting-col" style="margin-top:8px;">
+              <label for="sct-cfg-global-lora-neg">🚫 通用排除关键词 (常驻注入 · 负向提示词)</label>
+              <textarea id="sct-cfg-global-lora-neg" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: glasses, hat, extra arms, twintails —— 只要任意 LoRA 激活就会追加到负向提示词">${s.comfyGlobalLoraNegatives || ''}</textarea>
+              <div class="sct-hint" style="margin-top:2px;">只要<b>任意一个 LoRA 被激活</b>，这组排除词就会追加到负向提示词（与固定负向词自动去重、只注入一次）。若希望<b>始终</b>排除，请直接写进下方「固定的通用负向提示词」。</div>
+            </div>
           </div>
 
           <!-- 板块 3: 提示词与画面质量参数 -->
@@ -4854,6 +4886,12 @@
     const globalLoraKwInput = container.querySelector('#sct-cfg-global-lora-kw');
     if (globalLoraKwInput) {
       globalLoraKwInput.addEventListener('input', (e) => saveSettings({ comfyGlobalLoraKeywords: e.target.value }));
+    }
+
+    // 通用排除关键词 (常驻注入到负向提示词，对所有 LoRA 生效)
+    const globalLoraNegInput = container.querySelector('#sct-cfg-global-lora-neg');
+    if (globalLoraNegInput) {
+      globalLoraNegInput.addEventListener('input', (e) => saveSettings({ comfyGlobalLoraNegatives: e.target.value }));
     }
     container.querySelector('#sct-cfg-fixed-neg').addEventListener('input', (e) => saveSettings({ comfyFixedNegative: e.target.value }));
     container.querySelector('#sct-cfg-width').addEventListener('change', (e) => saveSettings({ comfyWidth: parseInt(e.target.value, 10) || 512 }));
