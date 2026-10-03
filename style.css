@@ -1168,3 +1168,65 @@
 .sct-tool-btn:disabled {
   cursor: not-allowed;
 }
+/* ============ SAM2 一键分区选择 ============ */
+.sct-region-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 6px 0 4px;
+}
+
+.sct-region-header .sct-region-title {
+  font-size: 11.5px;
+  opacity: 0.8;
+}
+
+.sct-region-header .sct-region-clear {
+  color: #ffb4b4;
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.4);
+  font-size: 10.5px;
+}
+
+.sct-region-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 84px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sct-region-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #e5e7ff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sct-region-chip:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sct-region-chip.active {
+  background: rgba(88, 101, 242, 0.3);
+  border-color: #8b5cf6;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
+  color: #fff;
+}
+
+.sct-region-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  display: inline-block;
+}

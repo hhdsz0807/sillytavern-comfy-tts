@@ -881,6 +881,210 @@
   }
 
   // ---------------------------------------------------------------------------
+  // SAM2 一键全图分区选择：把自动掩码生成器输出的"每区域一色叠加图"解析成
+  // 可点选的区域芯片；点击芯片即把该色块区域加入/移出重绘蒙版
+  // ---------------------------------------------------------------------------
+  let sctRegionState = null; // { overlayUrl, regions:[{key,count,label,swatch}], selected:Set, busy }
+
+  // 颜色容差 (叠加图保存为 PNG 时可能有轻微色偏)
+  const SCT_REGION_COLOR_TOL = 14;
+
+  // 拉取叠加图并按颜色聚类出区域列表 (面积过小或纯黑的忽略，按面积降序最多取 28 个)
+  function enterRegionSelectionMode(overlayUrl) {
+    if (!inpaintModalEl || !inpaintMaskCtx || !inpaintDrawCtx) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const w = inpaintMaskCanvas.width;
+          const h = inpaintMaskCanvas.height;
+          const tc = document.createElement('canvas');
+          tc.width = w;
+          tc.height = h;
+          const tctx = tc.getContext('2d');
+          tctx.drawImage(img, 0, 0, w, h);
+          const d = tctx.getImageData(0, 0, w, h).data;
+
+          const colorMap = new Map();
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i];
+            const g = d[i + 1];
+            const b = d[i + 2];
+            if (r + g + b === 0) continue; // 纯黑背景忽略
+            const key = (r << 16) | (g << 8) | b;
+            const box = colorMap.get(key) || { count: 0, minX: w, minY: h, maxX: 0, maxY: 0 };
+            box.count++;
+            const px = (i / 4) % w;
+            const py = Math.floor((i / 4) / w);
+            if (px < box.minX) box.minX = px;
+            if (px > box.maxX) box.maxX = px;
+            if (py < box.minY) box.minY = py;
+            if (py > box.maxY) box.maxY = py;
+            colorMap.set(key, box);
+          }
+
+          const total = w * h;
+          const minPx = Math.max(300, Math.floor(total * 0.002));
+          const regions = [...colorMap.entries()]
+            .filter(([, box]) => box.count >= minPx)
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 28)
+            .map(([key, box], idx) => ({
+              key,
+              count: box.count,
+              label: `区域 ${idx + 1}`,
+              swatch: `rgb(${(key >> 16) & 255}, ${(key >> 8) & 255}, ${key & 255})`
+            }));
+
+          sctRegionState = { overlayUrl, regions, selected: new Set(), busy: false };
+          renderRegionChips();
+          resolve(regions.length > 0);
+        } catch (_) {
+          resolve(false);
+        }
+      };
+      img.onerror = () => resolve(false);
+      img.src = overlayUrl;
+    });
+  }
+
+  // 渲染区域芯片列表 (点击芯片 = 该区域加入/移出重绘选区)
+  function renderRegionChips() {
+    const listEl = inpaintModalEl?.querySelector('#sct-sam-region-list');
+    if (!listEl) return;
+    if (!sctRegionState) return;
+    if (!sctRegionState.regions || sctRegionState.regions.length === 0) {
+      listEl.style.display = 'none';
+      listEl.innerHTML = '';
+      return;
+    }
+    listEl.style.display = 'block';
+    listEl.innerHTML = `
+      <div class="sct-region-header">
+        <span class="sct-region-title">🧩 分区选择 · 点击色块加入/移出重绘选区</span>
+        <button type="button" class="sct-pack-chip sct-region-clear">❌ 清除全部分区</button>
+      </div>
+      <div class="sct-region-chips"></div>
+    `;
+    const chipsEl = listEl.querySelector('.sct-region-chips');
+    sctRegionState.regions.forEach(region => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'sct-region-chip';
+      chip.dataset.regionKey = String(region.key);
+      chip.title = `占用 ${region.count} 像素，点击加入或移出重绘选区`;
+      chip.innerHTML = `<span class="sct-region-swatch" style="background:${region.swatch}"></span>${region.label}`;
+      chip.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleRegionFromChip(chip);
+      });
+      chipsEl.appendChild(chip);
+    });
+    listEl.querySelector('.sct-region-clear').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      clearAllRegions();
+    });
+  }
+
+  // 按颜色从叠加图中提取该区域并写入重绘双层画布 (加入选区 / 移出选区)
+  function applyRegionColorMask(overlayUrl, colorKey, isOn) {
+    if (!inpaintMaskCtx || !inpaintDrawCtx) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const w = inpaintMaskCanvas.width;
+          const h = inpaintMaskCanvas.height;
+          const tc = document.createElement('canvas');
+          tc.width = w;
+          tc.height = h;
+          const tctx = tc.getContext('2d');
+          tctx.drawImage(img, 0, 0, w, h);
+          const d = tctx.getImageData(0, 0, w, h).data;
+
+          const maskImgData = inpaintMaskCtx.getImageData(0, 0, w, h);
+          const md = maskImgData.data;
+          const visualImgData = inpaintDrawCtx.getImageData(0, 0, w, h);
+          const vd = visualImgData.data;
+
+          const r0 = (colorKey >> 16) & 255;
+          const g0 = (colorKey >> 8) & 255;
+          const b0 = colorKey & 255;
+
+          for (let i = 0; i < d.length; i += 4) {
+            const inRegion = Math.abs(d[i] - r0) <= SCT_REGION_COLOR_TOL &&
+                             Math.abs(d[i + 1] - g0) <= SCT_REGION_COLOR_TOL &&
+                             Math.abs(d[i + 2] - b0) <= SCT_REGION_COLOR_TOL;
+            if (!inRegion) continue;
+            if (isOn) {
+              md[i] = 255; md[i + 1] = 255; md[i + 2] = 255; md[i + 3] = 255;
+              vd[i] = 239; vd[i + 1] = 68; vd[i + 2] = 68; vd[i + 3] = 140;
+            } else {
+              md[i] = 0; md[i + 1] = 0; md[i + 2] = 0; md[i + 3] = 255;
+              vd[i] = 0; vd[i + 1] = 0; vd[i + 2] = 0; vd[i + 3] = 0;
+            }
+          }
+
+          inpaintMaskCtx.putImageData(maskImgData, 0, 0);
+          inpaintDrawCtx.putImageData(visualImgData, 0, 0);
+          resolve(true);
+        } catch (_) {
+          resolve(false);
+        }
+      };
+      img.onerror = () => resolve(false);
+      img.src = overlayUrl;
+    });
+  }
+
+  // 区域芯片点击切换 (加入/移出，动作前都做历史快照保证可撤销)
+  async function toggleRegionFromChip(chip) {
+    if (!sctRegionState || !inpaintModalEl) return;
+    const key = parseInt(chip.dataset.regionKey, 10);
+    const region = sctRegionState.regions.find(r => r.key === key);
+    if (!region || sctRegionState.busy) return;
+    const wasOn = sctRegionState.selected.has(key);
+    sctRegionState.busy = true;
+    try {
+      captureInpaintHistoryPoint();
+      const ok = await applyRegionColorMask(sctRegionState.overlayUrl, key, !wasOn);
+      if (ok) {
+        if (wasOn) sctRegionState.selected.delete(key);
+        else sctRegionState.selected.add(key);
+        chip.classList.toggle('active', !wasOn);
+      }
+    } finally {
+      sctRegionState.busy = false;
+    }
+  }
+
+  // 一键清除所有已选分区 (不影响手动涂抹的笔迹)
+  async function clearAllRegions() {
+    if (!sctRegionState || sctRegionState.busy || !inpaintModalEl) return;
+    const keys = [...sctRegionState.selected];
+    if (keys.length === 0) {
+      showToast('当前没有已加入的分区', 'info');
+      return;
+    }
+    sctRegionState.busy = true;
+    try {
+      captureInpaintHistoryPoint();
+      for (const key of keys) {
+        await applyRegionColorMask(sctRegionState.overlayUrl, key, false);
+      }
+      sctRegionState.selected.clear();
+      inpaintModalEl.querySelectorAll('.sct-region-chip.active').forEach(chipEl => chipEl.classList.remove('active'));
+      showToast('已清除全部分区选择 (可用 Ctrl+Z 撤回)', 'success');
+    } finally {
+      sctRegionState.busy = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // 分割模型回退链：主力组合失败(缺模型/OOM/下载失败/异常)时自动逐档降级，保证功能始终可用
   // ---------------------------------------------------------------------------
   const SEG_TEXT_FALLBACKS = [
@@ -1169,6 +1373,44 @@
             '4': { inputs: { mask: ['3', 0] }, class_type: 'MaskToImage' },
             '5': { inputs: { filename_prefix: `sct_sam2_seg_${ts}`, images: ['4', 0] }, class_type: 'SaveImage' }
           };
+        } else if (type === 'regions') {
+          // SAM2 一键全图自动分区 (自动掩码生成器)：返回每个区域不同颜色叠加的可视化图，
+          // 前端按颜色逐块提取成可点选的重绘区域芯片
+          outputNodeId = '4';
+          promptWf = {
+            '1': { inputs: { image: currentInpaintUploadedName, upload: 'image' }, class_type: 'LoadImage' },
+            '2': {
+              inputs: {
+                model: candidate,
+                segmentor: 'automaskgenerator',
+                device: 'cuda',
+                precision: 'fp16'
+              },
+              class_type: 'DownloadAndLoadSAM2Model'
+            },
+            '3': {
+              inputs: {
+                sam2_model: ['2', 0],
+                image: ['1', 0],
+                points_per_side: 24,
+                points_per_batch: 32,
+                pred_iou_thresh: 0.85,
+                stability_score_thresh: 0.92,
+                stability_score_offset: 1.0,
+                mask_threshold: 0.0,
+                crop_n_layers: 0,
+                box_nms_thresh: 0.7,
+                crop_nms_thresh: 0.7,
+                crop_overlap_ratio: 0.34,
+                crop_n_points_downscale_factor: 1,
+                min_mask_region_area: 0.0,
+                use_m2m: false,
+                keep_model_loaded: true
+              },
+              class_type: 'Sam2AutoSegmentation'
+            },
+            '4': { inputs: { filename_prefix: `sct_sam_regions_${ts}`, images: ['3', 1] }, class_type: 'SaveImage' }
+          };
         }
 
         if (samStatusText && ci > 0) {
@@ -1233,12 +1475,21 @@
         throw new Error(`所有分割模型档位均失败，请检查 ComfyUI 控制台${detail}`);
       }
 
-      // 5. 应用蒙版到画布并缓存结果
+      // 5. 应用结果：一键分区模式进入区域点选交互；文字与点选模式直接写入画布
       const maskUrl = `${comfyHost}/view?filename=${encodeURIComponent(outputImgInfo.filename)}&subfolder=${encodeURIComponent(outputImgInfo.subfolder || '')}&type=${encodeURIComponent(outputImgInfo.type || 'output')}&t=${Date.now()}`;
       inpaintSegMaskCache.set(segCacheKey, maskUrl);
-      await applyMaskImageToCanvas(maskUrl, isAddMode);
 
-      showToast(`已成功提取【${label || promptText || '目标区域'}】${lastSegModelInfo ? ' · ' + lastSegModelInfo : ''}`, 'success');
+      if (type === 'regions') {
+        const okEnter = await enterRegionSelectionMode(maskUrl);
+        if (okEnter && sctRegionState?.regions?.length > 0) {
+          showToast(`🧩 全图已切分为 ${sctRegionState.regions.length} 个区域，点击芯片勾选要重绘的部分`, 'success');
+        } else {
+          showToast('未识别出足够的分区块，请使用画笔手动涂抹或鼠标点选', 'warning');
+        }
+      } else {
+        await applyMaskImageToCanvas(maskUrl, isAddMode);
+        showToast(`已成功提取【${label || promptText || '目标区域'}】${lastSegModelInfo ? ' · ' + lastSegModelInfo : ''}`, 'success');
+      }
 
     } catch (err) {
       console.error('[SCT] SAM 分割失败:', err);
@@ -1334,7 +1585,10 @@
                   <input type="text" id="sct-sam-custom-input" placeholder="输入任意关键词 (支持中文自动译英文，如: 眼镜、猫耳、翅膀、刀、尾巴)" />
                   <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-sam-custom-btn">🔍 智能抠出</button>
                   <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-sam-point-btn" title="开启后，在上方图片中点击任意物体，SAM2 将自动提取该物体轮廓">🎯 鼠标点选 (SAM2)</button>
+                  <button type="button" class="sct-comfy-btn sct-tool-btn" id="sct-sam-regions-btn" title="一键把全图自动切成多个区域 (衣服/手臂/部位等)，然后点击区域芯片加入重绘选区">🧩 一键分区</button>
                 </div>
+
+                <div id="sct-sam-region-list" style="display:none;"></div>
 
                 <div class="sct-sam-status" id="sct-sam-status" style="display:none; margin-top:4px;">
                   <span class="sct-sam-spinner"></span>
@@ -1456,6 +1710,13 @@
         if (inpaintTool === 'brush') brushBtn.classList.add('active');
         else eraserBtn.classList.add('active');
       }
+    });
+
+    // 一键分区按钮：提交 SAM2 自动掩码生成，完成后弹出色块区域芯片
+    overlay.querySelector('#sct-sam-regions-btn').addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await runComfySegmentationTask({ type: 'regions' });
     });
 
     // 撤销/重做按钮绑定 (含禁用态管理)
@@ -1912,6 +2173,14 @@
     sctInpaintHistory.undo.length = 0;
     sctInpaintHistory.redo.length = 0;
     sctInpaintHistory.busy = false;
+
+    // 重置一键分区状态与芯片列表
+    sctRegionState = null;
+    const regionList = modal.querySelector('#sct-sam-region-list');
+    if (regionList) {
+      regionList.style.display = 'none';
+      regionList.innerHTML = '';
+    }
 
     modal.querySelector('#sct-tool-brush').classList.add('active');
     modal.querySelector('#sct-tool-eraser').classList.remove('active');
