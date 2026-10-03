@@ -964,6 +964,55 @@
     return result;
   }
 
+  // 为画板文本框挂自动中文转英文：输入停顿(默认900ms)或失焦时，自动把框内内容替换为翻译好的英文
+  // (视觉反馈：成功后边框紫色闪烁 1.2 秒，原中文记录在悬浮提示里；不打断拼音输入法组词)
+  function bindSegChineseAutoTranslate(field, idleDelay = 900) {
+    if (!field) return;
+    let timer = null;
+    let running = false;
+    let composing = false;
+
+    const flashTranslated = () => {
+      const old = field.style.borderColor;
+      field.style.borderColor = 'rgba(139, 92, 246, 0.9)';
+      setTimeout(() => { field.style.borderColor = old || ''; }, 1200);
+    };
+
+    const runTranslate = async () => {
+      const val = (field.value || '').trim();
+      if (!val || !hasChineseText(val) || running) return;
+      running = true;
+      try {
+        const en = await translateSegPromptToEnglish(val);
+        const normalized = (en || '').trim();
+        if (normalized && normalized !== val) {
+          field.value = normalized;
+          field.title = `原文: ${val}`;
+          flashTranslated();
+        }
+      } catch (_) { /* 翻译不可用时保留原文 */ } finally {
+        running = false;
+      }
+    };
+
+    const scheduleTranslate = () => {
+      if (composing || !hasChineseText(field.value)) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; runTranslate(); }, idleDelay);
+    };
+
+    field.addEventListener('compositionstart', () => { composing = true; });
+    field.addEventListener('compositionend', () => {
+      composing = false;
+      scheduleTranslate();
+    });
+    field.addEventListener('input', scheduleTranslate);
+    field.addEventListener('blur', () => {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (!composing && hasChineseText(field.value)) runTranslate();
+    });
+  }
+
   // 常用英文提示词包 (画板自定义识别输入框下方点击即追加)
   const SCT_PROMPT_PACK = [
     { group: '五官', items: ['face', 'eyes', 'eyelashes', 'eyebrows', 'mouth', 'lips', 'nose', 'ears', 'head', 'hair', 'ponytail', 'twintails', 'bangs', 'long hair', 'short hair', 'blush', 'smile', 'open mouth', 'closed eyes'] },
@@ -1453,10 +1502,22 @@
     const customInput = overlay.querySelector('#sct-sam-custom-input');
     const customBtn = overlay.querySelector('#sct-sam-custom-btn');
     const runCustomSeg = async () => {
-      const val = (customInput.value || '').trim();
+      let val = (customInput.value || '').trim();
       if (!val) {
         showToast('请输入需要识别分割的目标关键词 (支持中文，会自动翻译成英文)', 'warning');
         return;
+      }
+      // 点击识别按钮时即时翻译并回填输入框 (内部有缓存，重复点击不重复请求)
+      if (hasChineseText(val)) {
+        try {
+          const en = (await translateSegPromptToEnglish(val) || '').trim();
+          if (en && en !== val) {
+            customInput.value = en;
+            customInput.title = `原文: ${val}`;
+            showToast(`关键词已自动翻译为英文: ${en}`, 'success');
+            val = en;
+          }
+        } catch (_) { /* 翻译不可用时按原文继续识别 */ }
       }
       await runComfySegmentationTask({
         type: 'text',
@@ -1500,6 +1561,10 @@
         packWrap.appendChild(gRow);
       });
     }
+
+    // 自定义关键词输入框 + 局部重绘提示词输入框：中文停顿/失焦自动译英
+    bindSegChineseAutoTranslate(customInput, 900);
+    bindSegChineseAutoTranslate(overlay.querySelector('#sct-inpaint-prompt-input'), 900);
 
     // 清空涂抹
     overlay.querySelector('#sct-tool-clear').addEventListener('click', () => {
@@ -1770,7 +1835,23 @@
         return;
       }
 
-      const inpaintPrompt = (overlay.querySelector('#sct-inpaint-prompt-input').value || promptText || '').trim();
+      let inpaintPrompt = (overlay.querySelector('#sct-inpaint-prompt-input').value || promptText || '').trim();
+      // 提交前兜底：中文重绘提示词自动翻译成英文 (CLIP 文本编码器英文效果最佳)
+      if (hasChineseText(inpaintPrompt)) {
+        const originalCn = inpaintPrompt;
+        try {
+          const en = (await translateSegPromptToEnglish(inpaintPrompt) || '').trim();
+          if (en && en !== inpaintPrompt) {
+            inpaintPrompt = en;
+            const promptInputEl = overlay.querySelector('#sct-inpaint-prompt-input');
+            if (promptInputEl) {
+              promptInputEl.value = en;
+              promptInputEl.title = `原文: ${originalCn}`;
+            }
+            showToast(`重绘提示词已自动翻译为英文: ${inpaintPrompt}`, 'success');
+          }
+        } catch (_) { /* 翻译不可用时按原词继续重绘 */ }
+      }
       const denoiseVal = parseFloat(overlay.querySelector('#sct-inpaint-denoise-slider').value) || 0.70;
       const growVal = parseInt(overlay.querySelector('#sct-inpaint-grow-slider').value, 10) || 6;
 
