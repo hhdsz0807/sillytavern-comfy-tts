@@ -1654,9 +1654,7 @@
     // 绑定关闭
     overlay.querySelector('.sct-inpaint-close-btn').addEventListener('click', closeInpaintModal);
     overlay.querySelector('#sct-inpaint-cancel-btn').addEventListener('click', closeInpaintModal);
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) closeInpaintModal();
-    });
+    // 注意：绝不在点击遮罩空白处时关闭弹窗 (极易误触丢失涂抹进度)，仅允许 X 按钮/取消按钮/Esc 键退出
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && overlay.style.display !== 'none') {
