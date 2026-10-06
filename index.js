@@ -83,6 +83,12 @@
     comfyStyleRefWeightType: '',       // 空 = 用节点默认(linear);可选 style transfer / composition 等
     comfyStyleRefClipVision: '',
 
+    // AI 辅助配置 (用于「🤖 AI 自动配置 LoRA」:任何 OpenAI 兼容 /v1/chat/completions 接口)
+    comfyAiAssistEndpoint: 'https://api.deepseek.com/v1/chat/completions',
+    comfyAiAssistKey: '',
+    comfyAiAssistModel: 'deepseek-chat',
+    comfyAiAssistExtra: '',            // 额外要求(可选):会追加进系统提示词
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -2735,6 +2741,107 @@
     return name;
   }
 
+  /* ---------------------------------------------------------------------------
+     AI 辅助配置动态 LoRA
+     把「LoRA 文件名 + 用户粘贴的作者说明/示例」交给任意 OpenAI 兼容接口,
+     让它输出结构化配置(激活关键词 / 特征注入词 / 多组分组),直接写进该 LoRA 条目。
+     典型场景:一个 LoRA 里含 5 个角色 —— AI 一次就给出 5 组,不用手打。
+     --------------------------------------------------------------------------- */
+
+  // 从模型回复里抠出 JSON(容忍 ```json 围栏、前后废话、轻微截断)
+  function extractAiJson(text) {
+    const raw = String(text || '').replace(/```json/gi, '```').trim();
+    const fenced = raw.match(/```([\s\S]*?)```/);
+    const body = fenced ? fenced[1] : raw;
+    const start = body.indexOf('{');
+    const end = body.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(body.slice(start, end + 1));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function buildAiLoraMessages(entry) {
+    const s = getSettings();
+    const extra = (s.comfyAiAssistExtra || '').trim();
+    const system = [
+      '你是 ComfyUI / SillyTavern 生图插件的 LoRA 配置助手。',
+      '用户给你一个 LoRA 文件名,可能还有作者说明或示例提示词。请输出**严格 JSON**(不要解释、不要代码围栏):',
+      '{',
+      '  "keywords": "激活关键词,逗号分隔",',
+      '  "triggerWords": "基础特征注入词,逗号分隔(可空)",',
+      '  "variants": [ { "label": "分组名", "keywords": "本组激活关键词", "triggerWords": "本组注入词" } ]',
+      '}',
+      '规则:',
+      '1) keywords = 「出现就应挂载该 LoRA」的判别词:优先用 LoRA 的触发 tag(保留下划线原样写法)、角色名(英文与中文都要)、常见写法变体;',
+      '2) 若该 LoRA 含多个角色或多套服装 → 拆成多个 variants,每个角色/服装一组;每组的 keywords 只写该组独有判别词,triggerWords 写该组完整注入词;',
+      '3) 不要把 blue hair / school uniform 这类通用外貌词当作唯一判别词(它们可以出现在 triggerWords 里用于注入);',
+      '4) triggerWords 里的 tag 保留下划线写法(如 yakishio_lemon),那是 LoRA 训练口径;',
+      '5) variants 最多 8 组;没有多角色/多服装时 variants 给空数组。',
+      extra ? `额外要求:${extra}` : '',
+      '只输出 JSON。',
+    ].filter(Boolean).join('\n');
+
+    const note = (entry.aiNote || '').trim();
+    const user = [
+      `LoRA 文件名:${entry.name || '(未填)'}`,
+      note ? `作者说明 / 示例提示词:\n${note}` : '(用户未提供作者说明;请依据文件名与你的知识推断角色与特征)',
+    ].join('\n');
+
+    return [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ];
+  }
+
+  async function requestAiLoraConfig(entry) {
+    const s = getSettings();
+    const endpoint = (s.comfyAiAssistEndpoint || '').trim();
+    const key = (s.comfyAiAssistKey || '').trim();
+    const model = (s.comfyAiAssistModel || '').trim() || 'deepseek-chat';
+    if (!endpoint) throw new Error('未配置 AI 接口地址(设置面板 → 🤖 AI 辅助配置)');
+    if (!key) throw new Error('未配置 AI API Key(设置面板 → 🤖 AI 辅助配置)');
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: buildAiLoraMessages(entry), temperature: 0.2, stream: false }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`AI 接口返回 ${res.status}${detail ? ':' + detail.slice(0, 160) : ''}`);
+    }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || '';
+    const cfg = extractAiJson(content);
+    if (!cfg) throw new Error('AI 返回无法解析为 JSON(可能被截断或格式不符)');
+    return cfg;
+  }
+
+  /** 把 AI 结果写进指定 LoRA 条目(关键词 / 特征词 / 分组) */
+  function applyAiLoraConfig(idx, cfg) {
+    const loras = getSettings().comfyLoras || [];
+    const item = loras[idx];
+    if (!item) return { variants: 0 };
+    if (cfg.keywords) item.keywords = String(cfg.keywords).trim();
+    if (cfg.triggerWords) item.triggerWords = String(cfg.triggerWords).trim();
+    let variantCount = 0;
+    if (Array.isArray(cfg.variants) && cfg.variants.length > 0) {
+      item.variants = cfg.variants.slice(0, 8).map((variant, i) => ({
+        id: `var_${Date.now()}_${i}`,
+        label: String((variant && variant.label) || `第 ${i + 1} 组`).trim(),
+        keywords: String((variant && variant.keywords) || '').trim(),
+        triggerWords: String((variant && variant.triggerWords) || '').trim(),
+      }));
+      item.activeVariantId = '';
+      variantCount = item.variants.length;
+    }
+    saveSettings({ comfyLoras: loras });
+    return { variants: variantCount };
+  }
+
   /**
    * 按规格把一批输入填全:overrides 命中的键用我们的值,其余按官方默认补齐。
    * ★ 额外做「下拉候选校验」:overrides 里的字符串若不在该节点的候选列表里,就回落到规格默认值,
@@ -5066,6 +5173,17 @@
             <textarea class="text_pole sct-textarea-autowrap sct-lora-triggers" data-idx="${idx}" rows="3" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform, white ribbon, looking at viewer, gentle smile">${escapeHtml(item.triggerWords || '')}</textarea>
           </div>
 
+          <!-- AI 辅助:读文件名 + 作者说明 → 生成激活词/特征词/分组 -->
+          <div class="sct-setting-col sct-lora-ai">
+            <label>🤖 AI 自动配置 <span style="font-size:11px; opacity:0.6;">(可选:粘贴 LoRA 作者页说明/示例 tag 后点生成)</span></label>
+            <textarea class="text_pole sct-textarea-autowrap sct-lora-ainote" data-idx="${idx}" rows="2" placeholder="粘贴作者给的触发词/示例提示词(留空则让 AI 仅按文件名推断)">${escapeHtml(item.aiNote || '')}</textarea>
+            <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-aigen" data-idx="${idx}">🤖 生成配置(激活词 / 特征词 / 分组)</button>
+            <div class="sct-hint">
+              会用「文件名 + 上面的说明」让 AI 输出结构化配置并**覆盖**本条的激活关键词、特征激活词与分组。
+              接口在设置面板 → 🤖 AI 辅助配置(任意 OpenAI 兼容接口,默认 DeepSeek)。
+            </div>
+          </div>
+
           <!-- 激活词分组:同一角色多套词(校服/泳装/便服…),出图时用其中一组 -->
           <div class="sct-setting-col sct-lora-variants">
             <label>激活词分组 <span style="font-size:11px; opacity:0.6;">(同一角色的多套激活词,出图时用哪一组)</span></label>
@@ -5243,6 +5361,43 @@
             e.preventDefault();
             const first = pickerOptions.querySelector('.sct-lora-option[data-name]');
             if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          }
+        });
+      }
+
+      // ---- AI 自动配置:作者说明保存 + 一键生成 ----
+      const aiNoteInput = card.querySelector('.sct-lora-ainote');
+      if (aiNoteInput) {
+        aiNoteInput.addEventListener('input', (e) => {
+          loras[idx].aiNote = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        });
+      }
+
+      const aiGenBtn = card.querySelector('.sct-lora-aigen');
+      if (aiGenBtn) {
+        aiGenBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!loras[idx].name) {
+            showToast('先填 LoRA 模型文件名,AI 才知道要配哪个', 'warning');
+            return;
+          }
+          const originalText = aiGenBtn.textContent;
+          aiGenBtn.disabled = true;
+          aiGenBtn.textContent = '⏳ AI 生成中…';
+          try {
+            const cfg = await requestAiLoraConfig(loras[idx]);
+            const { variants } = applyAiLoraConfig(idx, cfg);
+            renderLoraList(container);
+            showToast(
+              `AI 配置完成:激活关键词 ${(cfg.keywords || '').split(/[,，]/).filter(Boolean).length} 个,特征词 ${(cfg.triggerWords || '').split(/[,，]/).filter(Boolean).length} 个${variants ? `,分组 ${variants} 组` : ''}`,
+              'success'
+            );
+          } catch (err) {
+            aiGenBtn.disabled = false;
+            aiGenBtn.textContent = originalText;
+            showToast(`AI 配置失败: ${err.message}`, 'error');
           }
         });
       }
@@ -5656,6 +5811,41 @@
                 </select>
               </div>
               <div class="sct-hint">模型放在 <code>ComfyUI/models/clip_vision/</code>；原生模式用它把参考图编码成视觉条件(unCLIP)。</div>
+            </div>
+          </div>
+
+          <!-- 板块 4.7: AI 辅助配置 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🤖</span>
+              <span>AI 辅助配置 (用于 LoRA 一键生成配置)</span>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-ai-endpoint">AI 接口地址 (OpenAI 兼容 /chat/completions)</label>
+              <input type="text" id="sct-cfg-ai-endpoint" class="text_pole" placeholder="https://api.deepseek.com/v1/chat/completions" value="${escapeHtml(s.comfyAiAssistEndpoint || '')}" />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-ai-key">AI API Key</label>
+              <div style="display:flex; gap:6px;">
+                <input type="password" id="sct-cfg-ai-key" class="text_pole" placeholder="sk-..." value="${escapeHtml(s.comfyAiAssistKey || '')}" style="flex:1;" />
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-toggle-ai-key-vis">👁️ 显示/隐藏</button>
+              </div>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-ai-model">模型名</label>
+              <input type="text" id="sct-cfg-ai-model" class="text_pole" placeholder="deepseek-chat" value="${escapeHtml(s.comfyAiAssistModel || '')}" />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-ai-extra">额外要求 (可选)</label>
+              <textarea id="sct-cfg-ai-extra" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如:激活词同时写日文名;分组名用角色中文名">${escapeHtml(s.comfyAiAssistExtra || '')}</textarea>
+            </div>
+
+            <div class="sct-hint">
+              仅在点击 LoRA 卡片里的「🤖 生成配置」时调用一次,不会自动联网;任何 OpenAI 兼容接口都可用(DeepSeek / OpenAI / 本地 Ollama 等)。
             </div>
           </div>
 
@@ -6138,6 +6328,16 @@
         if (label) label.textContent = String(value);
         saveSettings({ [key]: value });
       });
+    });
+
+    // AI 辅助配置
+    container.querySelector('#sct-cfg-ai-endpoint')?.addEventListener('input', (e) => saveSettings({ comfyAiAssistEndpoint: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-ai-key')?.addEventListener('input', (e) => saveSettings({ comfyAiAssistKey: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-ai-model')?.addEventListener('input', (e) => saveSettings({ comfyAiAssistModel: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-ai-extra')?.addEventListener('input', (e) => saveSettings({ comfyAiAssistExtra: e.target.value }));
+    container.querySelector('#sct-toggle-ai-key-vis')?.addEventListener('click', () => {
+      const input = container.querySelector('#sct-cfg-ai-key');
+      if (input) input.type = input.type === 'password' ? 'text' : 'password';
     });
 
     // 自动配图指令
