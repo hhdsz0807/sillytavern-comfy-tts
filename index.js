@@ -2502,30 +2502,51 @@
     // Helper: 检查某个 LoRA 是否与指定文本匹配
     function matchLoraAgainstText(lora, text) {
       if (!lora.enabled || !lora.name) return false;
-      const tokens = (raw, minLen = 2) => (raw || '')
-        .split(/[,，\n|]/)
-        .map(k => k.trim().toLowerCase())
-        .filter(k => k.length >= minLen);
+      const rawText = String(text || '').toLowerCase();
+      // 文本侧容错:下划线/连字符视为空格(yanami_anna ≈ yanami anna)
+      const norm = (s) => s.replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim();
+      const haystacks = [rawText, norm(rawText)];
+
+      // 配置侧容错:一个词展开成多种常见写法 ——
+      //   原样 / 下划线→空格 / 两词名顺序互换(anna yanami ↔ yanami anna)
+      // 这样 AI 写 "anna yanami" 也能命中你配的 "yanami_anna",不必穷举所有写法
+      const expand = (raw, minLen = 2) => {
+        const out = new Set();
+        (raw || '')
+          .split(/[,，\n|]/)
+          .map(k => k.trim().toLowerCase())
+          .filter(k => k.length >= minLen)
+          .forEach(tok => {
+            out.add(tok);
+            const spaced = norm(tok);
+            if (!spaced) return;
+            out.add(spaced);
+            const parts = spaced.split(' ').filter(Boolean);
+            if (parts.length === 2) out.add(`${parts[1]} ${parts[0]}`);
+          });
+        return [...out];
+      };
+      const hit = (list) => list.some(tok => haystacks.some(hay => hay.includes(tok)));
 
       // 正式激活依据 = 角色激活关键词 + 各分组的组关键词(这两处的语义才是"命中即挂载")
-      const keywordTokens = tokens(lora.keywords, 2);
-      const variantTokens = loraVariantList(lora).flatMap(variant => tokens(variant.keywords, 2));
+      const keywordTokens = expand(lora.keywords, 2);
+      const variantTokens = loraVariantList(lora).flatMap(variant => expand(variant.keywords, 2));
       const cleanName = lora.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
 
       if (keywordTokens.length > 0 || variantTokens.length > 0) {
         // ★ 有正式激活词时,绝不再拿「角色特征激活词」当激活依据 ——
         //   否则 blue hair / blue eyes / school uniform 这类通用外貌词会把不相干的角色 LoRA 也拉起来
-        if (keywordTokens.some(k => text.includes(k))) return true;
-        if (variantTokens.some(k => text.includes(k))) return true;
-        if (cleanName.length > 3 && text.includes(cleanName)) return true;
+        if (hit(keywordTokens)) return true;
+        if (hit(variantTokens)) return true;
+        if (cleanName.length > 3 && haystacks.some(hay => hay.includes(cleanName))) return true;
         return false;
       }
 
       // 兼容老配置:完全没配激活关键词时,才退回用特征词(去泛词)与文件名兜底
       const generic = ['1girl', '1boy', '2girls', '2boys', 'solo', 'masterpiece', 'best quality'];
-      const fallbackTokens = tokens(lora.triggerWords, 3).filter(k => !generic.includes(k));
-      if (fallbackTokens.some(k => text.includes(k))) return true;
-      return cleanName.length > 3 && text.includes(cleanName);
+      const fallbackTokens = expand(lora.triggerWords, 3).filter(k => !generic.includes(k));
+      if (hit(fallbackTokens)) return true;
+      return cleanName.length > 3 && haystacks.some(hay => hay.includes(cleanName));
     }
 
     // 第 0 阶段【最高优先级 · 绝对常驻】：所有已启用且勾选了常驻生效 (alwaysOn) 的 LoRA 必须直接无条件全量挂载！
