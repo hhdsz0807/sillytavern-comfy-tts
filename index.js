@@ -3176,9 +3176,60 @@
     return result;
   }
 
+  /**
+   * 规范化 AI 对话接口地址:允许用户只填 base URL(几乎人人都少填 /chat/completions)
+   *   https://api.deepseek.com              → https://api.deepseek.com/v1/chat/completions
+   *   https://api.x.com/provider/v1         → https://api.x.com/provider/v1/chat/completions
+   *   https://api.x.com/v1/chat/completions → 原样
+   */
+  function normalizeAiEndpoint(raw) {
+    let url = String(raw || '').trim().replace(/\/+$/, '');
+    if (!url) return '';
+    if (/\/chat\/completions$/i.test(url)) return url;
+    if (/\/v\d+$/i.test(url)) return `${url}/chat/completions`;
+    if (/^https?:\/\/[^/]+$/i.test(url)) return `${url}/v1/chat/completions`;
+    return `${url}/chat/completions`;
+  }
+
+  /** 拿到最终要用的对话接口地址,并把补全结果写回设置(让用户看到真实地址) */
+  function resolveAiEndpoint() {
+    const raw = (getSettings().comfyAiAssistEndpoint || '').trim();
+    const fixed = normalizeAiEndpoint(raw);
+    if (fixed && fixed !== raw) saveSettings({ comfyAiAssistEndpoint: fixed });
+    return fixed;
+  }
+
+  /** 最小对话请求探活:返回使用的模型名,失败抛错(跑批前先验一次,避免批量全失败) */
+  async function pingAiEndpoint() {
+    const endpoint = resolveAiEndpoint();
+    if (!endpoint) throw new Error('未配置 AI 接口地址(设置面板 → 🤖 AI 辅助配置)');
+    const key = (getSettings().comfyAiAssistKey || '').trim();
+    if (!key) throw new Error('未配置 AI API Key');
+    let model = (getSettings().comfyAiAssistModel || '').trim();
+    if (!model) {
+      const models = await fetchAiModelList().catch(() => []);
+      model = pickChatModel(models);
+      if (!model) throw new Error('拿不到模型名(点「🔄 获取模型列表」或手动填一个)');
+      saveSettings({ comfyAiAssistModel: model });
+    }
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, stream: false }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      const hint = (res.status === 404 || /not a registered route|not found/i.test(detail))
+        ? ' —— 接口地址可能不完整(应为 .../chat/completions)'
+        : '';
+      throw new Error(`对话接口返回 ${res.status}${detail ? ':' + detail.slice(0, 140) : ''}${hint}`);
+    }
+    return model;
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
-    const endpoint = (s.comfyAiAssistEndpoint || '').trim();
+    const endpoint = resolveAiEndpoint();
     const key = (s.comfyAiAssistKey || '').trim();
     let model = (s.comfyAiAssistModel || '').trim();
     if (!endpoint) throw new Error('未配置 AI 接口地址(设置面板 → 🤖 AI 辅助配置)');
@@ -3198,7 +3249,10 @@
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
-      throw new Error(`AI 接口返回 ${res.status}${detail ? ':' + detail.slice(0, 160) : ''}`);
+      const hint = (res.status === 404 || /not a registered route|not found/i.test(detail))
+        ? ' —— 接口地址可能不完整,应以 /chat/completions 结尾(已在地址框自动补全,请再试)'
+        : (res.status === 401 || res.status === 403 ? ' —— API Key 无效或没有权限' : '');
+      throw new Error(`AI 接口返回 ${res.status}${detail ? ':' + detail.slice(0, 160) : ''}${hint}`);
     }
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || data?.choices?.[0]?.text || '';
@@ -6313,6 +6367,7 @@
               <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                 <input type="text" id="sct-cfg-ai-model" class="text_pole" placeholder="留空则调用时自动获取" value="${escapeHtml(s.comfyAiAssistModel || '')}" style="flex:1; min-width:130px;" />
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-fetch-models">🔄 获取模型列表</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-test">🧪 测试 AI 接口</button>
                 <select id="sct-ai-model-select" class="text_pole" style="max-width:190px;">
                   <option value="">(点左侧按钮拉取)</option>
                   ${(cachedAiModels || []).map(m => `<option value="${escapeHtml(m)}" ${m === s.comfyAiAssistModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
@@ -6321,6 +6376,7 @@
               <div class="sct-hint">
                 点「🔄 获取模型列表」会请求接口的 <code>/models</code> 拉取可用模型名(自动从上面的接口地址推导)。
                 <b>模型名留空也行</b> —— 调用时会自动挑一个对话模型并记住。
+                <br>地址只填 base 也能用:如填 <code>https://api.xxx.com/provider/v1</code> 会自动补成 <code>.../provider/v1/chat/completions</code>。
               </div>
             </div>
 
@@ -6915,6 +6971,73 @@
       saveSettings({ comfyAiAssistModel: e.target.value });
     });
 
+    // 🧪 测试 AI 接口:补全地址 → 拉模型列表 → 发一条最小对话请求
+    container.querySelector('#sct-ai-test')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ 测试中…';
+      const lines = [];
+      try {
+        const fixed = resolveAiEndpoint();
+        const endpointInput = container.querySelector('#sct-cfg-ai-endpoint');
+        if (endpointInput) endpointInput.value = fixed;
+        lines.push(`接口: ${fixed}`);
+        if (!fixed) throw new Error('未填接口地址');
+        if (!(getSettings().comfyAiAssistKey || '').trim()) throw new Error('未填 API Key');
+
+        // 1) 模型列表(可选,失败也继续)
+        try {
+          const models = await fetchAiModelList();
+          lines.push(`✅ /models 可用,拿到 ${models.length} 个模型`);
+          const select = container.querySelector('#sct-ai-model-select');
+          if (select) {
+            select.innerHTML = '<option value="">(选择模型)</option>' +
+              models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+          }
+          if (!(getSettings().comfyAiAssistModel || '').trim()) {
+            const picked = pickChatModel(models);
+            if (picked) {
+              const input = container.querySelector('#sct-cfg-ai-model');
+              if (input) input.value = picked;
+              saveSettings({ comfyAiAssistModel: picked });
+              lines.push(`✅ 已自动选用模型: ${picked}`);
+            }
+          }
+        } catch (err) {
+          lines.push(`⚠️ /models 不可用(${err.message})—— 仍继续测对话接口`);
+        }
+
+        // 2) 最小对话请求
+        const key = (getSettings().comfyAiAssistKey || '').trim();
+        let model = (getSettings().comfyAiAssistModel || '').trim();
+        if (!model && cachedAiModels.length > 0) {
+          model = pickChatModel(cachedAiModels);
+          saveSettings({ comfyAiAssistModel: model });
+        }
+        if (!model) throw new Error('拿不到模型名,请手动填一个');
+        const res = await fetch(fixed, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 8, stream: false }),
+        });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => '');
+          throw new Error(`对话接口返回 ${res.status}${detail ? ':' + detail.slice(0, 160) : ''}`);
+        }
+        const data = await res.json();
+        const reply = (data?.choices?.[0]?.message?.content || '').trim().slice(0, 40);
+        lines.push(`✅ 对话接口正常(模型 ${model}${reply ? `,回复「${reply}」` : ''})`);
+        showToast(`AI 接口测试通过 · ${lines.join(' | ')}`, 'success');
+      } catch (err) {
+        lines.push(`❌ ${err.message}`);
+        showToast(`AI 接口测试失败 · ${lines.join(' | ')}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
     // 🚀 一键配置全部 LoRA
     const batchRunBtn = container.querySelector('#sct-batch-run');
     const batchStopBtn = container.querySelector('#sct-batch-stop');
@@ -6936,6 +7059,18 @@
         showToast('还没有任何 LoRA 条目:可勾选「自动建条目」或先手动添加', 'warning');
         return;
       }
+
+      // 预检:先确认接口真的能通,避免像上次那样 89 个全失败才发现地址不对
+      setBatchUi(true, '正在预检 AI 接口…');
+      try {
+        const usedModel = await pingAiEndpoint();
+        if (batchProgress) batchProgress.textContent = `预检通过(模型 ${usedModel}),开始批量配置…`;
+      } catch (err) {
+        setBatchUi(false, `预检失败:${err.message}`);
+        showToast(`一键配置未开始 —— AI 接口预检失败: ${err.message}`, 'error');
+        return;
+      }
+
       setBatchUi(true, '准备中…');
       const result = await runLoraBatchConfig({
         createMissing,
