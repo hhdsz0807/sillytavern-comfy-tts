@@ -3945,13 +3945,23 @@
         const applyAdvanced = await fetchNodeSpec(comfyHost, 'IPAdapterAdvanced');
         const applySimple = applyAdvanced ? null : await fetchNodeSpec(comfyHost, 'IPAdapter');
         if (unifiedLoader && (applyAdvanced || applySimple)) {
+          // 预设必须在节点给出的候选里,否则节点会因校验失败报错 —— 命中不了就回落到 PLUS / 第一个可用项
+          const presetList = cachedIpAdapterPresets || [];
+          const wantedPreset = (s.comfyStyleRefPreset || '').trim();
+          let preset = wantedPreset;
+          if (presetList.length > 0 && !presetList.includes(wantedPreset)) {
+            preset = presetList.includes('PLUS (high strength)')
+              ? 'PLUS (high strength)'
+              : presetList[0];
+            if (preset) saveSettings({ comfyStyleRefPreset: preset });
+          }
           styleRef = {
             mode: 'ipadapter',
             image: styleRefImage,
             strength: parseFloat(s.comfyStyleRefStrength) || 0.8,
             start: parseFloat(s.comfyStyleRefStart) || 0,
             end: parseFloat(s.comfyStyleRefEnd) || 1,
-            preset: s.comfyStyleRefPreset || 'PLUS (high strength)',
+            preset: preset,
             specs: {
               unifiedLoader: unifiedLoader,
               apply: applyAdvanced || applySimple,
@@ -3979,6 +3989,11 @@
               showToast('原生参考模式需要 CLIP Vision 模型：请在设置里选择或先扫描模型列表', 'warning');
               styleRef = null;
             }
+          } else if (cachedClipVisionModels.length > 0 && !cachedClipVisionModels.includes(styleRef.clipVision)) {
+            // 配的名字不在候选里(改名/删过文件) → 优先挑 ViT-H(IPAdapter 常用),否则取第一个
+            const preferred = 'CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors';
+            styleRef.clipVision = cachedClipVisionModels.includes(preferred) ? preferred : cachedClipVisionModels[0];
+            saveSettings({ comfyStyleRefClipVision: styleRef.clipVision });
           }
         } else {
           showToast('未检测到 CLIP Vision 节点：画风参考已跳过', 'warning');
@@ -5491,12 +5506,14 @@
             <div class="sct-setting-col">
               <label>参考图</label>
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <input type="file" id="sct-styleref-file" accept="image/*" />
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-pick">📁 上传参考图</button>
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-clear">✕ 清除参考图</button>
                 <span class="sct-hint" id="sct-styleref-state">${s.comfyStyleRefImage ? `当前: ${escapeHtml(s.comfyStyleRefImage)}` : '未设置参考图'}</span>
+                <!-- 原生 file 控件会被酒馆主题隐藏,故藏起来由上面的按钮代点 -->
+                <input type="file" id="sct-styleref-file" accept="image/*" style="display:none;" />
               </div>
               <div class="sct-hint">
-                上传后会存入 ComfyUI 的 input 目录；也可以直接在任意已生成的图上点「🖼️ 用作画风参考」一键设为参考。
+                点「📁 上传参考图」选本地图片(手机可直接选相册);也可以直接在任意已生成的图上点「🖼️ 用作画风参考」一键设为参考。
               </div>
               ${s.comfyStyleRefImage ? `<img src="${getCleanComfyHost()}/view?filename=${encodeURIComponent(s.comfyStyleRefImage)}&type=input" style="max-width:120px; border-radius:8px; margin-top:6px;" alt="参考图" />` : ''}
             </div>
@@ -5878,6 +5895,14 @@
     });
 
     const styleRefFile = container.querySelector('#sct-styleref-file');
+    const styleRefPick = container.querySelector('#sct-styleref-pick');
+    if (styleRefPick && styleRefFile) {
+      styleRefPick.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        styleRefFile.click(); // 原生 file 控件被主题隐藏,只能由按钮代点
+      });
+    }
     if (styleRefFile) {
       styleRefFile.addEventListener('change', async (e) => {
         const file = e.target.files && e.target.files[0];
