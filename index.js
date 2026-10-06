@@ -2970,11 +2970,15 @@
             </div>
             <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
-            <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成所有图片">🔄 重新生成</button>
+            <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
+            <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
+            <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
+            <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
+            <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
       </div>
@@ -3081,6 +3085,26 @@
         // 只清运行态:已生成的图保留在轮播里(新图会追加到末尾,前面的图仍可翻回去对比)
         if (tk) sctDrawingTasks.delete(tk);
         triggerComfyDraw(promptText, container, activeLoras, tk);
+      });
+    }
+
+    // 只删当前这一张
+    const delImgBtn = container.querySelector('.sct-del-img-btn');
+    if (delImgBtn) {
+      delImgBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        deleteCurrentImage(container, promptText, activeLoras);
+      });
+    }
+
+    // 清空本槽位全部图片
+    const clearSlotBtn = container.querySelector('.sct-clear-slot-btn');
+    if (clearSlotBtn) {
+      clearSlotBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearSlotImages(container, promptText, activeLoras);
       });
     }
   }
@@ -3441,6 +3465,91 @@
     const fromExtra = mesId !== undefined && mesId !== null ? getChatMessageExtraImages(mesId, slotIdx)?.images : null;
     if (fromExtra && fromExtra.length) return fromExtra.slice();
     return [];
+  }
+
+  // 把某槽位的图片列表写回三级缓存(内存 / localStorage / 消息 extra);空列表=清掉缓存
+  function persistSlotImages(container, taskKey, images, promptText, activeLoras) {
+    const mesId = container?.dataset?.sctMesId || container?.closest('.mes')?.getAttribute('mesid');
+    const slotIdx = container?.dataset?.sctSlotIdx || '0';
+    if (taskKey) {
+      if (images.length === 0) {
+        sctDrawingTasks.delete(taskKey);
+        removePersistentTask(taskKey);
+      } else {
+        sctDrawingTasks.set(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
+        savePersistentTask(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
+      }
+    }
+    if (mesId !== undefined && mesId !== null) {
+      if (images.length === 0) removeChatMessageExtraImages(mesId, slotIdx);
+      else saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras);
+    }
+  }
+
+  // 图片被删光后的占位卡:给一颗「重新生成」,不做成死白板
+  function renderClearedCard(container, promptText, activeLoras, taskKey) {
+    if (!container) return;
+    container.innerHTML = `
+      <div class="sct-comfy-card sct-guide-card">
+        <span class="sct-guide-text">🗑️ 本槽位的图片已清空</span>
+        <div class="sct-guide-row">
+          <button type="button" class="sct-comfy-btn sct-start-draw">🎨 重新生成</button>
+        </div>
+      </div>
+    `;
+    const btn = container.querySelector('.sct-start-draw');
+    if (btn) {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        triggerComfyDraw(promptText, container, activeLoras, taskKey || null);
+      });
+    }
+  }
+
+  // 清空本槽位全部图片(轮播状态 + 三级缓存一起清)
+  function clearSlotImages(container, promptText, activeLoras) {
+    const taskKey = container?.dataset?.sctTaskKey || '';
+    const cardId = container?.dataset?.sctCardId;
+    const state = cardId ? cardStateMap.get(cardId) : null;
+    if (state) {
+      state.images = [];
+      state.currentIdx = 0;
+    }
+    persistSlotImages(container, taskKey, [], promptText, activeLoras);
+    renderClearedCard(container, promptText, activeLoras, taskKey);
+    showToast('已清空本槽位的全部图片', 'success');
+  }
+
+  // 只删除当前显示的那一张;删到空则等同清空
+  function deleteCurrentImage(container, promptText, activeLoras) {
+    const cardId = container?.dataset?.sctCardId;
+    const state = cardId ? cardStateMap.get(cardId) : null;
+    const images = state?.images || [];
+    if (images.length === 0) return;
+
+    const idx = Math.max(0, Math.min(state.currentIdx ?? 0, images.length - 1));
+    const next = images.filter((_, i) => i !== idx);
+    const taskKey = container?.dataset?.sctTaskKey || '';
+
+    if (next.length === 0) {
+      if (state) {
+        state.images = [];
+        state.currentIdx = 0;
+      }
+      persistSlotImages(container, taskKey, [], promptText, activeLoras);
+      renderClearedCard(container, promptText, activeLoras, taskKey);
+      showToast('已删除该槽位的最后一张图片', 'info');
+      return;
+    }
+
+    if (state) {
+      state.images = next;
+      state.currentIdx = Math.max(0, Math.min(idx, next.length - 1));
+    }
+    persistSlotImages(container, taskKey, next, promptText, activeLoras);
+    renderCarouselCard(container, next, promptText, activeLoras);
+    showToast(`已删除这一张(还剩 ${next.length} 张)`, 'success');
   }
 
   // 触发 ComfyUI 生图任务 (带唯一 taskKey 去重锁与活跃 DOM 动态绑定)
