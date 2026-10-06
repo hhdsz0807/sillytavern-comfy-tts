@@ -2343,6 +2343,11 @@
     return loraAllVariants(lora).filter(v => v.triggerWords || v.keywords);
   }
 
+  /** 空组:关键词与特征词都没填(多为误点「添加」留下的),用于提示与一键清理 */
+  function loraBlankVariants(lora) {
+    return loraAllVariants(lora).filter(v => !v.triggerWords && !v.keywords);
+  }
+
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
   function scoreLoraVariant(variant, promptText, fullText) {
     const words = (variant.keywords || '')
@@ -4394,6 +4399,17 @@
         ? `<span class="sct-lora-kw-text" title="${escapeHtml(kwText)}">${escapeHtml(kwText)}</span>` 
         : '<i class="sct-lora-kw-empty">未设置角色关键词 (点此展开配置)</i>';
 
+      // 分组计数:总数 + 其中空组数(空组=误点添加的残留,可一键清理)
+      const variantTotal = loraAllVariants(item).length;
+      const variantBlank = loraBlankVariants(item).length;
+      const variantBadge = variantTotal
+        ? '<span class="sct-badge-variants" title="激活词分组数' +
+          (variantBlank ? ',其中 ' + variantBlank + ' 组还没填内容' : '') +
+          '">' + variantTotal + ' 组激活词' +
+          (variantBlank ? ' · ' + variantBlank + ' 空' : '') +
+          '</span>'
+        : '';
+
       card.innerHTML = `
         <!-- 表面层：仅展示角色关键词与精简状态，点击整行展开/收起详情 -->
         <div class="sct-lora-summary-bar">
@@ -4401,7 +4417,7 @@
             <span class="sct-lora-role-icon">🎭</span>
             <div class="sct-lora-kw-display">${displayKw}</div>
             ${item.alwaysOn ? '<span class="sct-badge-always" title="即使正文未匹配到关键词也会默认挂载">常驻</span>' : ''}
-            ${loraAllVariants(item).length ? `<span class="sct-badge-variants" title="激活词分组数;展开可切换用哪一组">${loraAllVariants(item).length} 组激活词</span>` : ''}
+            ${variantBadge}
             ${!item.enabled ? '<span class="sct-badge-disabled">已停用</span>' : ''}
           </div>
           <div class="sct-lora-summary-action">
@@ -4441,7 +4457,10 @@
                 <textarea class="text_pole sct-textarea-autowrap sct-lora-variant-tw" data-idx="${idx}" data-vidx="${vi}" rows="2" placeholder="本组特征激活词(选中本组时注入,不叠加基础词),如 nagi, school uniform, serafuku, white kneehighs">${escapeHtml(v.triggerWords || '')}</textarea>
               </div>
             `).join('')}
-            <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-variant-add" data-idx="${idx}">➕ 添加一组激活词</button>
+            <div class="sct-lora-variant-btns">
+              <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-variant-add" data-idx="${idx}">➕ 添加一组激活词</button>
+              ${variantBlank ? `<button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-variant-clean" data-idx="${idx}" title="删掉所有还没填内容的空组">🧹 清理 ${variantBlank} 个空组</button>` : ''}
+            </div>
             <div class="sct-hint">
               选中某组 → 只用那一组的特征词(避免校服词串进泳装图);选「自动」→ 按图片 tag 优先、正文次之匹配组关键词,都没命中就用上面的基础特征词。
             </div>
@@ -4476,7 +4495,7 @@
               </label>
             </div>
             <div style="display:flex; gap:8px;">
-              <button type="button" class="sct-lora-del-btn" data-idx="${idx}">✕ 删除</button>
+              <button type="button" class="sct-lora-del-btn sct-lora-card-del" data-idx="${idx}">✕ 删除</button>
               <button type="button" class="sct-lora-collapse-btn" data-idx="${idx}">▲ 收起</button>
             </div>
           </div>
@@ -4668,6 +4687,22 @@
         });
       }
 
+      const variantCleanBtn = card.querySelector('.sct-lora-variant-clean');
+      if (variantCleanBtn) {
+        variantCleanBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const kept = loraVariantList(loras[idx]); // 只留填过内容的组
+          loras[idx].variants = kept;
+          if (loras[idx].activeVariantId && !kept.some(v => v.id === loras[idx].activeVariantId)) {
+            loras[idx].activeVariantId = '';
+          }
+          saveSettings({ comfyLoras: loras });
+          renderLoraList(container);
+          showToast('已清理空组', 'success');
+        });
+      }
+
       const strRange = card.querySelector('.sct-lora-strength');
       const strVal = card.querySelector('.sct-lora-str-val');
       strRange.addEventListener('input', (e) => {
@@ -4677,13 +4712,17 @@
         saveSettings({ comfyLoras: loras });
       });
 
-      card.querySelector('.sct-lora-del-btn').addEventListener('click', (e) => {
-        e.stopPropagation();
-        loras.splice(idx, 1);
-        expandedLoraIndices.delete(idx);
-        saveSettings({ comfyLoras: loras });
-        renderLoraList(container);
-      });
+      // 只认卡片底部那颗「✕ 删除」——变体行内的 ✕ 是另一套 class,绝不能被它抢到
+      const cardDelBtn = card.querySelector('.sct-lora-card-del');
+      if (cardDelBtn) {
+        cardDelBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          loras.splice(idx, 1);
+          expandedLoraIndices.delete(idx);
+          saveSettings({ comfyLoras: loras });
+          renderLoraList(container);
+        });
+      }
 
       container.appendChild(card);
     });

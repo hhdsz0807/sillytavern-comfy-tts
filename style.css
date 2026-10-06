@@ -1747,3 +1747,9 @@
   padding: 2px 8px;
   white-space: nowrap;
 }
+.sct-lora-variant-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
