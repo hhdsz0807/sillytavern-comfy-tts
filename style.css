@@ -2611,3 +2611,39 @@
   padding: 8px 0;
   font-size: 14px;
 }
+/* ============ 图片管理:修复手机 100vh 造成的「顶部被顶出屏幕」 ============ */
+.sct-gallery-overlay {
+  /* 面板过高时整层可滚动,顶部永远不会被切在屏幕外 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-items: center;
+  padding: 10px;
+}
+
+.sct-gallery-modal {
+  /* 不再用固定 100vh:改用 max-height + dvh(手机动态视口,自动减去地址栏) */
+  height: auto;
+  max-height: calc(100vh - 20px);
+  max-height: calc(100dvh - 20px);
+  margin: auto;
+}
+
+/* 顶部工具条与标题压缩,把空间都让给图片 */
+.sct-gallery-head {
+  flex: 0 0 auto;
+}
+
+.sct-gallery-tools {
+  flex: 0 0 auto;
+}
+
+.sct-gallery-grid {
+  flex: 1 1 auto;
+  min-height: 140px;
+}
+
+@supports not (height: 100dvh) {
+  .sct-gallery-modal {
+    max-height: calc(100vh - 20px);
+  }
+}

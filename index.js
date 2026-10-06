@@ -6768,6 +6768,8 @@
       else if (gallerySource === 'dom') hintEl.textContent = '「当前页面上的图」直接扫聊天里已渲染的图片,只要有图必然能看到。';
       else hintEl.textContent = '已显示本地记录;正在读取 ComfyUI 输出历史…';
       renderGrid();
+      grid.scrollTop = 0;
+      if (typeof overlay.scrollTop === 'number') overlay.scrollTop = 0;
       renderStatus();
     };
 
