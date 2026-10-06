@@ -79,6 +79,7 @@
     comfyStyleRefStart: 0,
     comfyStyleRefEnd: 1,
     comfyStyleRefPreset: 'PLUS (high strength)',
+    comfyStyleRefWeightType: '',       // 空 = 用节点默认(linear);可选 style transfer / composition 等
     comfyStyleRefClipVision: '',
 
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
@@ -155,6 +156,7 @@
   let cachedFaceDetailerSpec = null;
   // 画风参考相关:IPAdapter 预设/模型列表、CLIP Vision 列表,以及各节点的必填输入规格
   let cachedIpAdapterPresets = [];
+  let cachedIpAdapterWeightTypes = [];
   let cachedClipVisionModels = [];
   let cachedNodeSpecs = {};
 
@@ -2611,6 +2613,11 @@
       await fetchNodeSpec(host, cls);
     }
     if (cachedNodeSpecs.FaceDetailer) cachedFaceDetailerSpec = cachedNodeSpecs.FaceDetailer;
+    // IP-Adapter 的「权重类型」候选也来自节点本身(linear / style transfer / composition …)
+    const ipaApplySpec = cachedNodeSpecs.IPAdapterAdvanced || cachedNodeSpecs.IPAdapter;
+    cachedIpAdapterWeightTypes = (ipaApplySpec && Array.isArray(ipaApplySpec.weight_type) && Array.isArray(ipaApplySpec.weight_type[0]))
+      ? ipaApplySpec.weight_type[0]
+      : [];
 
     cachedCheckpoints = results.checkpoints;
     cachedLoras = results.loras;
@@ -2697,13 +2704,27 @@
 
   /**
    * 按规格把一批输入填全:overrides 命中的键用我们的值,其余按官方默认补齐。
-   * 这样节点版本增减必填项都不会拼出非法工作流。
+   * ★ 额外做「下拉候选校验」:overrides 里的字符串若不在该节点的候选列表里,就回落到规格默认值,
+   *   避免像 weight_type:'standard' 这种写死的值让整个工作流校验失败(outputs failed validation)。
    */
   function fillSpecInputs(spec, overrides) {
     const inputs = {};
     Object.entries(spec || {}).forEach(([key, meta]) => {
-      if (Object.prototype.hasOwnProperty.call(overrides, key)) inputs[key] = overrides[key];
-      else inputs[key] = specDefault(meta, 0);
+      const choices = Array.isArray(meta) && Array.isArray(meta[0]) ? meta[0] : null;
+      if (Object.prototype.hasOwnProperty.call(overrides, key)) {
+        const value = overrides[key];
+        if (choices && typeof value === 'string' && !choices.includes(value)) {
+          const opts = Array.isArray(meta) ? meta[1] : null;
+          const fallbackDefault = (opts && typeof opts === 'object' && opts.default !== undefined)
+            ? opts.default
+            : choices[0];
+          inputs[key] = fallbackDefault;
+        } else {
+          inputs[key] = value;
+        }
+      } else {
+        inputs[key] = specDefault(meta, 0);
+      }
     });
     return inputs;
   }
@@ -2830,9 +2851,8 @@
           weight: styleRef.strength,
           start_at: styleRef.start,
           end_at: styleRef.end,
-          weight_type: 'standard',
-          combine_embeds: 'concat',
-          embeds_scaling: 'V only'
+          // weight_type 只在用户显式选了非空值时才覆盖(值会经候选校验,写错自动回落该节点默认)
+          ...(styleRef.weightType ? { weight_type: styleRef.weightType } : {})
         })
       };
       currentModel = ["402", 0];
@@ -3962,6 +3982,7 @@
             start: parseFloat(s.comfyStyleRefStart) || 0,
             end: parseFloat(s.comfyStyleRefEnd) || 1,
             preset: preset,
+            weightType: (s.comfyStyleRefWeightType || '').trim(),
             specs: {
               unifiedLoader: unifiedLoader,
               apply: applyAdvanced || applySimple,
@@ -5546,6 +5567,15 @@
             </div>
 
             <div class="sct-setting-col">
+              <label for="sct-cfg-styleref-weighttype">参考权重类型 (仅 IP-Adapter 模式)</label>
+              <select id="sct-cfg-styleref-weighttype" class="text_pole">
+                <option value="" ${!s.comfyStyleRefWeightType ? 'selected' : ''}>(用节点默认 · linear 均衡)</option>
+                ${(cachedIpAdapterWeightTypes || []).map(w => `<option value="${escapeHtml(w)}" ${w === s.comfyStyleRefWeightType ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('')}
+              </select>
+              <div class="sct-hint">想更"只借画风"选 <code>style transfer</code>;想更接近参考图构图选 <code>composition</code>。</div>
+            </div>
+
+            <div class="sct-setting-col">
               <label for="sct-cfg-styleref-clipvision">CLIP Vision 模型 (仅原生模式)</label>
               <div style="display:flex; gap:6px;">
                 <input type="text" id="sct-cfg-styleref-clipvision" class="text_pole" placeholder="如 CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors" value="${escapeHtml(s.comfyStyleRefClipVision || '')}" style="flex:1;" />
@@ -5933,6 +5963,11 @@
     container.querySelector('#sct-cfg-styleref-preset').addEventListener('input', (e) => saveSettings({ comfyStyleRefPreset: e.target.value.trim() }));
     container.querySelector('#sct-cfg-styleref-clipvision').addEventListener('input', (e) => saveSettings({ comfyStyleRefClipVision: e.target.value.trim() }));
 
+    const weightTypeSelect = container.querySelector('#sct-cfg-styleref-weighttype');
+    if (weightTypeSelect) {
+      weightTypeSelect.addEventListener('change', (e) => saveSettings({ comfyStyleRefWeightType: e.target.value }));
+    }
+
     const presetSelect = container.querySelector('#sct-styleref-preset-select');
     if (presetSelect) {
       presetSelect.addEventListener('change', (e) => {
@@ -6050,6 +6085,14 @@
               container.querySelector('#sct-cfg-styleref-clipvision').value = cachedClipVisionModels[0];
               saveSettings({ comfyStyleRefClipVision: cachedClipVisionModels[0] });
             }
+          }
+
+          // 参考权重类型候选(来自 IPAdapter 节点自身)
+          const weightTypeSel = container.querySelector('#sct-cfg-styleref-weighttype');
+          if (weightTypeSel) {
+            const currentWeightType = getSettings().comfyStyleRefWeightType || '';
+            weightTypeSel.innerHTML = '<option value="">(用节点默认 · linear 均衡)</option>' +
+              cachedIpAdapterWeightTypes.map(w => `<option value="${escapeHtml(w)}" ${w === currentWeightType ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('');
           }
           if (cachedIpAdapterPresets.length === 0) {
             showToast('未检测到 IP-Adapter 节点/预设：画风参考若要最佳效果需安装 ComfyUI_IPAdapter_plus', 'warning');
