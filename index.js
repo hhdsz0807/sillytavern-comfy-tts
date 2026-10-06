@@ -6091,7 +6091,7 @@
         const isCollapsed = collapsed.has(id);
         section.classList.toggle('collapsed', isCollapsed);
         body.style.display = isCollapsed ? 'none' : '';
-        chevron.textContent = isCollapsed ? '展开 ▼' : '收起 ▲';
+        chevron.textContent = isCollapsed ? '▾' : '▴';
       };
       title.addEventListener('click', () => {
         if (collapsed.has(id)) collapsed.delete(id);
@@ -6114,20 +6114,52 @@
       persist();
     };
 
-    // 顶部工具条
+    // 顶部工具条:只留一个「☰ 功能板块」按钮,列表点开才出现(不吸顶、不挡内容)
     const toolbar = document.createElement('div');
     toolbar.className = 'sct-section-toolbar';
     toolbar.innerHTML = `
-      <div class="sct-section-toolbar-btns">
-        <button type="button" class="sct-comfy-btn sct-btn-xs" data-act="expand">⬇️ 全部展开</button>
-        <button type="button" class="sct-comfy-btn sct-btn-xs" data-act="collapse">⬆️ 全部收起</button>
-      </div>
-      <div class="sct-section-chips">
-        ${items.map((it, i) => `<button type="button" class="sct-section-chip" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
+      <button type="button" class="sct-comfy-btn sct-btn-xs sct-section-menu-btn" id="sct-sec-menu-btn" title="展开某个功能板块">☰ 功能板块</button>
+      <span class="sct-section-current" id="sct-sec-current"></span>
+      <div class="sct-section-menu" id="sct-sec-menu" style="display:none;">
+        <button type="button" class="sct-section-menu-item" data-act="expand">⬇️ 全部展开</button>
+        <button type="button" class="sct-section-menu-item" data-act="collapse">⬆️ 全部收起</button>
+        <div class="sct-section-menu-sep"></div>
+        ${items.map((it, i) => `<button type="button" class="sct-section-menu-item" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
       </div>
     `;
-    toolbar.querySelector('[data-act="expand"]').addEventListener('click', () => applyAll(false));
-    toolbar.querySelector('[data-act="collapse"]').addEventListener('click', () => applyAll(true));
+    const menu = toolbar.querySelector('#sct-sec-menu');
+    const menuBtn = toolbar.querySelector('#sct-sec-menu-btn');
+    const currentLabel = toolbar.querySelector('#sct-sec-current');
+
+    const closeMenu = () => { menu.style.display = 'none'; };
+    const refreshCurrent = () => {
+      const openOne = items.find(it => !collapsed.has(it.id));
+      const openCount = items.filter(it => !collapsed.has(it.id)).length;
+      if (currentLabel) {
+        currentLabel.textContent = openCount === 0
+          ? '全部已收起'
+          : (openCount === 1 && openOne ? openOne.label.replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 14) : `已展开 ${openCount} 个板块`);
+      }
+    };
+
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = menu.style.display === 'none';
+      menu.style.display = willOpen ? 'flex' : 'none';
+    });
+    toolbar.addEventListener('click', (e) => e.stopPropagation());
+    document.addEventListener('click', closeMenu);
+
+    toolbar.querySelector('[data-act="expand"]').addEventListener('click', () => {
+      applyAll(false);
+      refreshCurrent();
+      closeMenu();
+    });
+    toolbar.querySelector('[data-act="collapse"]').addEventListener('click', () => {
+      applyAll(true);
+      refreshCurrent();
+      closeMenu();
+    });
     toolbar.querySelectorAll('[data-chip]').forEach(btn => {
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.getAttribute('data-chip'), 10);
@@ -6138,10 +6170,18 @@
           it.apply();
         });
         persist();
+        refreshCurrent();
+        closeMenu();
         const target = items[idx];
         if (target) target.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
+
+    // 标题点击后刷新「当前展开」提示
+    items.forEach(it => {
+      it.title.addEventListener('click', () => setTimeout(refreshCurrent, 0));
+    });
+
     container.insertBefore(toolbar, container.firstChild);
 
     if (hasStored) {
@@ -6149,6 +6189,7 @@
     } else {
       applyAll(true);                    // 首次使用:默认全部收起,面板一眼看完
     }
+    refreshCurrent();
   }
 
   function injectSettingsPanel() {
