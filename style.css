@@ -2131,3 +2131,63 @@
   color: var(--sct-ink-muted);
   word-break: break-all;
 }
+/* ============ 角色预览图(挂在每条 LoRA 下) ============ */
+.sct-lora-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--sct-radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--sct-line-strong);
+  background: var(--sct-bg);
+  margin-right: 2px;
+}
+
+.sct-lora-thumb.is-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: var(--sct-ink-muted);
+  border-style: dashed;
+}
+
+.sct-lora-preview-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sct-lora-preview-img {
+  width: 132px;
+  height: 132px;
+  object-fit: cover;
+  border-radius: var(--sct-radius);
+  border: 1px solid var(--sct-line-strong);
+  background: var(--sct-bg);
+  flex: 0 0 auto;
+}
+
+.sct-lora-preview-img.is-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--sct-ink-muted);
+  border-style: dashed;
+}
+
+.sct-lora-preview-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+@media (max-width: 560px) {
+  .sct-lora-preview-img {
+    width: 104px;
+    height: 104px;
+  }
+}

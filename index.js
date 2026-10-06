@@ -2518,6 +2518,50 @@
     }).length;
   }
 
+  /* ---------------------------------------------------------------------------
+     角色预览图管理
+     为什么走 input 目录:ComfyUI 的 /view 只认 input/output/temp(type=loras 会 400),
+     所以把 LoRA 旁边的预览图同步到 input/sct_lora_preview/(见 tools/sync-lora-previews.js),
+     上传/替换也用同一个目录,插件按清单精确取图。
+     --------------------------------------------------------------------------- */
+  const LORA_PREVIEW_SUBFOLDER = 'sct_lora_preview';
+  let loraPreviewManifest = null;      // { LoRA名/主干名: 预览文件名 }
+  let loraPreviewManifestLoading = false;
+
+  /** LoRA 名 → 预览文件名主干(子目录用 __ 连接) */
+  function loraPreviewKey(name) {
+    return String(name || '').trim().replace(/\.safetensors$/i, '').replace(/[\\/]/g, '__');
+  }
+
+  async function ensureLoraPreviewManifest() {
+    if (loraPreviewManifest !== null || loraPreviewManifestLoading) return loraPreviewManifest;
+    loraPreviewManifestLoading = true;
+    try {
+      const host = getCleanComfyHost();
+      const url = `${host}/view?filename=${encodeURIComponent('_manifest.json')}&subfolder=${encodeURIComponent(LORA_PREVIEW_SUBFOLDER)}&type=input`;
+      const res = await fetch(url, { cache: 'no-store' });
+      loraPreviewManifest = res.ok ? await res.json() : {};
+    } catch (_) {
+      loraPreviewManifest = {};
+    } finally {
+      loraPreviewManifestLoading = false;
+    }
+    return loraPreviewManifest;
+  }
+
+  /** 取某条 LoRA 的预览图 URL(没有则返回空串) */
+  function loraPreviewUrl(item) {
+    if (!item || item.previewOff) return '';
+    const key = loraPreviewKey(item.name);
+    const stem = String(item.name || '').split(/[\\/]/).pop().replace(/\.safetensors$/i, '');
+    const manifest = loraPreviewManifest || {};
+    const file = item.previewFile || manifest[item.name] || manifest[key] || manifest[stem] || '';
+    if (!file) return '';
+    const host = getCleanComfyHost();
+    const ver = item.previewVer ? `&t=${encodeURIComponent(item.previewVer)}` : '';
+    return `${host}/view?filename=${encodeURIComponent(file)}&subfolder=${encodeURIComponent(LORA_PREVIEW_SUBFOLDER)}&type=input${ver}`;
+  }
+
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
   function scoreLoraVariant(variant, promptText, fullText) {
     const words = (variant.keywords || '')
@@ -2813,11 +2857,13 @@
     }
   }
 
-  /** 上传参考图到 ComfyUI 的 input 目录,返回服务器上的文件名 */
-  async function uploadComfyInputImage(host, blob, filename) {
+  /** 上传图片到 ComfyUI 的 input 目录(可选子目录),返回服务器上的文件名 */
+  async function uploadComfyInputImage(host, blob, filename, subfolder = '') {
     const form = new FormData();
     form.append('image', blob, filename);
     form.append('overwrite', 'true');
+    form.append('type', 'input');
+    if (subfolder) form.append('subfolder', subfolder);
     const res = await fetch(`${host}/upload/image`, { method: 'POST', body: form });
     if (!res.ok) throw new Error(`上传失败 (${res.status})`);
     const data = await res.json();
@@ -5670,6 +5716,10 @@
       // 三段式摘要:① 中文标题(看得懂) ② 英文激活 tag(实际挂载依据) ③ 文件名
       const titleText = (item.title || '').trim() || guessCjkTitle(item.name) || kwFirst || '';
       const displayTitle = titleText || '(未命名角色 · 点开配置)';
+      const previewUrl = loraPreviewUrl(item);
+      const previewThumb = previewUrl
+        ? `<img class="sct-lora-thumb" src="${escapeHtml(previewUrl)}" alt="" loading="lazy" />`
+        : `<span class="sct-lora-thumb is-placeholder">${item.previewOff ? '🚫' : '🖼️'}</span>`;
       const actTagHtml = kwFirst
         ? `<span class="sct-lora-acttag" title="激活依据:出现这个 tag 才挂载此 LoRA">🔑 ${escapeHtml(kwFirst)}</span>`
         : '<span class="sct-lora-acttag is-empty">🔑 未设置激活 tag</span>';
@@ -5692,7 +5742,7 @@
         <!-- 表面层：中文标题 + 激活 tag + 文件名，点击整行展开/收起详情 -->
         <div class="sct-lora-summary-bar">
           <div class="sct-lora-summary-main">
-            <span class="sct-lora-role-icon">🎭</span>
+            ${previewThumb}
             <div class="sct-lora-kw-display">
               <div class="sct-lora-title" title="中文标题(可展开修改)">${escapeHtml(displayTitle)}</div>
               <div class="sct-lora-subline">${actTagHtml}${fileHtml}</div>
@@ -5708,6 +5758,20 @@
 
         <!-- 详细配置层：点击后展开 -->
         <div class="sct-lora-detail-body" style="${isExpanded ? 'display:flex;' : 'display:none;'}">
+          <div class="sct-setting-col sct-lora-preview">
+            <label>角色预览图 <span style="font-size:11px; opacity:0.6;">(只用于识别角色,不影响出图)</span></label>
+            <div class="sct-lora-preview-row">
+              ${previewUrl
+                ? `<img class="sct-lora-preview-img" src="${escapeHtml(previewUrl)}" alt="预览图" loading="lazy" />`
+                : '<div class="sct-lora-preview-img is-placeholder">无预览图</div>'}
+              <div class="sct-lora-preview-btns">
+                <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-preview-pick" data-idx="${idx}">🖼️ 上传/更换预览图</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-preview-toggle" data-idx="${idx}">${item.previewOff ? '👁️ 显示预览图' : '🚫 隐藏预览图'}</button>
+                <input type="file" class="sct-lora-preview-file" data-idx="${idx}" accept="image/*" style="display:none;" />
+              </div>
+            </div>
+            <div class="sct-hint">图片存在 ComfyUI 的 <code>input/${LORA_PREVIEW_SUBFOLDER}/</code>,同名上传会直接覆盖;批量同步可用 <code>tools/sync-lora-previews.js</code>。</div>
+          </div>
           <div class="sct-setting-col">
             <label>角色标题 · 中文名 <span style="font-size:11px; opacity:0.6;">(只给人看,便于认出是哪位角色;AI 生成与 C 站抓取会自动填)</span></label>
             <input type="text" class="text_pole sct-lora-title-input" data-idx="${idx}" placeholder="如 八奈见杏菜 / 葬送的芙莉莲·菲伦" value="${escapeHtml(titleText)}" />
@@ -5933,6 +5997,58 @@
           }
         });
       }
+
+      // ---- 角色预览图:上传/更换 与 显示/隐藏 ----
+      const previewPickBtn = card.querySelector('.sct-lora-preview-pick');
+      const previewFileInput = card.querySelector('.sct-lora-preview-file');
+      if (previewPickBtn && previewFileInput) {
+        previewPickBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!String(loras[idx].name || '').trim()) {
+            showToast('先填 LoRA 文件名,预览图才好跟它绑定', 'warning');
+            return;
+          }
+          previewFileInput.click();
+        });
+        previewFileInput.addEventListener('change', async (e) => {
+          const file = e.target.files && e.target.files[0];
+          if (!file) return;
+          const btn = previewPickBtn;
+          const originalText = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = '⏳ 上传中…';
+          try {
+            const ext = (file.name.match(/\.[a-z0-9]+$/i) || ['.png'])[0].toLowerCase();
+            const name = `${loraPreviewKey(loras[idx].name)}${ext}`;
+            const saved = await uploadComfyInputImage(getCleanComfyHost(), file, name, LORA_PREVIEW_SUBFOLDER);
+            const live = (getSettings().comfyLoras || [])[idx];
+            if (live) {
+              live.previewFile = saved || name;
+              live.previewVer = Date.now();
+              live.previewOff = false;
+              saveSettings({ comfyLoras: getSettings().comfyLoras });
+            }
+            renderLoraList(container);
+            showToast('预览图已更新', 'success');
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+            showToast(`预览图上传失败: ${err.message}`, 'error');
+          } finally {
+            e.target.value = '';
+          }
+        });
+      }
+
+      card.querySelector('.sct-lora-preview-toggle')?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        loras[idx].previewOff = !loras[idx].previewOff;
+        saveSettings({ comfyLoras: loras });
+        renderLoraList(container);
+        showToast(loras[idx].previewOff ? '已隐藏该角色的预览图' : '已显示预览图', 'info');
+      });
 
       // ---- AI 自动配置:作者说明保存 + C 站抓取 + 一键生成 ----
       const aiNoteInput = card.querySelector('.sct-lora-ainote');
@@ -6912,6 +7028,11 @@
     // 渲染 LoRA 列表
     const loraContainer = container.querySelector('#sct-lora-items-container');
     renderLoraList(loraContainer);
+
+    // 预览图清单(异步拉取;拿到后重渲染一次,把缩略图补上)
+    ensureLoraPreviewManifest().then(manifest => {
+      if (manifest && Object.keys(manifest).length > 0) renderLoraList(loraContainer);
+    });
 
     // 🔍 LoRA 搜索/筛选(89 条也好找):匹配 中文名/激活 tag/文件名/分组名
     const loraSearchInput = container.querySelector('#sct-lora-search');
