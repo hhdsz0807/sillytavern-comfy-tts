@@ -68,7 +68,9 @@
     comfyGlobalExcludeKeywords: '',
 
     // 多 LoRA 规则库 (Array of LoRA objects)
-    // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn }]
+    // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn,
+    //          variants: [{ id, label, keywords, triggerWords }], activeVariantId }]
+    // variants = 激活词分组:同一角色多套激活词(校服/泳装/便服…),出图时选其中一组生效
     comfyLoras: [
       {
         id: 'default_lora_1',
@@ -77,6 +79,8 @@
         strengthClip: 0.8,
         keywords: '柚木凪, 凪, nagi, 银发',
         triggerWords: 'nagi, 1girl, solo, silver hair, purple eyes, school uniform',
+        variants: [],
+        activeVariantId: '',
         enabled: true,
         alwaysOn: false
       }
@@ -160,6 +164,13 @@
         if (!Array.isArray(extSettings[MODULE_NAME].comfyLoras)) {
           extSettings[MODULE_NAME].comfyLoras = JSON.parse(JSON.stringify(DEFAULT_SETTINGS.comfyLoras));
         }
+        // 兼容升级：老配置没有「激活词分组」字段，就地补齐默认值(已有数据一律不动)
+        extSettings[MODULE_NAME].comfyLoras.forEach((item, i) => {
+          if (!item || typeof item !== 'object') return;
+          if (!Array.isArray(item.variants)) item.variants = [];
+          if (typeof item.activeVariantId !== 'string') item.activeVariantId = '';
+          if (!item.id) item.id = `lora_${i}`;
+        });
         // 兼容迁移：早期版本误把"通用排除关键词"存在负向字段里，这里搬回正向黑名单字段
         if (extSettings[MODULE_NAME].comfyGlobalLoraNegatives) {
           if (!extSettings[MODULE_NAME].comfyGlobalExcludeKeywords) {
@@ -2317,17 +2328,61 @@
     return s;
   }
 
+  // ---------------------------------------------------------------------------
+  // 激活词分组(变体):同一个角色/同一份 LoRA 可以有多套激活词(校服/泳装/便服…)
+  // 出图时"用哪一组":手动指定 activeVariantId 优先 → 图片 tag 命中组关键词 → 正文命中 → 回落基础特征词
+  // ---------------------------------------------------------------------------
+  function loraVariantList(lora) {
+    if (!lora || !Array.isArray(lora.variants)) return [];
+    return lora.variants.filter(v => v && (v.triggerWords || v.keywords));
+  }
+
+  // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
+  function scoreLoraVariant(variant, promptText, fullText) {
+    const words = (variant.keywords || '')
+      .split(/[,，\n|]/)
+      .map(k => k.trim().toLowerCase())
+      .filter(k => k.length > 1);
+    if (words.length === 0) return 0;
+    const lowerPrompt = (promptText || '').toLowerCase();
+    const lowerFull = (fullText || '').toLowerCase();
+    if (words.some(k => lowerPrompt.includes(k))) return 2;
+    if (words.some(k => lowerFull.includes(k))) return 1;
+    return 0;
+  }
+
+  function resolveLoraVariant(lora, promptText, fullText) {
+    const variants = loraVariantList(lora);
+    if (variants.length === 0) return null;
+    const manual = variants.find(v => v.id && v.id === lora.activeVariantId);
+    if (manual) return manual;
+    let best = null;
+    let bestScore = 0;
+    for (const variant of variants) {
+      const score = scoreLoraVariant(variant, promptText, fullText);
+      if (score > bestScore) {
+        best = variant;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
   // 组装 LoRA 特征词注入串 = 通用角色关键词(全局常驻) + 每个被激活 LoRA 的触发词
-  // 规则：通用关键词与是否激活 LoRA 无关，始终注入；按逗号分词去重，绝不重复堆叠
-  function buildLoraTriggerInjection(activeLoras) {
+  // 命中激活词分组时用「那一组」的特征词,不叠加基础词——否则校服词会串进泳装图里
+  function buildLoraTriggerInjection(activeLoras, context = {}) {
     const s = getSettings();
     const list = Array.isArray(activeLoras) ? activeLoras : [];
+    const promptText = context.promptText || '';
+    const fullText = context.fullText || '';
 
     const parts = [];
     const globalKw = (s.comfyGlobalLoraKeywords || '').trim();
     if (globalKw) parts.push(globalKw);
     list.forEach(l => {
-      const tw = ((l && l.triggerWords) || '').trim();
+      if (!l) return;
+      const variant = resolveLoraVariant(l, promptText, fullText);
+      const tw = ((variant ? variant.triggerWords : l.triggerWords) || '').trim();
       if (tw) parts.push(tw);
     });
 
@@ -2403,6 +2458,15 @@
       // 检查 LoRA 文件名本身的主名
       const cleanName = lora.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
       if (cleanName.length > 2 && text.includes(cleanName)) return true;
+      // 激活词分组里的组关键词同样能独立激活该 LoRA(例如「泳装」只写在某个分组里)
+      const variantHit = loraVariantList(lora).some(variant =>
+        (variant.keywords || '')
+          .split(/[,，\n|]/)
+          .map(k => k.trim().toLowerCase())
+          .filter(k => k.length > 1)
+          .some(k => text.includes(k))
+      );
+      if (variantHit) return true;
       return false;
     }
 
@@ -3103,8 +3167,11 @@
         ckpt = cachedCheckpoints[0] || 'v1-5-pruned-emaonly.safetensors';
       }
 
-      // 注入 LoRA 特征词 (含通用角色关键词)
-      const loraInjection = buildLoraTriggerInjection(activeLoras);
+      // 注入 LoRA 特征词 (含通用角色关键词与激活词分组;重绘提示词优先,原图画面前缀兜底)
+      const loraInjection = buildLoraTriggerInjection(activeLoras, {
+        promptText: inpaintPrompt,
+        fullText: promptText || ''
+      });
       const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim());
       const negativePrompt = s.comfyFixedNegative || '';
 
@@ -3376,10 +3443,11 @@
     const seed = Math.floor(Math.random() * 1000000000);
 
     // 确定启用的 LoRA 列表与特征词注入 (常驻全量 + 至多 1 个动态角色，链式加载上限 4 个)
-    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 4) : detectActiveLoras(container.closest('.mes')?.querySelector('.mes_text')?.textContent || '', promptText));
-    
-    // 注入 LoRA 角色特征词到正向提示词中 (含通用常驻角色关键词)
-    const loraInjection = buildLoraTriggerInjection(activeLoras);
+    const mesTextForLora = container.closest('.mes')?.querySelector('.mes_text')?.textContent || '';
+    const activeLoras = (explicitActiveLoras ? explicitActiveLoras.slice(0, 4) : detectActiveLoras(mesTextForLora, promptText));
+
+    // 注入 LoRA 角色特征词到正向提示词中 (含通用常驻角色关键词与激活词分组)
+    const loraInjection = buildLoraTriggerInjection(activeLoras, { promptText, fullText: mesTextForLora });
     
     // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀，最后套用通用排除关键词
     const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim());
@@ -4327,6 +4395,7 @@
             <span class="sct-lora-role-icon">🎭</span>
             <div class="sct-lora-kw-display">${displayKw}</div>
             ${item.alwaysOn ? '<span class="sct-badge-always" title="即使正文未匹配到关键词也会默认挂载">常驻</span>' : ''}
+            ${loraVariantList(item).length ? `<span class="sct-badge-variants" title="激活词分组数;展开可切换用哪一组">${loraVariantList(item).length} 组激活词</span>` : ''}
             ${!item.enabled ? '<span class="sct-badge-disabled">已停用</span>' : ''}
           </div>
           <div class="sct-lora-summary-action">
@@ -4344,6 +4413,31 @@
           <div class="sct-setting-col">
             <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后自动注入正向提示词 · 宽屏多行自动换行)</span></label>
             <textarea class="text_pole sct-textarea-autowrap sct-lora-triggers" data-idx="${idx}" rows="3" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform, white ribbon, looking at viewer, gentle smile">${escapeHtml(item.triggerWords || '')}</textarea>
+          </div>
+
+          <!-- 激活词分组:同一角色多套词(校服/泳装/便服…),出图时用其中一组 -->
+          <div class="sct-setting-col sct-lora-variants">
+            <label>激活词分组 <span style="font-size:11px; opacity:0.6;">(同一角色的多套激活词,出图时用哪一组)</span></label>
+            ${loraVariantList(item).length ? `
+              <select class="text_pole sct-lora-variant-mode" data-idx="${idx}">
+                <option value="" ${!item.activeVariantId ? 'selected' : ''}>🔄 自动(按图片 tag / 正文命中组关键词)</option>
+                ${loraVariantList(item).map(v => `<option value="${escapeHtml(v.id || '')}" ${item.activeVariantId === v.id ? 'selected' : ''}>${escapeHtml(v.label || '(未命名组)')}${v.keywords ? ` — ${escapeHtml(v.keywords.slice(0, 24))}` : ''}</option>`).join('')}
+              </select>
+            ` : ''}
+            ${loraVariantList(item).map((v, vi) => `
+              <div class="sct-lora-variant" data-vidx="${vi}">
+                <div class="sct-lora-variant-head">
+                  <input type="text" class="text_pole sct-lora-variant-label" data-idx="${idx}" data-vidx="${vi}" placeholder="组名,如 校服" value="${escapeHtml(v.label || '')}" />
+                  <button type="button" class="sct-lora-del-btn sct-lora-variant-del" data-idx="${idx}" data-vidx="${vi}" title="删除这一组">✕</button>
+                </div>
+                <input type="text" class="text_pole sct-lora-variant-kw" data-idx="${idx}" data-vidx="${vi}" placeholder="本组激活关键词(图片 tag/正文命中即选中本组),如 校服, school uniform" value="${escapeHtml(v.keywords || '')}" />
+                <textarea class="text_pole sct-textarea-autowrap sct-lora-variant-tw" data-idx="${idx}" data-vidx="${vi}" rows="2" placeholder="本组特征激活词(选中本组时注入,不叠加基础词),如 nagi, school uniform, serafuku, white kneehighs">${escapeHtml(v.triggerWords || '')}</textarea>
+              </div>
+            `).join('')}
+            <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-variant-add" data-idx="${idx}">➕ 添加一组激活词</button>
+            <div class="sct-hint">
+              选中某组 → 只用那一组的特征词(避免校服词串进泳装图);选「自动」→ 按图片 tag 优先、正文次之匹配组关键词,都没命中就用上面的基础特征词。
+            </div>
           </div>
 
           <div class="sct-setting-col">
@@ -4495,6 +4589,75 @@
             const first = pickerOptions.querySelector('.sct-lora-option[data-name]');
             if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
           }
+        });
+      }
+
+      // ---- 激活词分组:切换用哪一组 / 增删改组 ----
+      const variantMode = card.querySelector('.sct-lora-variant-mode');
+      if (variantMode) {
+        variantMode.addEventListener('change', (e) => {
+          loras[idx].activeVariantId = e.target.value || '';
+          saveSettings({ comfyLoras: loras });
+        });
+      }
+
+      card.querySelectorAll('.sct-lora-variant-label').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const vi = parseInt(e.target.getAttribute('data-vidx'), 10);
+          if (!loras[idx].variants || !loras[idx].variants[vi]) return;
+          loras[idx].variants[vi].label = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        });
+      });
+
+      card.querySelectorAll('.sct-lora-variant-kw').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const vi = parseInt(e.target.getAttribute('data-vidx'), 10);
+          if (!loras[idx].variants || !loras[idx].variants[vi]) return;
+          loras[idx].variants[vi].keywords = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        });
+      });
+
+      card.querySelectorAll('.sct-lora-variant-tw').forEach(area => {
+        area.addEventListener('input', (e) => {
+          const vi = parseInt(e.target.getAttribute('data-vidx'), 10);
+          if (!loras[idx].variants || !loras[idx].variants[vi]) return;
+          loras[idx].variants[vi].triggerWords = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        });
+      });
+
+      card.querySelectorAll('.sct-lora-variant-del').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const vi = parseInt(btn.getAttribute('data-vidx'), 10);
+          if (!Array.isArray(loras[idx].variants)) loras[idx].variants = [];
+          const removed = loras[idx].variants.splice(vi, 1)[0];
+          // 删掉的正好是手动选中的那一组 → 清空选择,回落到自动匹配
+          if (removed && removed.id && loras[idx].activeVariantId === removed.id) {
+            loras[idx].activeVariantId = '';
+          }
+          saveSettings({ comfyLoras: loras });
+          renderLoraList(container);
+        });
+      });
+
+      const variantAddBtn = card.querySelector('.sct-lora-variant-add');
+      if (variantAddBtn) {
+        variantAddBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!Array.isArray(loras[idx].variants)) loras[idx].variants = [];
+          loras[idx].variants.push({
+            id: `var_${Date.now()}_${loras[idx].variants.length}`,
+            label: `第 ${loras[idx].variants.length + 1} 组`,
+            keywords: '',
+            triggerWords: ''
+          });
+          saveSettings({ comfyLoras: loras });
+          renderLoraList(container);
         });
       }
 

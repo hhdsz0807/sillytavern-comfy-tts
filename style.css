@@ -1673,3 +1673,61 @@
   font-size: 11px;
   color: var(--sct-ink-muted);
 }
+/* ============ 激活词分组(同一角色多套激活词) ============ */
+.sct-lora-variants {
+  gap: 8px;
+}
+
+.sct-lora-variant-mode {
+  font-size: 12px;
+}
+
+.sct-lora-variant {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--sct-line);
+  border-left: 3px solid var(--sct-accent);
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-bg);
+}
+
+.sct-lora-variant-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sct-lora-variant-head .sct-lora-variant-label {
+  flex: 1;
+  font-weight: 600;
+}
+
+.sct-lora-variant-head .sct-lora-variant-del {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+}
+
+.sct-lora-variant .sct-lora-variant-kw {
+  font-size: 12px;
+}
+
+.sct-lora-variant .sct-lora-variant-tw {
+  min-height: 52px !important;
+  font-size: 12px !important;
+}
+
+.sct-lora-variants .sct-lora-variant-add {
+  align-self: flex-start;
+}
+
+.sct-badge-variants {
+  font-size: 10px;
+  color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+  border: 1px solid transparent;
+  border-radius: var(--sct-radius-pill);
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
