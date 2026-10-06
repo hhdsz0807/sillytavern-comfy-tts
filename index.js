@@ -2990,6 +2990,54 @@
     return applied;
   }
 
+  // 解析「旧文件名 → 新文件名」重命名映射:支持 JSON 对象 {旧:新}、JSON 数组 [{from,to}],或每行「旧 => 新」
+  function parseRenameMap(text) {
+    const out = new Map();
+    const raw = String(text || '').trim();
+    if (!raw) return out;
+    const add = (from, to) => {
+      const f = String(from || '').trim().replace(/\\/g, '/').replace(/^"|"$/g, '').toLowerCase();
+      const t = String(to || '').trim().replace(/\\/g, '/').replace(/^"|"$/g, '');
+      if (!f || !t || f === t.toLowerCase()) return;
+      out.set(f, t);
+      const fb = f.split('/').pop();
+      if (fb) out.set(fb, t);
+    };
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+      try {
+        const data = JSON.parse(raw);
+        if (Array.isArray(data)) {
+          data.forEach(item => item && add(item.from || item.old || item.file, item.to || item.new || item.target));
+        } else {
+          Object.entries(data).forEach(([k, v]) => add(k, v));
+        }
+        if (out.size > 0) return out;
+      } catch (_) {}
+    }
+    raw.split(/\r?\n/).forEach(line => {
+      const m = line.match(/^(.*?)\s*(?:=>|->|\||\t)\s*(\S[^\t]*)$/);
+      if (m) add(m[1], m[2]);
+    });
+    return out;
+  }
+
+  // 按重命名映射更新各条 LoRA 的文件名(改名后必须做这一步,否则条目会失联)
+  function applyRenameMap(map) {
+    const loras = getSettings().comfyLoras || [];
+    let applied = 0;
+    loras.forEach(item => {
+      const name = String(item.name || '').replace(/\\/g, '/').toLowerCase();
+      if (!name) return;
+      const next = map.get(name) || map.get(name.split('/').pop());
+      if (next && next !== item.name) {
+        item.name = next;
+        applied++;
+      }
+    });
+    if (applied > 0) saveSettings({ comfyLoras: loras });
+    return applied;
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
     const endpoint = (s.comfyAiAssistEndpoint || '').trim();
@@ -6129,12 +6177,13 @@
               <textarea id="sct-civitai-map-text" class="text_pole sct-textarea-autowrap" rows="3" placeholder="anna_yanami.safetensors => https://civitai.com/models/607474&#10;或直接粘贴扫描脚本产出的 lora-civitai-map.json 全文"></textarea>
               <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-apply">📥 套用到匹配的 LoRA 条目</button>
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-file-btn">📄 选择对照表文件</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-rename-map-apply">🔁 按此表更新条目文件名(改名后用)</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-file-btn">📄 选择文件</button>
                 <input type="file" id="sct-civitai-map-file" accept=".json,.csv,.txt" style="display:none;" />
                 <span class="sct-hint" id="sct-civitai-map-state"></span>
               </div>
               <div class="sct-hint">
-                按 LoRA 文件名匹配已有的条目并填入其「C 站链接」;之后再逐条点卡片里的「🌐 抓取 C 站资料 + 🤖 生成配置」即可。
+                ① 「📥 套用」按文件名回填 C 站链接;② 若你在电脑上把 LoRA 文件<b>改了名</b>,把改名映射(旧名 → 新名,或 lora-rename-map.json)粘进来点「🔁」,即可让条目跟着更新。
               </div>
             </div>
           </div>
@@ -6695,8 +6744,28 @@
       runCivitaiMapImport(box ? box.value : '');
     });
 
-    const civitaiMapFile = container.querySelector('#sct-civitai-map-file');
-    container.querySelector('#sct-civitai-map-file-btn')?.addEventListener('click', (e) => {
+    // 🔁 应用重命名映射(LoRA 文件在电脑上改过名后,让条目跟着更新,避免失联)
+    container.querySelector('#sct-rename-map-apply')?.addEventListener('click', () => {
+      const box = container.querySelector('#sct-civitai-map-text');
+      const state = container.querySelector('#sct-civitai-map-state');
+      const map = parseRenameMap(box ? box.value : '');
+      if (map.size === 0) {
+        if (state) state.textContent = '没解析出改名映射';
+        showToast('没解析出改名映射(格式:旧文件名 => 新文件名,或 JSON 对象)', 'warning');
+        return;
+      }
+      const applied = applyRenameMap(map);
+      if (state) state.textContent = `解析 ${map.size} 条映射,更新 ${applied} 条条目`;
+      if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
+      showToast(
+        applied > 0
+          ? `已按映射更新 ${applied} 条 LoRA 条目的文件名`
+          : `解析到 ${map.size} 条映射,但没有条目的文件名与之匹配`,
+        applied > 0 ? 'success' : 'warning'
+      );
+    });
+
+    const civitaiMapFile = container.querySelector('#sct-civitai-map-file');    container.querySelector('#sct-civitai-map-file-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
       civitaiMapFile?.click();
     });
