@@ -1621,40 +1621,59 @@
 .sct-lora-options {
   display: none;
   flex-direction: column;
-  gap: 2px;
-  max-height: 220px;
+  gap: 6px;
+  max-height: 320px;
   overflow-y: auto;
-  padding: 4px;
+  overscroll-behavior: contain;
+  padding: 8px;
   border: 1px solid var(--sct-line-strong);
-  border-radius: var(--sct-radius-sm);
-  background: var(--sct-bg);
+  border-radius: var(--sct-radius);
+  background: var(--sct-surface-2);
+  box-shadow: var(--sct-shadow);
 }
 
 .sct-lora-options.is-open {
   display: flex;
 }
 
+/* 列表顶部说明行(吸顶,滚动时始终可见) */
+.sct-lora-options-head {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  margin: -8px -8px 0;
+  padding: 8px 10px;
+  background: var(--sct-surface-2);
+  border-bottom: 1px solid var(--sct-line);
+  font-family: var(--sct-font-sans);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--sct-ink-muted);
+}
+
 .sct-lora-option {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 5px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--sct-ink-soft);
+  padding: 10px 12px;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius);
+  background: var(--sct-bg);
+  color: var(--sct-ink);
   font-family: var(--sct-font-mono);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
   cursor: pointer;
-  transition: background var(--sct-dur) var(--sct-ease), color var(--sct-dur) var(--sct-ease);
+  transition: background var(--sct-dur) var(--sct-ease), border-color var(--sct-dur) var(--sct-ease), color var(--sct-dur) var(--sct-ease);
 }
 
-.sct-lora-option:hover {
+.sct-lora-option:hover,
+.sct-lora-option:focus {
   background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
   color: var(--sct-accent);
 }
 
@@ -1662,10 +1681,14 @@
   cursor: default;
   font-family: var(--sct-font-sans);
   color: var(--sct-ink-muted);
+  text-align: center;
+  background: transparent;
+  border-style: dashed;
 }
 
 .sct-lora-option.is-empty:hover {
   background: transparent;
+  border-color: var(--sct-line);
   color: var(--sct-ink-muted);
 }
 

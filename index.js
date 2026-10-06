@@ -2787,10 +2787,22 @@
     ].filter(Boolean).join('\n');
 
     const note = (entry.aiNote || '').trim();
+    const civ = entry.civitai || null;
+    const civLines = civ
+      ? [
+          civ.name ? `C站模型名:${civ.name}` : '',
+          civ.baseModel ? `底座:${civ.baseModel}` : '',
+          (Array.isArray(civ.trainedWords) && civ.trainedWords.length)
+            ? `官方触发词(必须原样保留写法):${civ.trainedWords.join(', ')}`
+            : '',
+          civ.tags ? `标签:${civ.tags}` : '',
+        ].filter(Boolean).join('\n')
+      : '';
     const user = [
       `LoRA 文件名:${entry.name || '(未填)'}`,
-      note ? `作者说明 / 示例提示词:\n${note}` : '(用户未提供作者说明;请依据文件名与你的知识推断角色与特征)',
-    ].join('\n');
+      civLines,
+      note ? `作者说明 / 示例提示词:\n${note}` : (civLines ? '' : '(用户未提供作者说明;请依据文件名与你的知识推断角色与特征)'),
+    ].filter(Boolean).join('\n');
 
     return [
       { role: 'system', content: system },
@@ -2862,6 +2874,61 @@
     const prefer = /(chat|deepseek|gpt-4|gpt-3|qwen|glm|claude|llama|mimo|moonshot|abab|grok|gemini|doubao|hunyuan|ernie|yi-)/i;
     const skip = /(embed|rerank|whisper|tts|audio|speech|image|vision-encoder|moderation|dall|stable)/i;
     return list.find(m => prefer.test(m) && !skip.test(m)) || list.find(m => !skip.test(m)) || list[0];
+  }
+
+  // 解析 C 站模型页链接(也兼容粘贴整段含链接的文本)
+  function parseCivitaiUrl(text) {
+    const match = String(text || '').match(/civitai\.com\/models\/(\d+)/i);
+    return match ? { id: match[1] } : null;
+  }
+
+  // 抓取 C 站模型资料(公开 API):模型名 / 官方触发词 / 标签 / 底座 / 简介
+  async function fetchCivitaiInfo(url) {
+    const parsed = parseCivitaiUrl(url);
+    if (!parsed) throw new Error('没识别出 C 站链接(形如 https://civitai.com/models/123456/xxx)');
+    let res;
+    try {
+      res = await fetch(`https://civitai.com/api/v1/models/${parsed.id}`, { headers: { 'Accept': 'application/json' } });
+    } catch (err) {
+      throw new Error(`无法访问 Civitai 接口(${err.message});可改为手动粘贴模型页的触发词`);
+    }
+    if (!res.ok) throw new Error(`Civitai 接口返回 ${res.status}(链接是否正确/是否被墙)`);
+    const data = await res.json();
+    const versions = Array.isArray(data?.modelVersions) ? data.modelVersions : [];
+    const trainedWords = [...new Set(
+      versions
+        .flatMap(v => (Array.isArray(v?.trainedWords) ? v.trainedWords : []))
+        .map(w => String(w).trim())
+        .filter(Boolean)
+    )];
+    const description = String(data?.description || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 1200);
+    return {
+      id: parsed.id,
+      name: String(data?.name || '').trim(),
+      type: String(data?.type || '').trim(),
+      baseModel: String(versions[0]?.baseModel || '').trim(),
+      trainedWords,
+      tags: (Array.isArray(data?.tags) ? data.tags : []).map(t => String(t)).join(', '),
+      description,
+      url: `https://civitai.com/models/${parsed.id}`,
+    };
+  }
+
+  // 把抓到的资料汇成一段可读文本,写进「作者说明」(人和 AI 都能看/可编辑)
+  function formatCivitaiNote(info) {
+    const lines = [];
+    if (info.name) lines.push(`模型名:${info.name}${info.baseModel ? ` (底座 ${info.baseModel})` : ''}`);
+    if (info.type) lines.push(`类型:${info.type}`);
+    if (info.trainedWords && info.trainedWords.length) lines.push(`官方触发词:${info.trainedWords.join(', ')}`);
+    if (info.tags) lines.push(`标签:${info.tags}`);
+    if (info.description) lines.push(`简介:${info.description}`);
+    if (info.url) lines.push(`来源:${info.url}`);
+    return lines.join('\n');
   }
 
   async function requestAiLoraConfig(entry) {
@@ -5250,12 +5317,16 @@
 
           <!-- AI 辅助:读文件名 + 作者说明 → 生成激活词/特征词/分组 -->
           <div class="sct-setting-col sct-lora-ai">
-            <label>🤖 AI 自动配置 <span style="font-size:11px; opacity:0.6;">(可选:粘贴 LoRA 作者页说明/示例 tag 后点生成)</span></label>
-            <textarea class="text_pole sct-textarea-autowrap sct-lora-ainote" data-idx="${idx}" rows="2" placeholder="粘贴作者给的触发词/示例提示词(留空则让 AI 仅按文件名推断)">${escapeHtml(item.aiNote || '')}</textarea>
-            <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-aigen" data-idx="${idx}">🤖 生成配置(激活词 / 特征词 / 分组)</button>
+            <label>🤖 AI 自动配置 <span style="font-size:11px; opacity:0.6;">(可粘 C 站链接自动抓资料,再一键生成)</span></label>
+            <input type="text" class="text_pole sct-lora-civitai" data-idx="${idx}" placeholder="粘贴 C 站链接:https://civitai.com/models/123456/xxx" value="${escapeHtml(item.civitaiUrl || '')}" />
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-civitai-fetch" data-idx="${idx}">🌐 抓取 C 站资料</button>
+              <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-aigen" data-idx="${idx}">🤖 生成配置(激活词/特征词/分组)</button>
+            </div>
+            <textarea class="text_pole sct-textarea-autowrap sct-lora-ainote" data-idx="${idx}" rows="3" placeholder="作者说明 / 示例提示词(抓取后会自动填这里,也可手改或直接手粘)">${escapeHtml(item.aiNote || '')}</textarea>
             <div class="sct-hint">
-              会用「文件名 + 上面的说明」让 AI 输出结构化配置并**覆盖**本条的激活关键词、特征激活词与分组。
-              接口在设置面板 → 🤖 AI 辅助配置(任意 OpenAI 兼容接口,默认 DeepSeek)。
+              「🌐 抓取」调 Civitai 公开接口取<b>官方触发词/标签/简介</b>并填入下面的说明;「🤖 生成配置」再让 AI 据此产出激活词、特征词与分组。
+              接口在设置面板 → 🤖 AI 辅助配置。
             </div>
           </div>
 
@@ -5405,7 +5476,11 @@
             (cachedLoras && cachedLoras.length) ? '没有匹配的 LoRA' : '尚未扫描到 LoRA 列表'
           }</div>`;
         } else {
-          pickerOptions.innerHTML = matched
+          // 顶部加一行说明 + 每行保留完整文件名(超出换行,不再截断成看不清的一坨)
+          const head = `<div class="sct-lora-options-head">${
+            kw ? `匹配到 ${matched.length} 个(输入更多字符可继续筛选)` : `共 ${matched.length} 个 LoRA(输入关键词筛选)`
+          } · 点一行即选中</div>`;
+          pickerOptions.innerHTML = head + matched
             .map(name => `<button type="button" class="sct-lora-option" data-name="${escapeHtml(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
             .join('');
           pickerOptions.querySelectorAll('.sct-lora-option[data-name]').forEach(btn => {
@@ -5440,12 +5515,60 @@
         });
       }
 
-      // ---- AI 自动配置:作者说明保存 + 一键生成 ----
+      // ---- AI 自动配置:作者说明保存 + C 站抓取 + 一键生成 ----
       const aiNoteInput = card.querySelector('.sct-lora-ainote');
       if (aiNoteInput) {
         aiNoteInput.addEventListener('input', (e) => {
           loras[idx].aiNote = e.target.value;
           saveSettings({ comfyLoras: loras });
+        });
+      }
+
+      const civitaiInput = card.querySelector('.sct-lora-civitai');
+      if (civitaiInput) {
+        civitaiInput.addEventListener('input', (e) => {
+          loras[idx].civitaiUrl = e.target.value.trim();
+          saveSettings({ comfyLoras: loras });
+        });
+      }
+
+      const civitaiFetchBtn = card.querySelector('.sct-lora-civitai-fetch');
+      if (civitaiFetchBtn) {
+        civitaiFetchBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const urlInput = card.querySelector('.sct-lora-civitai');
+          const url = (urlInput?.value || '').trim();
+          if (!parseCivitaiUrl(url)) {
+            showToast('请先在输入框粘贴 C 站模型链接(形如 civitai.com/models/123456/xxx)', 'warning');
+            return;
+          }
+          const originalText = civitaiFetchBtn.textContent;
+          civitaiFetchBtn.disabled = true;
+          civitaiFetchBtn.textContent = '⏳ 抓取中…';
+          try {
+            const info = await fetchCivitaiInfo(url);
+            loras[idx].civitaiUrl = url;
+            loras[idx].civitai = info;
+            loras[idx].aiNote = formatCivitaiNote(info);
+            // 关键字还空着 → 顺手用官方触发词打底(有 AI 时也可能被覆盖)
+            if (!(loras[idx].keywords || '').trim() && info.trainedWords.length > 0) {
+              loras[idx].keywords = info.trainedWords.join(', ');
+            }
+            if (!(loras[idx].triggerWords || '').trim() && info.trainedWords.length > 0) {
+              loras[idx].triggerWords = info.trainedWords.join(', ');
+            }
+            saveSettings({ comfyLoras: loras });
+            renderLoraList(container);
+            showToast(
+              `已抓取「${info.name || info.id}」:官方触发词 ${info.trainedWords.length} 个,标签 ${info.tags ? '有' : '无'}${info.trainedWords.length ? '(已填入空的关键词)' : ''}`,
+              'success'
+            );
+          } catch (err) {
+            civitaiFetchBtn.disabled = false;
+            civitaiFetchBtn.textContent = originalText;
+            showToast(`抓取失败: ${err.message}`, 'error');
+          }
         });
       }
 
