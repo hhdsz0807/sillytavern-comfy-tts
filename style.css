@@ -2525,14 +2525,11 @@
   color: var(--sct-danger);
   background: var(--sct-danger-soft);
 }
-/* 弹窗给个确定高度:网格永远有空间,不会被内容压成 0 */
-.sct-gallery-modal {
-  height: min(92vh, 900px);
-}
-
+/* (旧版固定高度已废弃:改由文件末尾的 max-height + dvh 统一控制,避免手机 100vh 顶出屏幕) */
 .sct-gallery-modal .sct-gallery-grid {
   min-height: 0;
 }
+
 /* ============ 图片管理:铺满整屏 + 小图完整显示(不裁切) ============ */
 .sct-gallery-overlay {
   padding: 8px;
@@ -2540,8 +2537,6 @@
 
 .sct-gallery-modal {
   width: min(100vw - 16px, 1200px);
-  height: calc(100vh - 16px);
-  max-height: calc(100vh - 16px);
   padding: 10px;
   gap: 8px;
 }
