@@ -74,7 +74,8 @@
     // 画风参考 (参考图)
     // mode: 'off' 关闭 | 'ipadapter' IP-Adapter(需 ComfyUI_IPAdapter_plus) | 'native' 原生 unCLIP(只需 CLIP Vision)
     comfyStyleRefMode: 'off',
-    comfyStyleRefImage: '',            // 已上传到 ComfyUI input 目录的文件名
+    comfyStyleRefImage: '',            // 兼容保留:等于参考图列表里第一张的文件名
+    comfyStyleRefImages: [],           // 参考图列表 [{ id, filename, weight }],最多 4 张,可分别设权重
     comfyStyleRefStrength: 0.8,
     comfyStyleRefStart: 0,
     comfyStyleRefEnd: 1,
@@ -199,6 +200,16 @@
           if (typeof item.activeVariantId !== 'string') item.activeVariantId = '';
           if (!item.id) item.id = `lora_${i}`;
         });
+        // 画风参考:把旧的单图配置迁移成参考图列表(最多 4 张,各自带权重)
+        const refStore = extSettings[MODULE_NAME];
+        if (!Array.isArray(refStore.comfyStyleRefImages)) refStore.comfyStyleRefImages = [];
+        if (refStore.comfyStyleRefImages.length === 0 && (refStore.comfyStyleRefImage || '').trim()) {
+          refStore.comfyStyleRefImages = [{
+            id: `ref_${Date.now()}`,
+            filename: String(refStore.comfyStyleRefImage).trim(),
+            weight: typeof refStore.comfyStyleRefStrength === 'number' ? refStore.comfyStyleRefStrength : 0.8
+          }];
+        }
         // 兼容迁移：早期版本误把"通用排除关键词"存在负向字段里，这里搬回正向黑名单字段
         if (extSettings[MODULE_NAME].comfyGlobalLoraNegatives) {
           if (!extSettings[MODULE_NAME].comfyGlobalExcludeKeywords) {
@@ -2831,10 +2842,13 @@
       });
     }
 
-    // 2.5 画风参考 · IP-Adapter 模式:在 LoRA 链之后接一个 IP-Adapter 节点改 model 链
+    // 2.5 画风参考 · IP-Adapter 模式:在 LoRA 链之后串接 IP-Adapter 节点改 model 链
+    //     多张参考图 = 多个 IPAdapter 节点串联(每张各自权重),共用同一个 UnifiedLoader
     //     (排在文本编码之前,后面 KSampler 自然吃到带参考的 model)
-    if (styleRef && styleRef.mode === 'ipadapter' && styleRef.image && styleRef.specs?.unifiedLoader && styleRef.specs?.apply) {
-      workflow["400"] = { "class_type": "LoadImage", "inputs": { "image": styleRef.image, "upload": "image" } };
+    const styleRefList = styleRef && Array.isArray(styleRef.refs)
+      ? styleRef.refs.filter(ref => ref && ref.filename)
+      : [];
+    if (styleRef && styleRef.mode === 'ipadapter' && styleRefList.length > 0 && styleRef.specs?.unifiedLoader && styleRef.specs?.apply) {
       workflow["401"] = {
         "class_type": "IPAdapterUnifiedLoader",
         "inputs": fillSpecInputs(styleRef.specs.unifiedLoader, {
@@ -2842,20 +2856,27 @@
           model: currentModel
         })
       };
-      workflow["402"] = {
-        "class_type": styleRef.specs.applyClass,
-        "inputs": fillSpecInputs(styleRef.specs.apply, {
-          model: ["401", 0],
-          ipadapter: ["401", 1],
-          image: ["400", 0],
-          weight: styleRef.strength,
-          start_at: styleRef.start,
-          end_at: styleRef.end,
-          // weight_type 只在用户显式选了非空值时才覆盖(值会经候选校验,写错自动回落该节点默认)
-          ...(styleRef.weightType ? { weight_type: styleRef.weightType } : {})
-        })
-      };
-      currentModel = ["402", 0];
+      let chainedModel = ["401", 0];
+      styleRefList.forEach((ref, i) => {
+        const loadId = String(410 + i);
+        const applyId = String(420 + i);
+        workflow[loadId] = { "class_type": "LoadImage", "inputs": { "image": ref.filename, "upload": "image" } };
+        workflow[applyId] = {
+          "class_type": styleRef.specs.applyClass,
+          "inputs": fillSpecInputs(styleRef.specs.apply, {
+            model: chainedModel,
+            ipadapter: ["401", 1],
+            image: [loadId, 0],
+            weight: ref.weight,
+            start_at: styleRef.start,
+            end_at: styleRef.end,
+            // weight_type 只在用户显式选了非空值时才覆盖(值会经候选校验,写错自动回落该节点默认)
+            ...(styleRef.weightType ? { weight_type: styleRef.weightType } : {})
+          })
+        };
+        chainedModel = [applyId, 0];
+      });
+      currentModel = chainedModel;
     }
 
     // 3. Positive CLIPTextEncode (Node 6)
@@ -2877,35 +2898,45 @@
     };
 
     // 4.5 画风参考 · 原生 unCLIP 模式(免插件,只需 CLIP Vision 模型)
-    //     用参考图的视觉特征去调制正向条件;IP-Adapter 模式则在上面改 model 链,不走这里
+    //     多张参考图时逐个串联 unCLIPConditioning(每张各自强度),叠加在正向条件上
     let positiveRef = ["6", 0];
+    const styleRefImages = styleRef && Array.isArray(styleRef.refs)
+      ? styleRef.refs.filter(ref => ref && ref.filename)
+      : [];
     if (
-      styleRef && styleRef.mode === 'native' && styleRef.image &&
+      styleRef && styleRef.mode === 'native' && styleRefImages.length > 0 &&
       styleRef.specs?.clipVisionLoader && styleRef.specs?.clipVisionEncode && styleRef.specs?.unclip
     ) {
-      workflow["400"] = { "class_type": "LoadImage", "inputs": { "image": styleRef.image, "upload": "image" } };
       workflow["401"] = {
         "class_type": "CLIPVisionLoader",
         "inputs": fillSpecInputs(styleRef.specs.clipVisionLoader, { clip_name: styleRef.clipVision })
       };
-      workflow["402"] = {
-        "class_type": "CLIPVisionEncode",
-        "inputs": fillSpecInputs(styleRef.specs.clipVisionEncode, {
-          clip_vision: ["401", 0],
-          image: ["400", 0],
-          crop: "center"
-        })
-      };
-      workflow["403"] = {
-        "class_type": "unCLIPConditioning",
-        "inputs": fillSpecInputs(styleRef.specs.unclip, {
-          conditioning: ["6", 0],
-          clip_vision_output: ["402", 0],
-          strength: styleRef.strength,
-          noise_augmentation: 0
-        })
-      };
-      positiveRef = ["403", 0];
+      let chainedCond = ["6", 0];
+      styleRefImages.forEach((ref, i) => {
+        const loadId = String(410 + i);
+        const encodeId = String(430 + i);
+        const unclipId = String(440 + i);
+        workflow[loadId] = { "class_type": "LoadImage", "inputs": { "image": ref.filename, "upload": "image" } };
+        workflow[encodeId] = {
+          "class_type": "CLIPVisionEncode",
+          "inputs": fillSpecInputs(styleRef.specs.clipVisionEncode, {
+            clip_vision: ["401", 0],
+            image: [loadId, 0],
+            crop: "center"
+          })
+        };
+        workflow[unclipId] = {
+          "class_type": "unCLIPConditioning",
+          "inputs": fillSpecInputs(styleRef.specs.unclip, {
+            conditioning: chainedCond,
+            clip_vision_output: [encodeId, 0],
+            strength: ref.weight,
+            noise_augmentation: 0
+          })
+        };
+        chainedCond = [unclipId, 0];
+      });
+      positiveRef = chainedCond;
     }
 
     // 5. EmptyLatentImage (Node 5)
@@ -3416,17 +3447,28 @@
         e.preventDefault();
         e.stopPropagation();
         try {
+          const settingsNow = getSettings();
+          const refsNow = Array.isArray(settingsNow.comfyStyleRefImages) ? settingsNow.comfyStyleRefImages.slice() : [];
+          if (refsNow.length >= 4) {
+            showToast('参考图最多 4 张：请先到设置面板删掉一张再加', 'warning');
+            return;
+          }
           showToast('正在把当前图上传为画风参考…', 'info');
           const imgRes = await fetch(currentUrl);
           if (!imgRes.ok) throw new Error(`读取图片失败 (${imgRes.status})`);
           const blob = await imgRes.blob();
           const name = await uploadComfyInputImage(getCleanComfyHost(), blob, `styleref_${Date.now()}.png`);
-          saveSettings({ comfyStyleRefImage: name });
-          const mode = getSettings().comfyStyleRefMode || 'off';
+          refsNow.push({
+            id: `ref_${Date.now()}`,
+            filename: name,
+            weight: parseFloat(settingsNow.comfyStyleRefStrength) || 0.8
+          });
+          saveSettings({ comfyStyleRefImages: refsNow, comfyStyleRefImage: refsNow[0].filename });
+          const mode = settingsNow.comfyStyleRefMode || 'off';
           showToast(
             mode === 'off'
-              ? `已设为画风参考图(${name})——还需到设置面板选择参考模式(IP-Adapter 或原生 unCLIP)才会生效`
-              : `已设为画风参考图(${name}),当前模式:${mode === 'ipadapter' ? 'IP-Adapter' : '原生 unCLIP'}`,
+              ? `已加入参考图(第 ${refsNow.length} 张)——还需到设置面板选择参考模式(IP-Adapter 或原生 unCLIP)才会生效`
+              : `已加入参考图(第 ${refsNow.length} 张),当前模式:${mode === 'ipadapter' ? 'IP-Adapter' : '原生 unCLIP'}`,
             'success'
           );
         } catch (err) {
@@ -3956,10 +3998,19 @@
     }
 
     // 画风参考:按模式收集节点规格(缺节点则整体跳过并提示,不让整张图失败)
+    // 参考图 = 列表(最多 4 张,每张自带权重):一张定画风、一张定服装的玩法
     let styleRef = null;
     const styleRefMode = s.comfyStyleRefMode || 'off';
-    const styleRefImage = (s.comfyStyleRefImage || '').trim();
-    if (styleRefMode !== 'off' && styleRefImage) {
+    const fallbackWeight = parseFloat(s.comfyStyleRefStrength) || 0.8;
+    const styleRefList = (Array.isArray(s.comfyStyleRefImages) ? s.comfyStyleRefImages : [])
+      .map((ref, index) => ({
+        id: (ref && ref.id) || `ref_${index}`,
+        filename: String((ref && ref.filename) || '').trim(),
+        weight: Number.isFinite(Number(ref && ref.weight)) ? Number(ref.weight) : fallbackWeight
+      }))
+      .filter(ref => ref.filename)
+      .slice(0, 4);
+    if (styleRefMode !== 'off' && styleRefList.length > 0) {
       if (styleRefMode === 'ipadapter') {
         const unifiedLoader = await fetchNodeSpec(comfyHost, 'IPAdapterUnifiedLoader');
         const applyAdvanced = await fetchNodeSpec(comfyHost, 'IPAdapterAdvanced');
@@ -3977,8 +4028,7 @@
           }
           styleRef = {
             mode: 'ipadapter',
-            image: styleRefImage,
-            strength: parseFloat(s.comfyStyleRefStrength) || 0.8,
+            refs: styleRefList,
             start: parseFloat(s.comfyStyleRefStart) || 0,
             end: parseFloat(s.comfyStyleRefEnd) || 1,
             preset: preset,
@@ -3999,8 +4049,7 @@
         if (clipVisionLoader && clipVisionEncode && unclip) {
           styleRef = {
             mode: 'native',
-            image: styleRefImage,
-            strength: parseFloat(s.comfyStyleRefStrength) || 0.8,
+            refs: styleRefList,
             clipVision: (s.comfyStyleRefClipVision || '').trim(),
             specs: { clipVisionLoader: clipVisionLoader, clipVisionEncode: clipVisionEncode, unclip: unclip }
           };
@@ -5525,18 +5574,18 @@
             </div>
 
             <div class="sct-setting-col">
-              <label>参考图</label>
+              <label>参考图 (最多 4 张 · 可分别设权重)</label>
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-pick">📁 上传参考图</button>
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-clear">✕ 清除参考图</button>
-                <span class="sct-hint" id="sct-styleref-state">${s.comfyStyleRefImage ? `当前: ${escapeHtml(s.comfyStyleRefImage)}` : '未设置参考图'}</span>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-pick">📁 添加参考图</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-clear">🗑️ 全部清除</button>
+                <span class="sct-hint" id="sct-styleref-state"></span>
                 <!-- 原生 file 控件会被酒馆主题隐藏,故藏起来由上面的按钮代点 -->
                 <input type="file" id="sct-styleref-file" accept="image/*" style="display:none;" />
               </div>
               <div class="sct-hint">
-                点「📁 上传参考图」选本地图片(手机可直接选相册);也可以直接在任意已生成的图上点「🖼️ 用作画风参考」一键设为参考。
+                每张单独调权重,例如「一张定画风(0.8) + 一张定服装(0.5)」;也可以在任意已生成的图上点「🖼️ 用作画风参考」直接加入。
               </div>
-              ${s.comfyStyleRefImage ? `<img src="${getCleanComfyHost()}/view?filename=${encodeURIComponent(s.comfyStyleRefImage)}&type=input" style="max-width:120px; border-radius:8px; margin-top:6px;" alt="参考图" />` : ''}
+              <div id="sct-styleref-list" class="sct-styleref-list"></div>
             </div>
 
             <div class="sct-setting-row">
@@ -5924,12 +5973,76 @@
       saveSettings({ comfyStyleRefMode: e.target.value });
     });
 
+    // 参考图列表:缩略图 + 每张权重滑块 + 单张删除(最多 4 张)
+    const STYLE_REF_MAX = 4;
+    const readStyleRefs = () => (Array.isArray(getSettings().comfyStyleRefImages) ? getSettings().comfyStyleRefImages.slice() : []);
+    const writeStyleRefs = (refs) => saveSettings({
+      comfyStyleRefImages: refs,
+      comfyStyleRefImage: refs[0]?.filename || ''
+    });
+
+    const renderStyleRefList = () => {
+      const listEl = container.querySelector('#sct-styleref-list');
+      const stateEl = container.querySelector('#sct-styleref-state');
+      if (!listEl) return;
+      const refs = readStyleRefs();
+      if (stateEl) stateEl.textContent = refs.length ? `已设 ${refs.length}/${STYLE_REF_MAX} 张` : '未设置参考图';
+      if (refs.length === 0) {
+        listEl.innerHTML = '<div class="sct-hint">还没有参考图 —— 点「📁 添加参考图」或从生成图上一键加入</div>';
+        return;
+      }
+      const host = getCleanComfyHost();
+      listEl.innerHTML = refs.map((ref, i) => `
+        <div class="sct-styleref-item" data-ref-index="${i}">
+          <img src="${host}/view?filename=${encodeURIComponent(ref.filename)}&type=input" alt="参考图 ${i + 1}" />
+          <div class="sct-styleref-meta">
+            <div class="sct-styleref-name" title="${escapeHtml(ref.filename)}">#${i + 1} ${escapeHtml(ref.filename)}</div>
+            <div class="sct-styleref-row">
+              <span class="sct-hint">权重 <b class="sct-styleref-w">${Number(ref.weight ?? 0.8).toFixed(2)}</b></span>
+              <input type="range" class="sct-styleref-weight" data-ref-index="${i}" min="0.1" max="1.5" step="0.05" value="${Number(ref.weight ?? 0.8)}" />
+              <button type="button" class="sct-lora-del-btn sct-styleref-del" data-ref-index="${i}" title="删除这张参考图">✕</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
+
+      listEl.querySelectorAll('.sct-styleref-weight').forEach(input => {
+        input.addEventListener('input', (e) => {
+          const idx = parseInt(e.target.getAttribute('data-ref-index'), 10);
+          const refsNow = readStyleRefs();
+          if (!refsNow[idx]) return;
+          refsNow[idx].weight = parseFloat(e.target.value);
+          const wEl = e.target.closest('.sct-styleref-item')?.querySelector('.sct-styleref-w');
+          if (wEl) wEl.textContent = refsNow[idx].weight.toFixed(2);
+          writeStyleRefs(refsNow);
+        });
+      });
+
+      listEl.querySelectorAll('.sct-styleref-del').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const idx = parseInt(btn.getAttribute('data-ref-index'), 10);
+          const refsNow = readStyleRefs();
+          refsNow.splice(idx, 1);
+          writeStyleRefs(refsNow);
+          renderStyleRefList();
+          showToast('已删除这张参考图', 'info');
+        });
+      });
+    };
+    renderStyleRefList();
+
     const styleRefFile = container.querySelector('#sct-styleref-file');
     const styleRefPick = container.querySelector('#sct-styleref-pick');
     if (styleRefPick && styleRefFile) {
       styleRefPick.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (readStyleRefs().length >= STYLE_REF_MAX) {
+          showToast(`参考图最多 ${STYLE_REF_MAX} 张,先删掉一张再加`, 'warning');
+          return;
+        }
         styleRefFile.click(); // 原生 file 控件被主题隐藏,只能由按钮代点
       });
     }
@@ -5941,23 +6054,26 @@
         if (state) state.textContent = '⏳ 正在上传参考图…';
         try {
           const name = await uploadComfyInputImage(getCleanComfyHost(), file, `styleref_${Date.now()}_${file.name.replace(/[^\w.\-]/g, '_')}`);
-          saveSettings({ comfyStyleRefImage: name });
-          if (state) state.textContent = `当前: ${name}`;
-          showToast('参考图已上传到 ComfyUI', 'success');
+          const refsNow = readStyleRefs();
+          refsNow.push({ id: `ref_${Date.now()}`, filename: name, weight: parseFloat(getSettings().comfyStyleRefStrength) || 0.8 });
+          writeStyleRefs(refsNow.slice(0, STYLE_REF_MAX));
+          renderStyleRefList();
+          showToast('参考图已上传并加入列表', 'success');
         } catch (err) {
           if (state) state.textContent = '上传失败';
           showToast(`参考图上传失败: ${err.message}`, 'error');
+        } finally {
+          e.target.value = '';
         }
       });
     }
 
     container.querySelector('#sct-styleref-clear').addEventListener('click', () => {
-      saveSettings({ comfyStyleRefImage: '' });
-      const state = container.querySelector('#sct-styleref-state');
-      if (state) state.textContent = '未设置参考图';
+      writeStyleRefs([]);
       const fileInput = container.querySelector('#sct-styleref-file');
       if (fileInput) fileInput.value = '';
-      showToast('已清除参考图', 'info');
+      renderStyleRefList();
+      showToast('已清除全部参考图', 'info');
     });
 
     container.querySelector('#sct-cfg-styleref-preset').addEventListener('input', (e) => saveSettings({ comfyStyleRefPreset: e.target.value.trim() }));
