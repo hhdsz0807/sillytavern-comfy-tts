@@ -1152,7 +1152,7 @@
   background: var(--sct-overlay);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
-  z-index: 100000;
+  z-index: 2147483200 !important;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2195,7 +2195,8 @@
 .sct-gallery-overlay {
   position: fixed;
   inset: 0;
-  z-index: 30000;
+  /* 高于酒馆前端最高层级(实测其用到 999999),否则会被酒馆 UI 遮住只露一点 */
+  z-index: 2147483000 !important;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2480,7 +2481,7 @@
 .sct-lora-picker-overlay {
   position: fixed;
   inset: 0;
-  z-index: 31000;
+  z-index: 2147483100 !important;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2641,4 +2642,21 @@
   .sct-gallery-modal {
     max-height: calc(100vh - 20px);
   }
+}
+/* ============ 弹层高度统一(压过酒馆 UI 的 999999) ============ */
+.sct-gallery-overlay,
+.sct-lora-picker-overlay,
+.sct-inpaint-overlay {
+  /* 兼顾刘海/状态栏/底部工具栏:内容不贴边,不被系统或酒馆底栏盖住 */
+  padding-top: max(10px, env(safe-area-inset-top));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  padding-left: max(8px, env(safe-area-inset-left));
+  padding-right: max(8px, env(safe-area-inset-right));
+}
+
+.sct-gallery-modal,
+.sct-lora-picker-modal,
+.sct-inpaint-modal {
+  /* 弹窗内部也不再超出可视区(用 dvh,手机自动减去地址栏) */
+  max-height: calc(100dvh - 24px);
 }
