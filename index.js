@@ -71,6 +71,16 @@
     comfyFaceFixBboxThreshold: 0.5,
     comfyFaceFixFeather: 5,
 
+    // 画风参考 (参考图)
+    // mode: 'off' 关闭 | 'ipadapter' IP-Adapter(需 ComfyUI_IPAdapter_plus) | 'native' 原生 unCLIP(只需 CLIP Vision)
+    comfyStyleRefMode: 'off',
+    comfyStyleRefImage: '',            // 已上传到 ComfyUI input 目录的文件名
+    comfyStyleRefStrength: 0.8,
+    comfyStyleRefStart: 0,
+    comfyStyleRefEnd: 1,
+    comfyStyleRefPreset: 'PLUS (high strength)',
+    comfyStyleRefClipVision: '',
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -143,6 +153,10 @@
   // 脸部修复相关:可选检测模型列表 + FaceDetailer 节点的必填输入规格(各版本不同,运行时读取)
   let cachedFaceDetectors = [];
   let cachedFaceDetailerSpec = null;
+  // 画风参考相关:IPAdapter 预设/模型列表、CLIP Vision 列表,以及各节点的必填输入规格
+  let cachedIpAdapterPresets = [];
+  let cachedClipVisionModels = [];
+  let cachedNodeSpecs = {};
 
   // 全局生图任务去重与状态记录表 (杜绝重复触发与无限刷图)
   // key: taskKey
@@ -2589,6 +2603,15 @@
       cachedFaceDetectors = [];
     }
 
+    // 画风参考:IPAdapter 预设/IPAdapter 模型(装了 IPAdapter_plus 才有) + CLIP Vision 模型
+    cachedIpAdapterPresets = await fetchNodeOptionList(host, 'IPAdapterUnifiedLoader', 'preset');
+    cachedClipVisionModels = await fetchNodeOptionList(host, 'CLIPVisionLoader', 'clip_name');
+    cachedNodeSpecs = {};
+    for (const cls of ['IPAdapterUnifiedLoader', 'IPAdapter', 'IPAdapterAdvanced', 'CLIPVisionLoader', 'CLIPVisionEncode', 'unCLIPConditioning', 'FaceDetailer', 'UltralyticsDetectorProvider']) {
+      await fetchNodeSpec(host, cls);
+    }
+    if (cachedNodeSpecs.FaceDetailer) cachedFaceDetailerSpec = cachedNodeSpecs.FaceDetailer;
+
     cachedCheckpoints = results.checkpoints;
     cachedLoras = results.loras;
     cachedSamplers = results.samplers;
@@ -2630,6 +2653,61 @@
     return fallback;
   }
 
+  /** 通用:读取某节点某输入的候选项列表(节点没装则返回空数组,调用方据此降级) */
+  async function fetchNodeOptionList(host, nodeClass, inputName) {
+    try {
+      const res = await fetch(`${host}/object_info/${nodeClass}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      const list = data?.[nodeClass]?.input?.required?.[inputName]?.[0];
+      return Array.isArray(list) ? list : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /** 通用:读取某节点的必填输入规格(带进程内缓存;节点没装返回 null) */
+  async function fetchNodeSpec(host, nodeClass) {
+    if (cachedNodeSpecs[nodeClass]) return cachedNodeSpecs[nodeClass];
+    try {
+      const res = await fetch(`${host}/object_info/${nodeClass}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const required = data?.[nodeClass]?.input?.required;
+      if (!required || typeof required !== 'object') return null;
+      cachedNodeSpecs[nodeClass] = required;
+      return required;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** 上传参考图到 ComfyUI 的 input 目录,返回服务器上的文件名 */
+  async function uploadComfyInputImage(host, blob, filename) {
+    const form = new FormData();
+    form.append('image', blob, filename);
+    form.append('overwrite', 'true');
+    const res = await fetch(`${host}/upload/image`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error(`上传失败 (${res.status})`);
+    const data = await res.json();
+    const name = data?.name || '';
+    if (!name) throw new Error('ComfyUI 未返回文件名');
+    return name;
+  }
+
+  /**
+   * 按规格把一批输入填全:overrides 命中的键用我们的值,其余按官方默认补齐。
+   * 这样节点版本增减必填项都不会拼出非法工作流。
+   */
+  function fillSpecInputs(spec, overrides) {
+    const inputs = {};
+    Object.entries(spec || {}).forEach(([key, meta]) => {
+      if (Object.prototype.hasOwnProperty.call(overrides, key)) inputs[key] = overrides[key];
+      else inputs[key] = specDefault(meta, 0);
+    });
+    return inputs;
+  }
+
   /**
    * 按规格把 FaceDetailer 的必填输入填全:
    * 用户配置的参数优先,其余按官方默认值补齐,关键连线(image/model/clip/vae/检测器)显式接上。
@@ -2641,6 +2719,8 @@
       clip: ctx.clipRef,
       vae: ctx.vaeRef,
       bbox_detector: ctx.detectorRef,
+      positive: ctx.positiveRef,
+      negative: ctx.negativeRef,
       seed: ctx.seed,
       steps: ctx.steps,
       cfg: ctx.cfg,
@@ -2693,6 +2773,7 @@
       hiresScale,
       hiresDenoise,
       faceFix,
+      styleRef,
       seed
     } = params;
 
@@ -2729,6 +2810,34 @@
       });
     }
 
+    // 2.5 画风参考 · IP-Adapter 模式:在 LoRA 链之后接一个 IP-Adapter 节点改 model 链
+    //     (排在文本编码之前,后面 KSampler 自然吃到带参考的 model)
+    if (styleRef && styleRef.mode === 'ipadapter' && styleRef.image && styleRef.specs?.unifiedLoader && styleRef.specs?.apply) {
+      workflow["400"] = { "class_type": "LoadImage", "inputs": { "image": styleRef.image, "upload": "image" } };
+      workflow["401"] = {
+        "class_type": "IPAdapterUnifiedLoader",
+        "inputs": fillSpecInputs(styleRef.specs.unifiedLoader, {
+          preset: styleRef.preset,
+          model: currentModel
+        })
+      };
+      workflow["402"] = {
+        "class_type": styleRef.specs.applyClass,
+        "inputs": fillSpecInputs(styleRef.specs.apply, {
+          model: ["401", 0],
+          ipadapter: ["401", 1],
+          image: ["400", 0],
+          weight: styleRef.strength,
+          start_at: styleRef.start,
+          end_at: styleRef.end,
+          weight_type: 'standard',
+          combine_embeds: 'concat',
+          embeds_scaling: 'V only'
+        })
+      };
+      currentModel = ["402", 0];
+    }
+
     // 3. Positive CLIPTextEncode (Node 6)
     workflow["6"] = {
       "class_type": "CLIPTextEncode",
@@ -2746,6 +2855,38 @@
         "text": negativePrompt
       }
     };
+
+    // 4.5 画风参考 · 原生 unCLIP 模式(免插件,只需 CLIP Vision 模型)
+    //     用参考图的视觉特征去调制正向条件;IP-Adapter 模式则在上面改 model 链,不走这里
+    let positiveRef = ["6", 0];
+    if (
+      styleRef && styleRef.mode === 'native' && styleRef.image &&
+      styleRef.specs?.clipVisionLoader && styleRef.specs?.clipVisionEncode && styleRef.specs?.unclip
+    ) {
+      workflow["400"] = { "class_type": "LoadImage", "inputs": { "image": styleRef.image, "upload": "image" } };
+      workflow["401"] = {
+        "class_type": "CLIPVisionLoader",
+        "inputs": fillSpecInputs(styleRef.specs.clipVisionLoader, { clip_name: styleRef.clipVision })
+      };
+      workflow["402"] = {
+        "class_type": "CLIPVisionEncode",
+        "inputs": fillSpecInputs(styleRef.specs.clipVisionEncode, {
+          clip_vision: ["401", 0],
+          image: ["400", 0],
+          crop: "center"
+        })
+      };
+      workflow["403"] = {
+        "class_type": "unCLIPConditioning",
+        "inputs": fillSpecInputs(styleRef.specs.unclip, {
+          conditioning: ["6", 0],
+          clip_vision_output: ["402", 0],
+          strength: styleRef.strength,
+          noise_augmentation: 0
+        })
+      };
+      positiveRef = ["403", 0];
+    }
 
     // 5. EmptyLatentImage (Node 5)
     workflow["5"] = {
@@ -2766,7 +2907,7 @@
         "latent_image": ["5", 0],
         "model": currentModel,
         "negative": ["7", 0],
-        "positive": ["6", 0],
+        "positive": positiveRef,
         "sampler_name": sampler,
         "scheduler": scheduler,
         "seed": seed,
@@ -2798,7 +2939,7 @@
           "latent_image": ["200", 0],
           "model": currentModel,
           "negative": ["7", 0],
-          "positive": ["6", 0],
+          "positive": positiveRef,
           "sampler_name": sampler,
           "scheduler": scheduler,
           "seed": seed + 1,
@@ -2835,6 +2976,8 @@
           clipRef: currentClip,
           vaeRef: currentVae,
           detectorRef: ["300", 0],
+          positiveRef: positiveRef,
+          negativeRef: ["7", 0],
           seed: seed + 7,
           steps: faceFix.steps || steps,
           cfg: faceFix.cfg || cfg,
@@ -3107,12 +3250,14 @@
             <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
+            <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把当前这张图设为画风参考(上传到 ComfyUI 后按设置里的参考模式生效)">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
             <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
+            <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把这张图设为画风参考">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
@@ -3241,6 +3386,32 @@
         e.preventDefault();
         e.stopPropagation();
         clearSlotImages(container, promptText, activeLoras);
+      });
+    }
+
+    // 把当前这张图设为画风参考:取图 → 上传到 ComfyUI input → 记下文件名
+    const styleRefBtn = container.querySelector('.sct-style-ref-btn');
+    if (styleRefBtn) {
+      styleRefBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          showToast('正在把当前图上传为画风参考…', 'info');
+          const imgRes = await fetch(currentUrl);
+          if (!imgRes.ok) throw new Error(`读取图片失败 (${imgRes.status})`);
+          const blob = await imgRes.blob();
+          const name = await uploadComfyInputImage(getCleanComfyHost(), blob, `styleref_${Date.now()}.png`);
+          saveSettings({ comfyStyleRefImage: name });
+          const mode = getSettings().comfyStyleRefMode || 'off';
+          showToast(
+            mode === 'off'
+              ? `已设为画风参考图(${name})——还需到设置面板选择参考模式(IP-Adapter 或原生 unCLIP)才会生效`
+              : `已设为画风参考图(${name}),当前模式:${mode === 'ipadapter' ? 'IP-Adapter' : '原生 unCLIP'}`,
+            'success'
+          );
+        } catch (err) {
+          showToast(`设为画风参考失败: ${err.message}`, 'error');
+        }
       });
     }
   }
@@ -3764,6 +3935,57 @@
       }
     }
 
+    // 画风参考:按模式收集节点规格(缺节点则整体跳过并提示,不让整张图失败)
+    let styleRef = null;
+    const styleRefMode = s.comfyStyleRefMode || 'off';
+    const styleRefImage = (s.comfyStyleRefImage || '').trim();
+    if (styleRefMode !== 'off' && styleRefImage) {
+      if (styleRefMode === 'ipadapter') {
+        const unifiedLoader = await fetchNodeSpec(comfyHost, 'IPAdapterUnifiedLoader');
+        const applyAdvanced = await fetchNodeSpec(comfyHost, 'IPAdapterAdvanced');
+        const applySimple = applyAdvanced ? null : await fetchNodeSpec(comfyHost, 'IPAdapter');
+        if (unifiedLoader && (applyAdvanced || applySimple)) {
+          styleRef = {
+            mode: 'ipadapter',
+            image: styleRefImage,
+            strength: parseFloat(s.comfyStyleRefStrength) || 0.8,
+            start: parseFloat(s.comfyStyleRefStart) || 0,
+            end: parseFloat(s.comfyStyleRefEnd) || 1,
+            preset: s.comfyStyleRefPreset || 'PLUS (high strength)',
+            specs: {
+              unifiedLoader: unifiedLoader,
+              apply: applyAdvanced || applySimple,
+              applyClass: applyAdvanced ? 'IPAdapterAdvanced' : 'IPAdapter'
+            }
+          };
+        } else {
+          showToast('未检测到 IP-Adapter 节点：画风参考已跳过（需安装 ComfyUI_IPAdapter_plus 与 IPAdapter 模型）', 'warning');
+        }
+      } else if (styleRefMode === 'native') {
+        const clipVisionLoader = await fetchNodeSpec(comfyHost, 'CLIPVisionLoader');
+        const clipVisionEncode = await fetchNodeSpec(comfyHost, 'CLIPVisionEncode');
+        const unclip = await fetchNodeSpec(comfyHost, 'unCLIPConditioning');
+        if (clipVisionLoader && clipVisionEncode && unclip) {
+          styleRef = {
+            mode: 'native',
+            image: styleRefImage,
+            strength: parseFloat(s.comfyStyleRefStrength) || 0.8,
+            clipVision: (s.comfyStyleRefClipVision || '').trim(),
+            specs: { clipVisionLoader: clipVisionLoader, clipVisionEncode: clipVisionEncode, unclip: unclip }
+          };
+          if (!styleRef.clipVision) {
+            styleRef.clipVision = cachedClipVisionModels[0] || '';
+            if (!styleRef.clipVision) {
+              showToast('原生参考模式需要 CLIP Vision 模型：请在设置里选择或先扫描模型列表', 'warning');
+              styleRef = null;
+            }
+          }
+        } else {
+          showToast('未检测到 CLIP Vision 节点：画风参考已跳过', 'warning');
+        }
+      }
+    }
+
     // 动态生成标准 ComfyUI 工作流
     const workflow = buildComfyWorkflow({
       checkpoint: ckpt,
@@ -3781,6 +4003,7 @@
       hiresScale: hiresScale,
       hiresDenoise: hiresDenoise,
       faceFix: faceFix,
+      styleRef: styleRef,
       seed: seed
     });
 
@@ -5249,6 +5472,75 @@
             </div>
           </div>
 
+          <!-- 板块 4.6: 画风参考 (参考图) -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🖼️</span>
+              <span>画风参考 (参考图)</span>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-styleref-mode">参考模式</label>
+              <select id="sct-cfg-styleref-mode" class="text_pole" style="max-width:280px;">
+                <option value="off" ${(s.comfyStyleRefMode || 'off') === 'off' ? 'selected' : ''}>关闭</option>
+                <option value="ipadapter" ${s.comfyStyleRefMode === 'ipadapter' ? 'selected' : ''}>IP-Adapter(推荐 · 需 IPAdapter_plus)</option>
+                <option value="native" ${s.comfyStyleRefMode === 'native' ? 'selected' : ''}>原生 unCLIP(免插件 · 需 CLIP Vision)</option>
+              </select>
+            </div>
+
+            <div class="sct-setting-col">
+              <label>参考图</label>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <input type="file" id="sct-styleref-file" accept="image/*" />
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-clear">✕ 清除参考图</button>
+                <span class="sct-hint" id="sct-styleref-state">${s.comfyStyleRefImage ? `当前: ${escapeHtml(s.comfyStyleRefImage)}` : '未设置参考图'}</span>
+              </div>
+              <div class="sct-hint">
+                上传后会存入 ComfyUI 的 input 目录；也可以直接在任意已生成的图上点「🖼️ 用作画风参考」一键设为参考。
+              </div>
+              ${s.comfyStyleRefImage ? `<img src="${getCleanComfyHost()}/view?filename=${encodeURIComponent(s.comfyStyleRefImage)}&type=input" style="max-width:120px; border-radius:8px; margin-top:6px;" alt="参考图" />` : ''}
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-styleref-strength">参考强度: <span id="sct-styleref-strength-val">${s.comfyStyleRefStrength ?? 0.8}</span></label>
+              <input type="range" id="sct-cfg-styleref-strength" min="0.1" max="1.5" step="0.05" value="${s.comfyStyleRefStrength ?? 0.8}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-styleref-start">作用起始步 (0~1): <span id="sct-styleref-start-val">${s.comfyStyleRefStart ?? 0}</span></label>
+              <input type="range" id="sct-cfg-styleref-start" min="0" max="1" step="0.05" value="${s.comfyStyleRefStart ?? 0}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-styleref-end">作用结束步 (0~1): <span id="sct-styleref-end-val">${s.comfyStyleRefEnd ?? 1}</span></label>
+              <input type="range" id="sct-cfg-styleref-end" min="0" max="1" step="0.05" value="${s.comfyStyleRefEnd ?? 1}" />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-styleref-preset">IP-Adapter 预设 (仅 IP-Adapter 模式)</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="sct-cfg-styleref-preset" class="text_pole" placeholder="如 PLUS (high strength)" value="${escapeHtml(s.comfyStyleRefPreset || '')}" style="flex:1;" />
+                <select id="sct-styleref-preset-select" class="text_pole" style="max-width:170px;">
+                  <option value="">(预设列表)</option>
+                  ${(cachedIpAdapterPresets || []).map(p => `<option value="${escapeHtml(p)}" ${p === s.comfyStyleRefPreset ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-hint">装了 ComfyUI_IPAdapter_plus 后点「📡 测试并扫描」可拉取预设列表与 IPAdapter 模型。</div>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-styleref-clipvision">CLIP Vision 模型 (仅原生模式)</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="sct-cfg-styleref-clipvision" class="text_pole" placeholder="如 CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors" value="${escapeHtml(s.comfyStyleRefClipVision || '')}" style="flex:1;" />
+                <select id="sct-styleref-clipvision-select" class="text_pole" style="max-width:170px;">
+                  <option value="">(Vision 列表)</option>
+                  ${(cachedClipVisionModels || []).map(v => `<option value="${escapeHtml(v)}" ${v === s.comfyStyleRefClipVision ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-hint">模型放在 <code>ComfyUI/models/clip_vision/</code>；原生模式用它把参考图编码成视觉条件(unCLIP)。</div>
+            </div>
+          </div>
+
           <!-- 板块 5: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
@@ -5580,6 +5872,76 @@
       });
     });
 
+    // 画风参考 (参考图)
+    container.querySelector('#sct-cfg-styleref-mode').addEventListener('change', (e) => {
+      saveSettings({ comfyStyleRefMode: e.target.value });
+    });
+
+    const styleRefFile = container.querySelector('#sct-styleref-file');
+    if (styleRefFile) {
+      styleRefFile.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const state = container.querySelector('#sct-styleref-state');
+        if (state) state.textContent = '⏳ 正在上传参考图…';
+        try {
+          const name = await uploadComfyInputImage(getCleanComfyHost(), file, `styleref_${Date.now()}_${file.name.replace(/[^\w.\-]/g, '_')}`);
+          saveSettings({ comfyStyleRefImage: name });
+          if (state) state.textContent = `当前: ${name}`;
+          showToast('参考图已上传到 ComfyUI', 'success');
+        } catch (err) {
+          if (state) state.textContent = '上传失败';
+          showToast(`参考图上传失败: ${err.message}`, 'error');
+        }
+      });
+    }
+
+    container.querySelector('#sct-styleref-clear').addEventListener('click', () => {
+      saveSettings({ comfyStyleRefImage: '' });
+      const state = container.querySelector('#sct-styleref-state');
+      if (state) state.textContent = '未设置参考图';
+      const fileInput = container.querySelector('#sct-styleref-file');
+      if (fileInput) fileInput.value = '';
+      showToast('已清除参考图', 'info');
+    });
+
+    container.querySelector('#sct-cfg-styleref-preset').addEventListener('input', (e) => saveSettings({ comfyStyleRefPreset: e.target.value.trim() }));
+    container.querySelector('#sct-cfg-styleref-clipvision').addEventListener('input', (e) => saveSettings({ comfyStyleRefClipVision: e.target.value.trim() }));
+
+    const presetSelect = container.querySelector('#sct-styleref-preset-select');
+    if (presetSelect) {
+      presetSelect.addEventListener('change', (e) => {
+        if (!e.target.value) return;
+        container.querySelector('#sct-cfg-styleref-preset').value = e.target.value;
+        saveSettings({ comfyStyleRefPreset: e.target.value });
+      });
+    }
+
+    const visionSelect = container.querySelector('#sct-styleref-clipvision-select');
+    if (visionSelect) {
+      visionSelect.addEventListener('change', (e) => {
+        if (!e.target.value) return;
+        container.querySelector('#sct-cfg-styleref-clipvision').value = e.target.value;
+        saveSettings({ comfyStyleRefClipVision: e.target.value });
+      });
+    }
+
+    const styleRefSliders = [
+      ['#sct-cfg-styleref-strength', '#sct-styleref-strength-val', 'comfyStyleRefStrength', parseFloat],
+      ['#sct-cfg-styleref-start', '#sct-styleref-start-val', 'comfyStyleRefStart', parseFloat],
+      ['#sct-cfg-styleref-end', '#sct-styleref-end-val', 'comfyStyleRefEnd', parseFloat],
+    ];
+    styleRefSliders.forEach(([inputSel, valSel, key, parse]) => {
+      const input = container.querySelector(inputSel);
+      const label = container.querySelector(valSel);
+      if (!input) return;
+      input.addEventListener('input', (e) => {
+        const value = parse(e.target.value);
+        if (label) label.textContent = String(value);
+        saveSettings({ [key]: value });
+      });
+    });
+
     // 自动配图指令
     container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
     container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
@@ -5645,6 +6007,27 @@
           }
           if (!cachedFaceDetailerSpec) {
             showToast('未检测到 FaceDetailer 节点：脸部修复需安装 ComfyUI-Impact-Pack', 'warning');
+          }
+
+          // 画风参考:预设与 CLIP Vision 下拉
+          const presetSel = container.querySelector('#sct-styleref-preset-select');
+          if (presetSel) {
+            const currentPreset = getSettings().comfyStyleRefPreset || '';
+            presetSel.innerHTML = '<option value="">(预设列表)</option>' +
+              cachedIpAdapterPresets.map(p => `<option value="${escapeHtml(p)}" ${p === currentPreset ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
+          }
+          const visionSel = container.querySelector('#sct-styleref-clipvision-select');
+          if (visionSel) {
+            const currentVision = getSettings().comfyStyleRefClipVision || '';
+            visionSel.innerHTML = '<option value="">(Vision 列表)</option>' +
+              cachedClipVisionModels.map(v => `<option value="${escapeHtml(v)}" ${v === currentVision ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+            if (!currentVision && cachedClipVisionModels.length > 0) {
+              container.querySelector('#sct-cfg-styleref-clipvision').value = cachedClipVisionModels[0];
+              saveSettings({ comfyStyleRefClipVision: cachedClipVisionModels[0] });
+            }
+          }
+          if (cachedIpAdapterPresets.length === 0) {
+            showToast('未检测到 IP-Adapter 节点/预设：画风参考若要最佳效果需安装 ComfyUI_IPAdapter_plus', 'warning');
           }
         } else {
           showToast(`已连通 ComfyUI (${host})，服务就绪！`, 'success');
