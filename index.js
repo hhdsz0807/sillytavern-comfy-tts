@@ -6481,7 +6481,23 @@
   let galleryKeyword = '';
   let galleryEscHandler = null;
   // 已在界面里隐藏的图(ComfyUI 没有删除文件的接口,只能隐藏)
+  // ★ 必须持久化到 localStorage:否则刷新/更新插件后又会全部冒出来(用户已反馈过)
+  const GALLERY_HIDDEN_KEY = 'sct_gallery_hidden_v1';
   const galleryHiddenKeys = new Set();
+
+  function loadGalleryHidden() {
+    try {
+      const raw = localStorage.getItem(GALLERY_HIDDEN_KEY);
+      if (!raw) return;
+      JSON.parse(raw).forEach(k => { if (k) galleryHiddenKeys.add(k); });
+    } catch (_) {}
+  }
+
+  function saveGalleryHidden() {
+    try {
+      localStorage.setItem(GALLERY_HIDDEN_KEY, JSON.stringify([...galleryHiddenKeys]));
+    } catch (_) {}
+  }
 
   /** 同步来源:插件 localStorage 记录 + 当前聊天消息 extra */
   function collectLocalGalleryItems(source) {
@@ -6623,6 +6639,12 @@
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-refresh">🔄 刷新</button>
           <span class="sct-gallery-count" id="sct-gallery-count"></span>
         </div>
+        <div class="sct-gallery-tools sct-gallery-tools-row2">
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-hide-shown">🚫 隐藏当前显示的全部</button>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-unhide">♻️ 恢复隐藏</button>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-export">⬇️ 导出清单(给电脑端清理)</button>
+          <span class="sct-gallery-count" id="sct-gallery-hidden-count"></span>
+        </div>
         <div class="sct-gallery-grid" id="sct-gallery-grid"></div>
         <div class="sct-gallery-hint" id="sct-gallery-hint"></div>
         <div class="sct-gallery-status" id="sct-gallery-status"></div>
@@ -6691,6 +6713,8 @@
     } catch (_) {}
     const renderStatus = () => {
       if (!statusEl || !statusEl.isConnected) return;
+      const hiddenCountEl = overlay.querySelector('#sct-gallery-hidden-count');
+      if (hiddenCountEl) hiddenCountEl.textContent = galleryHiddenKeys.size ? `已隐藏 ${galleryHiddenKeys.size} 张` : '';
       const host = getCleanComfyHost();
       const pageHost = (typeof location !== 'undefined' && location.hostname) || '';
       const parts = [];
@@ -6850,6 +6874,7 @@
 
     const loadLocal = () => {
       gallerySource = sourceSel.value;
+      loadGalleryHidden();
       // 分别统计三个同步来源,便于排查「到底哪一处是空的」
       counts.plugin = collectLocalGalleryItems('plugin').length;
       counts.chat = collectLocalGalleryItems('chat').length;
@@ -6897,6 +6922,69 @@
       renderGrid();
       renderStatus();
     };
+
+    // 🚫 批量:隐藏当前筛选出来的全部图(持久化,刷新/更新插件后不会复活)
+    overlay.querySelector('#sct-gallery-hide-shown')?.addEventListener('click', () => {
+      const kw = galleryKeyword.trim().toLowerCase();
+      const shown = galleryItems.filter(it => !galleryHiddenKeys.has(it.key))
+        .filter(it => !kw || `${it.prompt} ${it.sources.join(' ')} ${it.chat}`.toLowerCase().includes(kw));
+      if (shown.length === 0) {
+        showToast('当前没有可隐藏的图', 'warning');
+        return;
+      }
+      shown.forEach(it => galleryHiddenKeys.add(it.key));
+      saveGalleryHidden();
+      renderGrid();
+      renderStatus();
+      showToast(`已隐藏 ${shown.length} 张(永久生效;可点「♻️ 恢复隐藏」找回)`, 'success');
+    });
+
+    // ♻️ 恢复隐藏
+    overlay.querySelector('#sct-gallery-unhide')?.addEventListener('click', () => {
+      const n = galleryHiddenKeys.size;
+      if (n === 0) {
+        showToast('没有已隐藏的图', 'info');
+        return;
+      }
+      galleryHiddenKeys.clear();
+      saveGalleryHidden();
+      renderGrid();
+      renderStatus();
+      showToast(`已恢复 ${n} 张隐藏的图`, 'success');
+    });
+
+    // ⬇️ 导出清单:给电脑端脚本用(手机端删不掉服务器文件,电脑端可以真删)
+    overlay.querySelector('#sct-gallery-export')?.addEventListener('click', () => {
+      const kw = galleryKeyword.trim().toLowerCase();
+      const names = galleryItems
+        .filter(it => !galleryHiddenKeys.has(it.key))
+        .filter(it => !kw || `${it.prompt} ${it.sources.join(' ')} ${it.chat}`.toLowerCase().includes(kw))
+        .map(it => {
+          const m = it.url.match(/filename=([^&]*)/);
+          return m ? decodeURIComponent(m[1]) : '';
+        })
+        .filter(Boolean);
+      if (names.length === 0) {
+        showToast('当前没有可导出的文件名', 'warning');
+        return;
+      }
+      const text = names.join('\n');
+      try {
+        const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `comfy-output-delete-list-${Date.now()}.txt`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        showToast(`已导出 ${names.length} 个文件名:拿去电脑上执行 cleanup-comfy-output.js 即可真删`, 'success');
+      } catch (err) {
+        navigator.clipboard.writeText(text)
+          .then(() => showToast(`已复制 ${names.length} 个文件名到剪贴板`, 'success'))
+          .catch(() => showToast(`导出失败:${err.message}`, 'error'));
+      }
+    });
 
     sourceSel.addEventListener('change', load);
     // 缩略图尺寸:小/中/大,记住选择
@@ -7003,13 +7091,13 @@
       });
       if (dirty && typeof ctx?.saveChatDebounced === 'function') ctx.saveChatDebounced();
     } catch (_) {}
-    // ComfyUI 输出历史没有删除接口,只能在界面里隐藏
+    // ComfyUI 输出历史没有删除接口,只能在界面里隐藏(★ 持久化,刷新/更新插件后不再复活)
+    galleryHiddenKeys.add(key);
+    saveGalleryHidden();
     if (removed === 0) {
-      galleryHiddenKeys.add(key);
-      showToast('该图来自 ComfyUI 输出历史,ComfyUI 没有删除文件的接口 —— 已在界面里隐藏', 'info');
+      showToast('该图来自 ComfyUI 输出历史,服务器上没有删除接口 —— 已在界面里永久隐藏(可点「♻️ 恢复隐藏」找回)', 'info');
     } else {
-      galleryHiddenKeys.add(key);
-      showToast(`已从记录中移除 ${removed} 条(ComfyUI 服务器上的文件不会被删)`, 'success');
+      showToast(`已从记录中移除 ${removed} 条,并加入永久隐藏列表(ComfyUI 服务器上的文件不会被删)`, 'success');
     }
   }
 

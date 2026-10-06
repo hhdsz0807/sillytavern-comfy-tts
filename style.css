@@ -2725,3 +2725,13 @@
 .sct-guide-hint b {
   color: var(--sct-warning);
 }
+/* 图片管理第二行工具条(批量隐藏/恢复/导出) */
+.sct-gallery-tools-row2 {
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.sct-gallery-tools-row2 .sct-comfy-btn {
+  padding: 5px 9px;
+  font-size: 11.5px;
+}
