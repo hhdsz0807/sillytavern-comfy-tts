@@ -5550,6 +5550,9 @@
       autoDrawToggleEl.style.display = s.comfyEnabled ? 'flex' : 'none';
       autoDrawToggleEl.classList.toggle('is-on', on);
       autoDrawToggleEl.classList.toggle('is-off', !on);
+      // 内联色兜底(CSS 未刷新时也能看出开关状态)
+      autoDrawToggleEl.style.borderColor = on ? '#76ABAE' : '#D9B358';
+      autoDrawToggleEl.style.color = on ? '#76ABAE' : '#D9B358';
       autoDrawToggleEl.innerHTML = `<span>🎨</span><span>自动生图</span><b>${on ? '开' : '关'}</b>`;
       autoDrawToggleEl.title = on
         ? '正文出现 <image> 标签会立刻生图。点一下关闭 —— 抽卡满意后再手动点「立即开始生图」'
@@ -5566,6 +5569,7 @@
         on ? 'success' : 'info'
       );
     }
+    updateWandAutoDrawLabel();
   }
 
   function getAutoDrawToggle() {
@@ -5573,6 +5577,14 @@
     const btn = document.createElement('div');
     btn.id = 'sct-autodraw-toggle';
     btn.className = 'sct-autodraw-toggle';
+    // 内联样式兜底:即使 style.css 没刷新到最新,开关也一定看得见、点得动
+    btn.style.cssText = [
+      'position:fixed', 'left:12px', 'bottom:96px', 'z-index:2147483600',
+      'display:flex', 'align-items:center', 'gap:6px', 'padding:7px 13px',
+      'border-radius:999px', 'border:1px solid #686774', 'background:rgba(55,53,62,.92)',
+      'color:#8E9392', 'font-size:12px', 'font-weight:600', 'line-height:1.4',
+      'box-shadow:0 6px 20px rgba(0,0,0,.45)', 'cursor:pointer', 'user-select:none',
+    ].join(';');
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -8652,40 +8664,97 @@
     });
   }
 
+  function updateWandAutoDrawLabel() {
+    const el = document.getElementById('sct-wand-autodraw-label');
+    if (!el) return;
+    const on = !!getSettings().comfyAutoDrawTags;
+    el.textContent = `🎨 自动生图:${on ? '开' : '关'}`;
+    el.style.color = on ? '#76ABAE' : '#D9B358';
+  }
+
   function injectWandMenuButton() {
     const menu = document.getElementById('extensionsMenu');
-    if (!menu || document.getElementById('sct-wand-item')) return;
+    if (!menu) return;
 
-    const item = document.createElement('div');
-    item.className = 'extension_container interactable';
-    item.tabIndex = 0;
-    item.innerHTML = `
-      <a id="sct-wand-item" class="list-group-item" href="#" title="${DISPLAY_NAME}">
-        <i class="fa-solid fa-palette"></i>
-        <span>ComfyUI & 语音朗读</span>
-      </a>
-    `;
+    // 悬浮开关的内联样式兜底(CSS 未刷新时也能显示)
+    if (autoDrawToggleEl && autoDrawToggleEl.isConnected) autoDrawToggleEl.style.cssText = '';
 
-    item.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (typeof jQuery !== 'undefined') {
-        jQuery('#right-nav-panel').addClass('openDrawer');
-        jQuery('#extensions_settings_tab').trigger('click');
-        const target = document.getElementById('sct-settings-container');
-        if (target) {
-          const drawerContent = target.querySelector('.inline-drawer-content');
-          const drawerIcon = target.querySelector('.inline-drawer-icon');
-          if (drawerContent && (drawerContent.style.display === 'none' || getComputedStyle(drawerContent).display === 'none')) {
-            jQuery(drawerContent).slideDown(200);
-            if (drawerIcon) drawerIcon.classList.add('down');
+    if (!document.getElementById('sct-wand-item')) {
+      const item = document.createElement('div');
+      item.className = 'extension_container interactable';
+      item.tabIndex = 0;
+      item.innerHTML = `
+        <a id="sct-wand-item" class="list-group-item" href="#" title="${DISPLAY_NAME} v${SCT_BUILD}">
+          <i class="fa-solid fa-palette"></i>
+          <span>ComfyUI & 语音朗读 <small style="opacity:.55">v${SCT_BUILD}</small></span>
+        </a>
+      `;
+
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (typeof jQuery !== 'undefined') {
+          jQuery('#right-nav-panel').addClass('openDrawer');
+          jQuery('#extensions_settings_tab').trigger('click');
+          const target = document.getElementById('sct-settings-container');
+          if (target) {
+            const drawerContent = target.querySelector('.inline-drawer-content');
+            const drawerIcon = target.querySelector('.inline-drawer-icon');
+            if (drawerContent && (drawerContent.style.display === 'none' || getComputedStyle(drawerContent).display === 'none')) {
+              jQuery(drawerContent).slideDown(200);
+              if (drawerIcon) drawerIcon.classList.add('down');
+            }
+            target.scrollIntoView({ behavior: 'smooth' });
           }
-          target.scrollIntoView({ behavior: 'smooth' });
         }
-      }
-      menu.style.display = 'none';
-    });
+        menu.style.display = 'none';
+      });
 
-    menu.appendChild(item);
+      menu.appendChild(item);
+    }
+
+    // ② 魔杖菜单里一键切换自动生图(抽卡时关掉,满意后再手动生图)
+    if (!document.getElementById('sct-wand-autodraw')) {
+      const auto = document.createElement('div');
+      auto.className = 'extension_container interactable';
+      auto.tabIndex = 0;
+      auto.innerHTML = `
+        <a id="sct-wand-autodraw" class="list-group-item" href="#" title="抽卡时点成「关」,满意后再手动点消息里的「立即开始生图」">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          <span id="sct-wand-autodraw-label">🎨 自动生图</span>
+        </a>
+      `;
+      auto.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        saveSettings({ comfyAutoDrawTags: !getSettings().comfyAutoDrawTags });
+        updateAutoDrawToggle(true);
+        updateWandAutoDrawLabel();
+        menu.style.display = 'none';
+      });
+      menu.appendChild(auto);
+    }
+
+    // ③ 魔杖菜单里直接打开图片管理
+    if (!document.getElementById('sct-wand-gallery')) {
+      const gal = document.createElement('div');
+      gal.className = 'extension_container interactable';
+      gal.tabIndex = 0;
+      gal.innerHTML = `
+        <a id="sct-wand-gallery" class="list-group-item" href="#" title="集中查看所有生成过的图片">
+          <i class="fa-solid fa-images"></i>
+          <span>🖼️ 生成图片管理</span>
+        </a>
+      `;
+      gal.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        menu.style.display = 'none';
+        openImageGallery();
+      });
+      menu.appendChild(gal);
+    }
+
+    updateWandAutoDrawLabel();
   }
 
   /* ==========================================================================
