@@ -6040,6 +6040,117 @@
     });
   }
 
+  /**
+   * 把设置面板里的每个 .sct-settings-section 变成可折叠区块:
+   *   - 标题可点,带「展开 ▼ / 收起 ▲」
+   *   - 默认全部收起(面板一眼能看完),状态记在 localStorage,刷新后保持
+   *   - 顶部插入一条工具条:全部展开 / 全部收起 + 各板块快速跳转(点一个开一个,其余自动收起)
+   */
+  function setupCollapsibleSections(container) {
+    const sections = [...container.querySelectorAll('.sct-settings-section')];
+    if (sections.length === 0) return;
+
+    const STORE_KEY = 'sct_collapsed_sections_v2';
+    let collapsed;
+    let hasStored = false;
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (raw) {
+        hasStored = true;
+        collapsed = new Set(JSON.parse(raw));
+      }
+    } catch (_) {}
+    if (!collapsed) collapsed = new Set();
+    const persist = () => {
+      try {
+        localStorage.setItem(STORE_KEY, JSON.stringify([...collapsed]));
+      } catch (_) {}
+    };
+
+    const items = sections.map((section, i) => {
+      const title = [...section.children].find(el => el.classList.contains('sct-settings-section-title'));
+      if (!title) return null;
+
+      // 标题之后的兄弟节点包进可折叠 body
+      const body = document.createElement('div');
+      body.className = 'sct-section-body';
+      [...section.children].filter(el => el !== title).forEach(el => body.appendChild(el));
+      section.appendChild(body);
+
+      title.classList.add('sct-section-toggle');
+      const chevron = document.createElement('span');
+      chevron.className = 'sct-section-chevron';
+      title.appendChild(chevron);
+
+      const id = `sec_${i}`;
+      section.dataset.sectionId = id;
+      // 首次使用:默认全部收起
+      if (!hasStored) collapsed.add(id);
+
+      const apply = () => {
+        const isCollapsed = collapsed.has(id);
+        section.classList.toggle('collapsed', isCollapsed);
+        body.style.display = isCollapsed ? 'none' : '';
+        chevron.textContent = isCollapsed ? '展开 ▼' : '收起 ▲';
+      };
+      title.addEventListener('click', () => {
+        if (collapsed.has(id)) collapsed.delete(id);
+        else collapsed.add(id);
+        persist();
+        apply();
+      });
+
+      // 工具条用的短标签(去掉括号补充说明)
+      const rawText = (title.textContent || '').replace(/展开 ▼|收起 ▲/g, '').replace(/[（(].*?[)）]/g, '').trim();
+      return { section, title, body, apply, id, label: rawText || `板块 ${i + 1}` };
+    }).filter(Boolean);
+
+    const applyAll = (collapse) => {
+      items.forEach(it => {
+        if (collapse) collapsed.add(it.id);
+        else collapsed.delete(it.id);
+        it.apply();
+      });
+      persist();
+    };
+
+    // 顶部工具条
+    const toolbar = document.createElement('div');
+    toolbar.className = 'sct-section-toolbar';
+    toolbar.innerHTML = `
+      <div class="sct-section-toolbar-btns">
+        <button type="button" class="sct-comfy-btn sct-btn-xs" data-act="expand">⬇️ 全部展开</button>
+        <button type="button" class="sct-comfy-btn sct-btn-xs" data-act="collapse">⬆️ 全部收起</button>
+      </div>
+      <div class="sct-section-chips">
+        ${items.map((it, i) => `<button type="button" class="sct-section-chip" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
+      </div>
+    `;
+    toolbar.querySelector('[data-act="expand"]').addEventListener('click', () => applyAll(false));
+    toolbar.querySelector('[data-act="collapse"]').addEventListener('click', () => applyAll(true));
+    toolbar.querySelectorAll('[data-chip]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-chip'), 10);
+        // 点一个开一个,其余自动收起(手风琴),面板永远清爽
+        items.forEach((it, i) => {
+          if (i === idx) collapsed.delete(it.id);
+          else collapsed.add(it.id);
+          it.apply();
+        });
+        persist();
+        const target = items[idx];
+        if (target) target.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+    container.insertBefore(toolbar, container.firstChild);
+
+    if (hasStored) {
+      items.forEach(it => it.apply());   // 沿用上次的展开/收起状态
+    } else {
+      applyAll(true);                    // 首次使用:默认全部收起,面板一眼看完
+    }
+  }
+
   function injectSettingsPanel() {
     const parent = document.getElementById('extensions_settings');
     if (!parent || document.getElementById('sct-settings-container')) return;
@@ -6622,6 +6733,9 @@
     `;
 
     parent.appendChild(container);
+
+    // 把所有设置板块做成可折叠手风琴(默认全部收起,面板不再长得看不到头)
+    setupCollapsibleSections(container);
 
     // 折叠展开管理：
     // SillyTavern 原生框架会在 document 上统一代理监听 .inline-drawer-toggle 并执行 slideToggle 与 class down 切换。
