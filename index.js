@@ -62,6 +62,15 @@
     comfyHiresScale: 1.5,
     comfyHiresDenoise: 0.45,
 
+    // 脸部修复 (FaceDetailer · 需要 ComfyUI-Impact-Pack + 检测模型)
+    // 出图后再单独重采样脸部小区域并贴回原图,是提升人脸质量最有效的一步
+    comfyFaceFixEnabled: false,
+    comfyFaceFixDetector: 'bbox/face_yolov8m.pt',
+    comfyFaceFixDenoise: 0.5,
+    comfyFaceFixGuideSize: 512,
+    comfyFaceFixBboxThreshold: 0.5,
+    comfyFaceFixFeather: 5,
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -131,6 +140,9 @@
   let cachedLoras = [];
   let cachedSamplers = [];
   let cachedSchedulers = [];
+  // 脸部修复相关:可选检测模型列表 + FaceDetailer 节点的必填输入规格(各版本不同,运行时读取)
+  let cachedFaceDetectors = [];
+  let cachedFaceDetailerSpec = null;
 
   // 全局生图任务去重与状态记录表 (杜绝重复触发与无限刷图)
   // key: taskKey
@@ -2563,12 +2575,104 @@
       }
     } catch (_) {}
 
+    // 脸部修复:可选检测模型 + FaceDetailer 必填输入规格(装了 Impact-Pack 才有)
+    cachedFaceDetailerSpec = await fetchFaceDetailerSpec(host);
+    try {
+      const detRes = await fetch(`${host}/object_info/UltralyticsDetectorProvider`);
+      if (detRes.ok) {
+        const d = await detRes.json();
+        cachedFaceDetectors = d?.UltralyticsDetectorProvider?.input?.required?.model_name?.[0] || [];
+      } else {
+        cachedFaceDetectors = [];
+      }
+    } catch (_) {
+      cachedFaceDetectors = [];
+    }
+
     cachedCheckpoints = results.checkpoints;
     cachedLoras = results.loras;
     cachedSamplers = results.samplers;
     cachedSchedulers = results.schedulers;
 
     return results;
+  }
+
+  /**
+   * 读取 FaceDetailer 节点的必填输入规格。
+   * 为什么运行时读:Impact-Pack 各版本的必填项会增减(或改名),写死一套参数迟早会因为
+   * 「缺少/多余输入」整张图报错。拿到规格后按 key 填值,端口差异自然被吸收。
+   * 返回 { 输入名: 规格数组 } 或 null(未安装 Impact-Pack)。
+   */
+  async function fetchFaceDetailerSpec(host) {
+    try {
+      const res = await fetch(`${host}/object_info/FaceDetailer`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      const required = data?.FaceDetailer?.input?.required;
+      if (!required || typeof required !== 'object') return null;
+      return required;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** 从 object_info 的输入规格里取默认值(规格形如 [[choices...]] 或 ["INT", {default: 20}] ) */
+  function specDefault(spec, fallback) {
+    if (!Array.isArray(spec)) return fallback;
+    const type = spec[0];
+    if (Array.isArray(type)) return type[0] ?? fallback; // 下拉:取第一个选项
+    const opts = spec[1];
+    if (opts && typeof opts === 'object' && opts.default !== undefined) return opts.default;
+    if (type === 'INT') return 0;
+    if (type === 'FLOAT') return 1.0;
+    if (type === 'BOOLEAN') return false;
+    if (type === 'STRING') return '';
+    return fallback;
+  }
+
+  /**
+   * 按规格把 FaceDetailer 的必填输入填全:
+   * 用户配置的参数优先,其余按官方默认值补齐,关键连线(image/model/clip/vae/检测器)显式接上。
+   */
+  function buildFaceDetailerInputs(spec, ctx) {
+    const overrides = {
+      image: ctx.imageRef,
+      model: ctx.modelRef,
+      clip: ctx.clipRef,
+      vae: ctx.vaeRef,
+      bbox_detector: ctx.detectorRef,
+      seed: ctx.seed,
+      steps: ctx.steps,
+      cfg: ctx.cfg,
+      sampler_name: ctx.sampler,
+      scheduler: ctx.scheduler,
+      denoise: ctx.denoise,
+      guide_size: ctx.guideSize,
+      guide_size_for: true,
+      max_size: 1024,
+      feather: ctx.feather,
+      noise_mask: true,
+      force_inpaint: true,
+      bbox_threshold: ctx.bboxThreshold,
+      bbox_dilation: 10,
+      bbox_crop_factor: 3.0,
+      sam_detection_hint: 'center-1',
+      sam_dilation: 0,
+      sam_threshold: 0.93,
+      sam_bbox_expansion: 0,
+      sam_mask_hint_threshold: 0.7,
+      sam_mask_hint_use_negative: 'False',
+      drop_size: 10,
+    };
+    const inputs = {};
+    Object.entries(spec).forEach(([key, meta]) => {
+      if (Object.prototype.hasOwnProperty.call(overrides, key)) {
+        inputs[key] = overrides[key];
+      } else {
+        inputs[key] = specDefault(meta, 0);
+      }
+    });
+    return inputs;
   }
 
   // 动态组装 ComfyUI 工作流 (文生图 + 多 LoRA + 高清放大 Hires Fix)
@@ -2588,6 +2692,7 @@
       hiresEnabled,
       hiresScale,
       hiresDenoise,
+      faceFix,
       seed
     } = params;
 
@@ -2713,12 +2818,43 @@
       }
     };
 
-    // 9. SaveImage (Node 9)
+    let finalImageRef = ["8", 0];
+
+    // 9. 脸部修复 (FaceDetailer · Impact-Pack):拿解码后的图 → 检测脸部 → 小区域重采样 → 贴回
+    //    spec 由运行时 /object_info 读取,faceted 参数按规格补齐,版本差异不影响出图
+    if (faceFix && faceFix.enabled && faceFix.spec && faceFix.detector) {
+      workflow["300"] = {
+        "class_type": "UltralyticsDetectorProvider",
+        "inputs": { "model_name": faceFix.detector }
+      };
+      workflow["301"] = {
+        "class_type": "FaceDetailer",
+        "inputs": buildFaceDetailerInputs(faceFix.spec, {
+          imageRef: ["8", 0],
+          modelRef: currentModel,
+          clipRef: currentClip,
+          vaeRef: currentVae,
+          detectorRef: ["300", 0],
+          seed: seed + 7,
+          steps: faceFix.steps || steps,
+          cfg: faceFix.cfg || cfg,
+          sampler: sampler,
+          scheduler: scheduler,
+          denoise: faceFix.denoise,
+          guideSize: faceFix.guideSize,
+          feather: faceFix.feather,
+          bboxThreshold: faceFix.bboxThreshold
+        })
+      };
+      finalImageRef = ["301", 0];
+    }
+
+    // 10. SaveImage (Node 9)
     workflow["9"] = {
       "class_type": "SaveImage",
       "inputs": {
         "filename_prefix": "SillyTavern",
-        "images": ["8", 0]
+        "images": finalImageRef
       }
     };
 
@@ -3605,6 +3741,29 @@
     const hiresScale = parseFloat(s.comfyHiresScale) || 1.5;
     const hiresDenoise = parseFloat(s.comfyHiresDenoise) || 0.45;
 
+    // 脸部修复:开启时先确保拿到 FaceDetailer 的输入规格(没装 Impact-Pack 就跳过并提示,不让整张图失败)
+    let faceFix = null;
+    if (s.comfyFaceFixEnabled) {
+      if (!cachedFaceDetailerSpec) {
+        cachedFaceDetailerSpec = await fetchFaceDetailerSpec(comfyHost);
+      }
+      if (cachedFaceDetailerSpec) {
+        faceFix = {
+          enabled: true,
+          spec: cachedFaceDetailerSpec,
+          detector: (s.comfyFaceFixDetector || '').trim(),
+          denoise: parseFloat(s.comfyFaceFixDenoise) || 0.5,
+          guideSize: parseInt(s.comfyFaceFixGuideSize, 10) || 512,
+          bboxThreshold: parseFloat(s.comfyFaceFixBboxThreshold) || 0.5,
+          feather: parseInt(s.comfyFaceFixFeather, 10) || 5,
+          steps: steps,
+          cfg: cfg
+        };
+      } else {
+        showToast('未检测到 FaceDetailer 节点：脸部修复已跳过（需安装 ComfyUI-Impact-Pack 与 Ultralytics 检测模型）', 'warning');
+      }
+    }
+
     // 动态生成标准 ComfyUI 工作流
     const workflow = buildComfyWorkflow({
       checkpoint: ckpt,
@@ -3621,6 +3780,7 @@
       hiresEnabled: hiresEnabled,
       hiresScale: hiresScale,
       hiresDenoise: hiresDenoise,
+      faceFix: faceFix,
       seed: seed
     });
 
@@ -5044,6 +5204,51 @@
             </div>
           </div>
 
+          <!-- 板块 4.5: 脸部修复 (FaceDetailer · Impact-Pack) -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>😊</span>
+              <span>脸部修复 (FaceDetailer)</span>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-facefix-enable">启用脸部修复(出图后单独重采样脸部区域再贴回)</label>
+              <input type="checkbox" id="sct-cfg-facefix-enable" ${s.comfyFaceFixEnabled ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-facefix-detector">脸部检测模型 (Ultralytics 模型名)</label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="sct-cfg-facefix-detector" class="text_pole" placeholder="如 bbox/face_yolov8m.pt" value="${escapeHtml(s.comfyFaceFixDetector || '')}" style="flex:1;" />
+                <select id="sct-facefix-detector-select" class="text_pole" style="max-width:170px;">
+                  <option value="">(检测模型列表)</option>
+                  ${(cachedFaceDetectors || []).map(d => `<option value="${escapeHtml(d)}" ${d === s.comfyFaceFixDetector ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-hint">需 ComfyUI-Impact-Pack；模型放在 <code>ComfyUI/models/ultralytics/bbox/</code> 下，点上方「测试 ComfyUI 连接与扫描全部模型」可拉取列表。</div>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-facefix-denoise">脸部重绘幅度: <span id="sct-facefix-denoise-val">${s.comfyFaceFixDenoise || 0.5}</span></label>
+              <input type="range" id="sct-cfg-facefix-denoise" min="0.2" max="0.9" step="0.05" value="${s.comfyFaceFixDenoise || 0.5}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-facefix-guide">脸部引导尺寸 (px): <span id="sct-facefix-guide-val">${s.comfyFaceFixGuideSize || 512}</span></label>
+              <input type="range" id="sct-cfg-facefix-guide" min="256" max="1024" step="64" value="${s.comfyFaceFixGuideSize || 512}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-facefix-threshold">检测阈值: <span id="sct-facefix-threshold-val">${s.comfyFaceFixBboxThreshold || 0.5}</span></label>
+              <input type="range" id="sct-cfg-facefix-threshold" min="0.1" max="0.9" step="0.05" value="${s.comfyFaceFixBboxThreshold || 0.5}" />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-facefix-feather">边缘羽化 (px): <span id="sct-facefix-feather-val">${s.comfyFaceFixFeather || 5}</span></label>
+              <input type="range" id="sct-cfg-facefix-feather" min="0" max="32" step="1" value="${s.comfyFaceFixFeather || 5}" />
+            </div>
+          </div>
+
           <!-- 板块 5: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
@@ -5333,6 +5538,48 @@
       saveSettings({ comfyHiresDenoise: parseFloat(e.target.value) });
     });
 
+    // 脸部修复 (FaceDetailer)
+    container.querySelector('#sct-cfg-facefix-enable').addEventListener('change', async (e) => {
+      saveSettings({ comfyFaceFixEnabled: e.target.checked });
+      if (!e.target.checked) return;
+      // 开启时顺手探一下节点是否可用,免得出图才发现没装 Impact-Pack
+      const host = getCleanComfyHost();
+      cachedFaceDetailerSpec = await fetchFaceDetailerSpec(host);
+      if (!cachedFaceDetailerSpec) {
+        showToast('未检测到 FaceDetailer 节点：需要 ComfyUI-Impact-Pack（含 Ultralytics 检测模型）', 'warning');
+      } else {
+        showToast('已检测到 FaceDetailer 节点，脸部修复可用', 'success');
+      }
+    });
+
+    container.querySelector('#sct-cfg-facefix-detector').addEventListener('input', (e) => saveSettings({ comfyFaceFixDetector: e.target.value.trim() }));
+
+    const faceDetectorSelect = container.querySelector('#sct-facefix-detector-select');
+    if (faceDetectorSelect) {
+      faceDetectorSelect.addEventListener('change', (e) => {
+        if (!e.target.value) return;
+        container.querySelector('#sct-cfg-facefix-detector').value = e.target.value;
+        saveSettings({ comfyFaceFixDetector: e.target.value });
+      });
+    }
+
+    const faceFixSliders = [
+      ['#sct-cfg-facefix-denoise', '#sct-facefix-denoise-val', 'comfyFaceFixDenoise', parseFloat, v => v],
+      ['#sct-cfg-facefix-guide', '#sct-facefix-guide-val', 'comfyFaceFixGuideSize', v => parseInt(v, 10), v => `${v}`],
+      ['#sct-cfg-facefix-threshold', '#sct-facefix-threshold-val', 'comfyFaceFixBboxThreshold', parseFloat, v => v],
+      ['#sct-cfg-facefix-feather', '#sct-facefix-feather-val', 'comfyFaceFixFeather', v => parseInt(v, 10), v => `${v}`],
+    ];
+    faceFixSliders.forEach(([inputSel, valSel, key, parse, format]) => {
+      const input = container.querySelector(inputSel);
+      const label = container.querySelector(valSel);
+      if (!input) return;
+      input.addEventListener('input', (e) => {
+        const value = parse(e.target.value);
+        if (label) label.textContent = format(value);
+        saveSettings({ [key]: value });
+      });
+    });
+
     // 自动配图指令
     container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
     container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
@@ -5381,6 +5628,24 @@
           }
           // 重新刷新 LoRA 列表下拉
           renderLoraList(loraContainer);
+
+          // 脸部检测模型下拉 + FaceDetailer 可用性
+          const detSelect = container.querySelector('#sct-facefix-detector-select');
+          if (detSelect) {
+            const currentFaceDetector = getSettings().comfyFaceFixDetector || '';
+            detSelect.innerHTML = '<option value="">(检测模型列表)</option>' +
+              cachedFaceDetectors.map(d => `<option value="${escapeHtml(d)}" ${d === currentFaceDetector ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('');
+            if (!currentFaceDetector && cachedFaceDetectors.length > 0) {
+              container.querySelector('#sct-cfg-facefix-detector').value = cachedFaceDetectors[0];
+              saveSettings({ comfyFaceFixDetector: cachedFaceDetectors[0] });
+            }
+          }
+          if (cachedFaceDetectors.length === 0) {
+            showToast('未探查到脸部检测模型：脸部修复需要 Ultralytics 模型(放 models/ultralytics/bbox/)', 'warning');
+          }
+          if (!cachedFaceDetailerSpec) {
+            showToast('未检测到 FaceDetailer 节点：脸部修复需安装 ComfyUI-Impact-Pack', 'warning');
+          }
         } else {
           showToast(`已连通 ComfyUI (${host})，服务就绪！`, 'success');
         }
