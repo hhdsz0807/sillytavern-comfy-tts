@@ -2197,6 +2197,12 @@
   inset: 0;
   /* 高于酒馆前端最高层级(实测其用到 999999),否则会被酒馆 UI 遮住只露一点 */
   z-index: 2147483000 !important;
+  /* 清掉可能形成新层叠上下文 / 被祖先影响的属性(弹窗挂在 <html> 下,是最顶层) */
+  transform: none !important;
+  filter: none !important;
+  opacity: 1 !important;
+  contain: none !important;
+  isolation: auto !important;
   display: flex;
   align-items: center;
   justify-content: center;

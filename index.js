@@ -27,6 +27,8 @@
 
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
+  // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
+  const SCT_BUILD = '1.16.6';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **单主体与防污染规则（重要）**：**除非 2 个角色发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个角色主体**（如 1girl 或 1boy，搭配 solo）！英文 tag 必须完全聚焦于该单一角色，**绝对严禁在单人图片中混入其他任何角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止单人图误生其他角色的尾巴、发色或配饰）！\n3. **双人接触互动严格受限**：仅当情节中 2 个角色存在**直接身体接触或明确互动动作**时，才允许使用双主体标签（如 1girl, 1boy 或 2girls），并且必须在 tag 中明确写出两者具体的互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n4. **标签格式**：<image>image###sfw/nsfw, 主体数量(无身体接触必须为1人如 1girl, solo; 有接触时最多2人如 1girl, 1boy), 人物名称(无接触仅填当前1人; 有接触填2人), 动作与特征描述(如有2人必须描述具体互动动作), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【双人身体接触互动示例（仅在有明确接触动作时使用）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
@@ -6511,7 +6513,12 @@
     }
   }
 
-  function closeImageGallery() {    // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
+  function closeImageGallery() {
+    // 关窗时若还在全屏,先退出全屏,避免页面卡在全屏状态
+    try {
+      if (typeof document !== 'undefined' && document.fullscreenElement) document.exitFullscreen?.();
+    } catch (_) {}
+    // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
     document.querySelectorAll('.sct-gallery-overlay').forEach(el => el.remove());
     if (galleryEscHandler) {
       document.removeEventListener('keydown', galleryEscHandler);
@@ -6546,6 +6553,7 @@
             <option value="m">中图</option>
             <option value="l">大图</option>
           </select>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-fullscreen">⛶ 全屏</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-view">📋 列表视图</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-refresh">🔄 刷新</button>
           <span class="sct-gallery-count" id="sct-gallery-count"></span>
@@ -6558,8 +6566,24 @@
         </div>
       </div>
     `;
-    document.body.appendChild(overlay);
+    document.documentElement.appendChild(overlay);
     galleryOverlay = overlay;
+
+    // 有些酒馆主题会给 body 加 transform/filter → 形成层叠上下文把弹窗压住。
+    // 挂到 <html> 上并清掉自身会形成新层叠上下文的属性,是最稳的规避方式。
+    overlay.style.transform = 'none';
+    overlay.style.filter = 'none';
+
+    // 再上一层保险:尝试进入浏览器全屏(top layer 天生高于页面里任何 z-index)
+    const tryFullscreen = () => {
+      try {
+        if (document.fullscreenElement === overlay) return;
+        const p = overlay.requestFullscreen?.({ navigationUI: 'hide' });
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) {}
+    };
+    // 打开即尝试全屏(由点击触发,浏览器一般允许;失败也无副作用,还有手动 ⛶ 按钮)
+    tryFullscreen();
 
     // 关闭通道先全部挂好:即使后面读取/渲染出任何异常,也一定能关掉
     overlay.addEventListener('click', (e) => e.stopPropagation());
@@ -6609,6 +6633,20 @@
       parts.push(`ComfyUI 地址 ${host || '(未配置)'}`);
       if (imgOk || imgFail) parts.push(`图片加载 成功 ${imgOk} / 失败 ${imgFail}`);
       parts.push(`首格尺寸 ${firstCellSize}`);
+      if (document.fullscreenElement === overlay) parts.push('已进入浏览器全屏');
+      // 决定性诊断:弹窗实际尺寸 + 屏幕中心最顶层是谁(能直接看出有没有被挡住)
+      try {
+        const rect = overlay.getBoundingClientRect();
+        parts.push(`弹窗 ${Math.round(rect.width)}x${Math.round(rect.height)}@top${Math.round(rect.top)}`);
+        const cx = Math.round(window.innerWidth / 2);
+        const cy = Math.round(window.innerHeight / 2);
+        const topEl = document.elementFromPoint(cx, cy);
+        const cls = topEl ? String(typeof topEl.className === 'string' ? topEl.className : '').split(/\s+/).slice(0, 2).join('.') : '';
+        const desc = topEl ? `${topEl.tagName.toLowerCase()}${cls ? '.' + cls : ''}` : '无';
+        const isMine = !!(topEl && (topEl === overlay || overlay.contains(topEl)));
+        parts.push(`屏心最上层 ${desc}${isMine ? '(是本弹窗 ✓)' : '(⚠️ 被它盖住了)'}`);
+      } catch (_) {}
+      parts.push(`代码版本 v${SCT_BUILD}`);
       if (/127\.0\.0\.1|localhost/i.test(host) && pageHost && !/^(127\.0\.0\.1|localhost)$/i.test(pageHost)) {
         parts.push(`⚠️ 地址填的是 127.0.0.1,但你正从 ${pageHost} 访问 —— 手机上这指向手机自己,图片必然加载不出来!请把 ComfyUI 地址改成电脑局域网 IP(如 http://192.168.1.6:8188)`);
       } else if (imgFail > 0 && imgOk === 0) {
@@ -6811,6 +6849,29 @@
       applyThumbSize();
     });
     applyThumbSize();
+    // ⛶ 全屏开关:进全屏后由浏览器 top layer 渲染,任何页面 CSS/z-index 都盖不住
+    const fsBtn = overlay.querySelector('#sct-gallery-fullscreen');
+    const syncFsBtn = () => {
+      if (fsBtn) fsBtn.textContent = document.fullscreenElement === overlay ? '⤡ 退出全屏' : '⛶ 全屏';
+    };
+    fsBtn?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        if (document.fullscreenElement === overlay) await document.exitFullscreen();
+        else await overlay.requestFullscreen?.({ navigationUI: 'hide' });
+      } catch (err) {
+        showToast(`切换全屏失败:${err.message}(浏览器可能不允许)`, 'warning');
+      }
+      syncFsBtn();
+      renderStatus();
+    });
+    document.addEventListener('fullscreenchange', () => {
+      syncFsBtn();
+      try {
+        renderStatus();
+      } catch (_) {}
+    });
+    syncFsBtn();
     overlay.querySelector('#sct-gallery-view')?.addEventListener('click', (e) => {
       galleryView = galleryView === 'grid' ? 'list' : 'grid';
       grid.classList.toggle('is-list', galleryView === 'list');
