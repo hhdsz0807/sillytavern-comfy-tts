@@ -285,6 +285,13 @@
     return order.map(k => map.get(k));
   }
 
+  // 轮播最多保留张数：反复「重新生成」时旧图会持续累积，给个上限免得卡片无限膨胀
+  const CAROUSEL_MAX_IMAGES = 12;
+  function capCarouselImages(list) {
+    const arr = Array.isArray(list) ? list : [];
+    return arr.length > CAROUSEL_MAX_IMAGES ? arr.slice(arr.length - CAROUSEL_MAX_IMAGES) : arr;
+  }
+
   // 获取当前酒馆会话/角色作用域唯一前缀
   function getChatScopeKey() {
     const ctx = getSTContext();
@@ -3071,15 +3078,8 @@
         e.preventDefault();
         e.stopPropagation();
         const tk = container.dataset.sctTaskKey;
-        const mesId = container.dataset.sctMesId || container.closest('.mes')?.getAttribute('mesid');
-        const slotIdx = container.dataset.sctSlotIdx || '0';
-        if (tk) {
-          sctDrawingTasks.delete(tk);
-          removePersistentTask(tk);
-        }
-        if (mesId !== undefined && mesId !== null) {
-          removeChatMessageExtraImages(mesId, slotIdx);
-        }
+        // 只清运行态:已生成的图保留在轮播里(新图会追加到末尾,前面的图仍可翻回去对比)
+        if (tk) sctDrawingTasks.delete(tk);
         triggerComfyDraw(promptText, container, activeLoras, tk);
       });
     }
@@ -3428,6 +3428,21 @@
     return fallbackEl;
   }
 
+  // 取当前卡片已有的图(轮播状态 → 内存任务 → 消息 extra 依次兜底)
+  // 用途:「重新生成」时把旧图留在轮播里供翻页对比,而不是被新图替换掉
+  function collectExistingImages(container, taskKey) {
+    const cardId = container?.dataset?.sctCardId;
+    const fromState = cardId ? cardStateMap.get(cardId)?.images : null;
+    if (fromState && fromState.length) return fromState.slice();
+    const fromMemory = taskKey ? sctDrawingTasks.get(taskKey)?.images : null;
+    if (fromMemory && fromMemory.length) return fromMemory.slice();
+    const mesId = container?.dataset?.sctMesId || container?.closest('.mes')?.getAttribute('mesid');
+    const slotIdx = container?.dataset?.sctSlotIdx || '0';
+    const fromExtra = mesId !== undefined && mesId !== null ? getChatMessageExtraImages(mesId, slotIdx)?.images : null;
+    if (fromExtra && fromExtra.length) return fromExtra.slice();
+    return [];
+  }
+
   // 触发 ComfyUI 生图任务 (带唯一 taskKey 去重锁与活跃 DOM 动态绑定)
   async function triggerComfyDraw(promptText, container, explicitActiveLoras = null, taskKey = null) {
     const s = getSettings();
@@ -3435,6 +3450,9 @@
       showToast('ComfyUI 绘图功能未开启', 'warning');
       return;
     }
+
+    // 记下本轮之前已有的图:「重新生成」时它们会留在轮播里(可翻回去对比),而不是被新图顶掉
+    const previousImages = collectExistingImages(container, taskKey);
 
     if (taskKey) {
       container.dataset.sctTaskKey = taskKey;
@@ -3611,25 +3629,37 @@
             clearInterval(pollTimer);
             if (ws) ws.close();
 
-            const images = foundImages.map((img) => 
-              `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`
+            const newImages = foundImages.map((img) =>
+              `${comfyHost}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}&t=${Date.now()}`
             );
+            // 追加式合并:旧图在前、新图在后(同一文件只留一次),总张数上限 12
+            const mergedImages = capCarouselImages(dedupeComfyImages([...previousImages, ...newImages]));
 
             if (taskKey) {
-              sctDrawingTasks.set(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
-              savePersistentTask(taskKey, { status: 'completed', images: images, prompt: promptText, activeLoras: activeLoras });
+              sctDrawingTasks.set(taskKey, { status: 'completed', images: mergedImages, prompt: promptText, activeLoras: activeLoras });
+              savePersistentTask(taskKey, { status: 'completed', images: mergedImages, prompt: promptText, activeLoras: activeLoras });
               const mesId = container.dataset.sctMesId || container.closest('.mes')?.getAttribute('mesid');
               const slotIdx = container.dataset.sctSlotIdx || '0';
               if (mesId !== undefined && mesId !== null) {
-                saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras);
+                saveChatMessageExtraImages(mesId, slotIdx, mergedImages, promptText, activeLoras);
               }
             }
             // 全新一轮生成：清空上一轮的重绘标记，避免后续重绘误剔除新图
             delete container.dataset.sctLastRepaintUrl;
 
             const target = getActiveCardContainer(taskKey, container);
-            renderCarouselCard(target, images, promptText, activeLoras);
-            showToast(`ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个 LoRA)` : ''}`, 'success');
+            // 自动定位到「本轮新图的第一张」:新图在末尾,往前翻就是之前生成的图
+            const idxCardId = target?.dataset?.sctCardId || container.dataset.sctCardId;
+            const idxState = idxCardId ? cardStateMap.get(idxCardId) : null;
+            if (idxState) {
+              idxState.currentIdx = Math.max(0, mergedImages.length - newImages.length);
+            }
+            renderCarouselCard(target, mergedImages, promptText, activeLoras);
+            const historyCount = mergedImages.length - newImages.length;
+            showToast(
+              `ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个 LoRA)` : ''}${historyCount > 0 ? ` · 轮播保留历史 ${historyCount} 张,可往前翻` : ''}`,
+              'success'
+            );
           }
         } catch (_) {}
       }, 1500);
