@@ -2430,3 +2430,14 @@
   background: var(--sct-overlay);
   backdrop-filter: blur(3px);
 }
+/* 图片管理底部大号关闭按钮(手机上好点) */
+.sct-gallery-foot {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--sct-line);
+}
+
+.sct-gallery-foot .sct-comfy-btn {
+  min-width: 200px;
+}

@@ -6413,6 +6413,8 @@
   let gallerySource = 'all';
   let galleryKeyword = '';
   let galleryEscHandler = null;
+  // 已在界面里隐藏的图(ComfyUI 没有删除文件的接口,只能隐藏)
+  const galleryHiddenKeys = new Set();
 
   /** 同步来源:插件 localStorage 记录 + 当前聊天消息 extra */
   function collectLocalGalleryItems(source) {
@@ -6521,13 +6523,26 @@
         </div>
         <div class="sct-gallery-grid" id="sct-gallery-grid"></div>
         <div class="sct-gallery-hint" id="sct-gallery-hint"></div>
+        <div class="sct-gallery-foot">
+          <button type="button" class="sct-comfy-btn" id="sct-gallery-close-bottom">✕ 关闭图片管理</button>
+        </div>
       </div>
     `;
     document.body.appendChild(overlay);
     galleryOverlay = overlay;
 
+    // 关闭通道先全部挂好:即使后面读取/渲染出任何异常,也一定能关掉
     overlay.addEventListener('click', (e) => e.stopPropagation());
-    overlay.querySelector('#sct-gallery-close').addEventListener('click', closeImageGallery);
+    overlay.querySelector('#sct-gallery-close').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeImageGallery();
+    });
+    overlay.querySelector('#sct-gallery-close-bottom').addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeImageGallery();
+    });
     // 点背景关闭(点弹窗内部不关)
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) closeImageGallery();
@@ -6540,7 +6555,7 @@
     const hintEl = overlay.querySelector('#sct-gallery-hint');
     const refreshBtn = overlay.querySelector('#sct-gallery-refresh');
 
-    const renderGrid = () => {
+    const renderGridInner = () => {
       if (!grid.isConnected) return; // 遮罩已被关闭,不再做无谓渲染
       const kw = galleryKeyword.trim().toLowerCase();
       const list = galleryItems
@@ -6612,6 +6627,17 @@
           });
         });
       });
+    };
+
+    // 安全渲染包装:渲染出错只提示,绝不让窗口变成关不掉的死界面
+    const renderGrid = () => {
+      try {
+        renderGridInner();
+      } catch (err) {
+        try {
+          grid.innerHTML = `<div class="sct-gallery-empty">界面渲染出错:${escapeHtml(err?.message || String(err))}(可点「🔄 刷新」重试,或直接关闭)</div>`;
+        } catch (_) {}
+      }
     };
 
     const loadLocal = () => {
