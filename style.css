@@ -1,25 +1,108 @@
 /* ==========================================================================
    SillyTavern ComfyUI 绘图 & TTS 语音朗读插件样式表 (sillytavern-comfy-tts)
+   设计语言: 借鉴 ST-BaiBai-Image「柏宝绘」—— 海军黑底 × 青瓷蓝绿强调,
+   token 驱动 (--sct-*),所有颜色/圆角/阴影/动效从根变量取,组件不写死颜色。
    ========================================================================== */
 
 /* --------------------------------------------------------------------------
-   1. 划选文本浮动朗读胶囊 (Floating Selection TTS Capsule)
+   0. 设计令牌 (Design Tokens) —— 夜 · 海军黑 × 青瓷蓝绿
+   -------------------------------------------------------------------------- */
+:root {
+  /* 字体 */
+  --sct-font-sans: 'MiSans', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', system-ui, sans-serif;
+  --sct-font-mono: 'SF Mono', 'JetBrains Mono', 'DejaVu Sans Mono', Menlo, Consolas, monospace;
+
+  /* 圆角: 更大、更柔 */
+  --sct-radius-win: 16px;
+  --sct-radius: 10px;
+  --sct-radius-sm: 8px;
+  --sct-radius-pill: 999px;
+
+  /* 动效 */
+  --sct-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --sct-dur: 0.28s;
+
+  /* 夜 · 海军黑底 */
+  --sct-bg: #37353E;
+  --sct-surface: #44444E;
+  --sct-surface-2: #4E4D58;
+  --sct-ink: #D3DAD9;
+  --sct-ink-soft: #B0B5B4;
+  --sct-ink-muted: #8E9392;
+  --sct-accent: #76ABAE;
+  --sct-accent-soft: #76ABAE26;
+  --sct-accent-ink: #2C3536;
+  --sct-line: #53525D;
+  --sct-line-strong: #686774;
+  --sct-danger: #D96B6B;
+  --sct-danger-soft: #D96B6B26;
+  --sct-warning: #D9B358;
+  --sct-warning-soft: #D9B35826;
+  --sct-overlay: rgba(31, 30, 36, 0.7);
+  --sct-shadow: 0 20px 56px -22px rgba(0, 0, 0, 0.65), 0 4px 14px -8px rgba(0, 0, 0, 0.5);
+
+  /* 压在图片上方的通用解 (半透明黑 + 磨砂), 与主题无关 */
+  --sct-fab-bg: rgba(0, 0, 0, 0.55);
+  --sct-fab-ink: rgba(255, 255, 255, 0.92);
+}
+
+/* --------------------------------------------------------------------------
+   1. 基础设施: 字体 / 滚动条 / 选择 / 减少动效
+   -------------------------------------------------------------------------- */
+.sct-settings-wrapper,
+.sct-comfy-card,
+.sct-inpaint-dialog,
+.sct-lightbox-content,
+.sct-tts-pill-btn,
+.sct-global-tts-badge,
+.sct-mes-action-btn {
+  font-family: var(--sct-font-sans);
+  box-sizing: border-box;
+}
+
+/* 插件自己的 UI 内统一隐藏滚动条 (保留滚动能力, 对齐柏宝绘) */
+.sct-settings-wrapper *,
+.sct-comfy-card *,
+.sct-inpaint-dialog *,
+.sct-prompt-pack *,
+.sct-region-chips * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.sct-settings-wrapper *::-webkit-scrollbar,
+.sct-comfy-card *::-webkit-scrollbar,
+.sct-inpaint-dialog *::-webkit-scrollbar,
+.sct-prompt-pack::-webkit-scrollbar,
+.sct-region-chips::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sct-settings-wrapper *,
+  .sct-comfy-card *,
+  .sct-inpaint-dialog * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   2. 划选文本浮动朗读胶囊 (Floating Selection TTS Capsule)
    -------------------------------------------------------------------------- */
 @keyframes sctPulseBlue {
-  0% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.5); }
-  70% { box-shadow: 0 0 0 10px rgba(56, 189, 248, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(118, 171, 174, 0.45); }
+  70% { box-shadow: 0 0 0 10px rgba(118, 171, 174, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(118, 171, 174, 0); }
 }
 
 @keyframes sctPulseRed {
-  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
-  70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-}
-
-@keyframes sctShimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% { box-shadow: 0 0 0 0 rgba(217, 107, 107, 0.55); }
+  70% { box-shadow: 0 0 0 12px rgba(217, 107, 107, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(217, 107, 107, 0); }
 }
 
 .sct-tts-pill-btn {
@@ -29,16 +112,17 @@
   align-items: center;
   gap: 7px;
   padding: 8px 16px;
-  border-radius: 22px;
+  border-radius: var(--sct-radius-pill);
   font-size: 13px;
   font-weight: 600;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--sct-font-sans);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
-  transition: transform 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  transition: transform 0.15s var(--sct-ease), opacity 0.18s var(--sct-ease),
+    background var(--sct-dur) var(--sct-ease), border-color var(--sct-dur) var(--sct-ease);
+  box-shadow: var(--sct-shadow);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   line-height: 1.4;
@@ -49,31 +133,31 @@
 }
 
 .sct-tts-idle {
-  background: rgba(18, 22, 32, 0.94);
-  border: 1px solid rgba(56, 189, 248, 0.6);
-  color: #38bdf8;
+  background: rgba(55, 53, 62, 0.94);
+  border: 1px solid var(--sct-accent);
+  color: var(--sct-accent);
 }
 
 .sct-tts-idle:hover {
-  background: rgba(24, 30, 44, 0.98);
-  border-color: #38bdf8;
-  color: #7dd3fc;
+  background: var(--sct-surface);
+  border-color: var(--sct-accent);
+  color: var(--sct-ink);
 }
 
 .sct-tts-playing {
-  background: rgba(38, 16, 20, 0.94);
-  border: 1px solid rgba(239, 68, 68, 0.7);
-  color: #f87171;
+  background: rgba(55, 53, 62, 0.94);
+  border: 1px solid var(--sct-danger);
+  color: var(--sct-danger);
   animation: sctPulseRed 1.8s infinite;
 }
 
 .sct-tts-playing:hover {
-  background: rgba(48, 18, 24, 0.98);
-  color: #fca5a5;
+  background: var(--sct-surface);
+  color: var(--sct-danger);
 }
 
 /* --------------------------------------------------------------------------
-   2. 全局播放状态指示器 (Global Playing Floating Badge)
+   3. 全局播放状态指示器 (Global Playing Floating Badge)
    -------------------------------------------------------------------------- */
 .sct-global-tts-badge {
   position: fixed !important;
@@ -84,13 +168,13 @@
   align-items: center;
   gap: 8px;
   padding: 8px 16px;
-  border-radius: 20px;
-  background: rgba(18, 20, 30, 0.95);
-  border: 1px solid rgba(56, 189, 248, 0.6);
-  color: #38bdf8;
+  border-radius: var(--sct-radius-pill);
+  background: rgba(55, 53, 62, 0.95);
+  border: 1px solid var(--sct-accent);
+  color: var(--sct-accent);
   font-size: 12px;
   font-weight: 600;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--sct-shadow);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   cursor: pointer;
@@ -100,12 +184,12 @@
 }
 
 .sct-global-tts-badge:hover {
-  border-color: #f87171;
-  color: #f87171;
+  border-color: var(--sct-danger);
+  color: var(--sct-danger);
 }
 
 /* --------------------------------------------------------------------------
-   3. 消息操作栏自定义按钮 (Message Bar Action Buttons)
+   4. 消息操作栏自定义按钮 (Message Bar Action Buttons)
    -------------------------------------------------------------------------- */
 .sct-mes-action-btn {
   display: inline-flex;
@@ -114,27 +198,28 @@
   cursor: pointer;
   padding: 3px 7px;
   margin: 0 2px;
-  border-radius: 6px;
+  border-radius: var(--sct-radius-sm);
   font-size: 13px;
-  transition: all 0.15s ease;
+  transition: background var(--sct-dur) var(--sct-ease), opacity var(--sct-dur) var(--sct-ease),
+    transform 0.15s var(--sct-ease);
   user-select: none;
   opacity: 0.75;
 }
 
 .sct-mes-action-btn:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--sct-surface-2);
   transform: translateY(-1px);
 }
 
 .sct-mes-action-btn.sct-active {
   opacity: 1;
-  color: #f87171 !important;
+  color: var(--sct-danger) !important;
   animation: sctPulseRed 1.8s infinite;
 }
 
 /* --------------------------------------------------------------------------
-   4. ComfyUI 轮播展示卡片 (ComfyUI Carousel & Container)
+   5. ComfyUI 轮播展示卡片 (ComfyUI Carousel & Container) —— 图即卡片
    -------------------------------------------------------------------------- */
 .sct-comfy-card-container {
   margin: 12px 0 8px 0;
@@ -158,17 +243,31 @@
 
 .sct-comfy-card {
   position: relative;
-  border-radius: 14px;
+  border-radius: var(--sct-radius);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(18, 20, 28, 0.85);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  border: 1px solid var(--sct-line);
+  background: var(--sct-surface);
+  box-shadow: var(--sct-shadow);
+  transition: border-color var(--sct-dur) var(--sct-ease), box-shadow var(--sct-dur) var(--sct-ease);
 }
 
 .sct-comfy-card:hover {
-  border-color: rgba(168, 85, 247, 0.4);
-  box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45);
+  border-color: var(--sct-line-strong);
+}
+
+/* 生成前引导卡 (历史消息的「立即开始生图」占位) */
+.sct-comfy-card.sct-guide-card {
+  padding: 14px;
+  text-align: center;
+}
+
+.sct-guide-text {
+  font-size: 13px;
+  color: var(--sct-accent);
+}
+
+.sct-guide-row {
+  margin-top: 10px;
 }
 
 /* 头部信息条 */
@@ -176,12 +275,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 14px;
-  background: rgba(0, 0, 0, 0.3);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 12px;
+  background: transparent;
+  border-bottom: 1px solid var(--sct-line);
   font-size: 12px;
   font-weight: 600;
-  color: #c084fc;
+  color: var(--sct-ink-soft);
 }
 
 .sct-comfy-card-header .sct-title {
@@ -192,11 +291,25 @@
 
 .sct-comfy-card-header .sct-prompt-preview {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--sct-ink-muted);
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 表头 LoRA 徽章 (小胶囊) */
+.sct-lora-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--sct-radius-pill);
+  color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 图片展示区 */
@@ -207,7 +320,7 @@
   justify-content: center;
   min-height: 200px;
   max-height: 520px;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--sct-bg);
   overflow: hidden;
 }
 
@@ -218,27 +331,28 @@
   display: block;
   margin: 0 auto;
   cursor: zoom-in;
-  transition: transform 0.2s ease;
+  transition: transform var(--sct-dur) var(--sct-ease);
 }
 
 .sct-comfy-viewport img:hover {
   transform: scale(1.01);
 }
 
-/* 右上角计数徽章 */
+/* 右上角计数徽章: 压在图上的通用解 (半透明黑 + 磨砂小胶囊) */
 .sct-comfy-counter-badge {
   position: absolute;
-  top: 10px;
-  right: 12px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 3px 9px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  top: 8px;
+  right: 8px;
+  background: var(--sct-fab-bg);
+  color: var(--sct-fab-ink);
+  font-size: 10.5px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 10px;
+  border-radius: var(--sct-radius-pill);
+  border: none;
   pointer-events: none;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
 }
 
 /* 控制底栏 */
@@ -246,34 +360,111 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 14px;
-  background: rgba(0, 0, 0, 0.4);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 12px;
+  background: transparent;
+  border-top: 1px solid var(--sct-line);
   flex-wrap: wrap;
   gap: 6px;
 }
 
+/* 通用按钮 —— 对齐 bbi-btn: 面色底 + 细线框 + 强调 hover */
 .sct-comfy-btn {
-  background: rgba(255, 255, 255, 0.08);
-  color: #f1f5f9;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  padding: 5px 12px;
-  font-size: 12px;
+  background: var(--sct-surface-2);
+  color: var(--sct-ink);
+  border: 1px solid var(--sct-line-strong);
+  border-radius: var(--sct-radius-sm);
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-family: var(--sct-font-sans);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background var(--sct-dur) var(--sct-ease),
+    border-color var(--sct-dur) var(--sct-ease),
+    color var(--sct-dur) var(--sct-ease);
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .sct-comfy-btn:hover {
-  background: rgba(255, 255, 255, 0.16);
-  border-color: rgba(255, 255, 255, 0.28);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
 }
 
 .sct-comfy-btn:active {
   transform: scale(0.96);
+}
+
+.sct-comfy-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* 小号按钮 (bbi-btn-sm) */
+.sct-comfy-btn.sct-btn-xs {
+  padding: 4px 9px;
+  font-size: 11.5px;
+}
+
+/* 危险动作按钮 (bbi danger) */
+.sct-comfy-btn.sct-btn-danger {
+  background: var(--sct-danger-soft);
+  border-color: rgba(217, 107, 107, 0.4);
+  color: var(--sct-danger);
+}
+
+.sct-comfy-btn.sct-btn-danger:hover {
+  border-color: var(--sct-danger);
+  color: var(--sct-danger);
+}
+
+/* 生成中卡片的中止按钮 (无 sct-comfy-btn 基类的独立小危险钮) */
+.sct-cancel-draw-btn {
+  display: inline-flex;
+  align-items: center;
+  background: var(--sct-danger-soft);
+  border: 1px solid rgba(217, 107, 107, 0.4);
+  color: var(--sct-danger);
+  font-family: var(--sct-font-sans);
+  font-size: 11.5px;
+  padding: 4px 12px;
+  border-radius: var(--sct-radius-pill);
+  cursor: pointer;
+  transition: all 0.15s var(--sct-ease);
+}
+
+.sct-cancel-draw-btn:hover {
+  border-color: var(--sct-danger);
+  color: var(--sct-danger);
+}
+
+/* 主强调按钮 (bbi-btn-primary: 青瓷底 + 深墨字) */
+.sct-primary-btn {
+  background: var(--sct-accent) !important;
+  border-color: var(--sct-accent) !important;
+  color: var(--sct-accent-ink) !important;
+  font-weight: 600 !important;
+  padding: 6px 16px !important;
+}
+
+.sct-primary-btn:hover {
+  background: var(--sct-accent) !important;
+  opacity: 0.9;
+  color: var(--sct-accent-ink) !important;
+  box-shadow: none !important;
+}
+
+/* 生成前引导主按钮 */
+.sct-start-draw {
+  background: var(--sct-accent);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent-ink);
+  font-weight: 600;
+}
+
+.sct-start-draw:hover {
+  opacity: 0.9;
+  color: var(--sct-accent-ink);
 }
 
 /* 轮播圆点 */
@@ -287,36 +478,39 @@
   width: 6px;
   height: 6px;
   border-radius: 3px;
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--sct-line-strong);
+  border: none;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--sct-dur) var(--sct-ease);
+  padding: 0;
 }
 
 .sct-comfy-dot.active {
   width: 16px;
-  background: #a855f7;
+  background: var(--sct-accent);
 }
 
-/* 生成中 Loading 状态 */
+/* 生成中 Loading 状态 (磨砂面板语) */
 .sct-comfy-loading {
-  padding: 24px 20px;
+  padding: 26px 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.08), rgba(168, 85, 247, 0.08));
-  border: 1px dashed rgba(168, 85, 247, 0.35);
-  border-radius: 14px;
+  background: var(--sct-surface-2);
+  border: 1px dashed var(--sct-line-strong);
+  border-radius: var(--sct-radius-sm);
 }
 
-.sct-spinner {
-  width: 28px;
-  height: 28px;
-  border: 3px solid rgba(168, 85, 247, 0.2);
-  border-top-color: #a855f7;
+.sct-spinner,
+.sct-sam-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(118, 171, 174, 0.28);
+  border-top-color: var(--sct-accent);
   border-radius: 50%;
-  animation: sctSpin 0.9s linear infinite;
+  animation: sctSpin 0.8s linear infinite;
 }
 
 @keyframes sctSpin {
@@ -324,23 +518,23 @@
 }
 
 .sct-loading-text {
-  font-size: 13px;
-  color: #c084fc;
+  font-size: 12.5px;
+  color: var(--sct-ink-soft);
   font-weight: 500;
 }
 
 .sct-loading-hint {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--sct-ink-muted);
 }
 
 /* 错误状态 */
 .sct-comfy-error {
   padding: 16px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 12px;
-  color: #f87171;
+  background: var(--sct-danger-soft);
+  border: 1px solid rgba(217, 107, 107, 0.35);
+  border-radius: var(--sct-radius);
+  color: var(--sct-danger);
   font-size: 13px;
 }
 
@@ -352,8 +546,21 @@
   margin-bottom: 4px;
 }
 
+.sct-error-desc {
+  font-size: 12px;
+  color: var(--sct-ink-soft);
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+
+.sct-error-btn-row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
 /* --------------------------------------------------------------------------
-   5. 全屏大图灯箱预览 (Fullscreen Image Lightbox)
+   6. 全屏大图灯箱预览 (Fullscreen Image Lightbox)
    -------------------------------------------------------------------------- */
 .sct-lightbox-overlay {
   position: fixed !important;
@@ -365,7 +572,7 @@
   height: 100vh !important;
   height: 100dvh !important;
   z-index: 2147483647 !important;
-  background: rgba(10, 10, 15, 0.94);
+  background: var(--sct-overlay);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   display: flex;
@@ -373,7 +580,7 @@
   justify-content: center;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s var(--sct-ease);
   padding: 16px;
   box-sizing: border-box;
 }
@@ -399,8 +606,8 @@
   max-height: 72vh;
   max-height: 72dvh;
   object-fit: contain;
-  border-radius: 8px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+  border-radius: var(--sct-radius);
+  box-shadow: var(--sct-shadow);
 }
 
 .sct-lightbox-toolbar {
@@ -416,29 +623,33 @@
   position: absolute;
   top: -38px;
   right: -8px;
-  width: 32px;
-  height: 32px;
-  background: rgba(255, 255, 255, 0.15);
+  width: 30px;
+  height: 30px;
+  background: var(--sct-fab-bg);
   border: none;
-  border-radius: 50%;
-  color: #fff;
-  font-size: 16px;
+  border-radius: var(--sct-radius-pill);
+  color: var(--sct-fab-ink);
+  font-size: 15px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.15s ease;
+  backdrop-filter: blur(4px);
+  transition: background 0.15s var(--sct-ease);
 }
 
 .sct-lightbox-close-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(0, 0, 0, 0.75);
 }
 
 /* --------------------------------------------------------------------------
-   6. 扩展设置面板容器 (Extension Settings Panel)
+   7. 扩展设置面板容器 (Extension Settings Panel) —— 窗口面板语
    -------------------------------------------------------------------------- */
 .sct-settings-wrapper {
   padding: 0 4px;
+  font-size: 13px;
+  color: var(--sct-ink);
+  line-height: 1.6;
 }
 
 .sct-settings-wrapper .inline-drawer-content {
@@ -446,10 +657,10 @@
 }
 
 .sct-settings-section {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 14px 16px;
+  background: var(--sct-surface);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-win);
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -457,18 +668,18 @@
 }
 
 .sct-settings-section-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #38bdf8;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--sct-ink);
   display: flex;
   align-items: center;
   gap: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--sct-line);
   padding-bottom: 8px;
 }
 
 .sct-settings-section-title.purple {
-  color: #c084fc;
+  color: var(--sct-accent);
 }
 
 .sct-setting-row {
@@ -477,11 +688,14 @@
   justify-content: space-between;
   gap: 12px;
   font-size: 13px;
+  padding: 6px 0;
 }
 
 .sct-setting-row label {
   cursor: pointer;
   user-select: none;
+  font-weight: 600;
+  color: var(--sct-ink);
 }
 
 .sct-setting-col {
@@ -492,13 +706,15 @@
 }
 
 .sct-setting-col label {
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--sct-ink);
 }
 
 .sct-hint {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.45);
+  font-size: 11.5px;
+  color: var(--sct-ink-muted);
+  line-height: 1.6;
   margin-top: 2px;
 }
 
@@ -506,10 +722,102 @@
   display: flex;
   gap: 8px;
   margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+/* 表单控件 —— 对齐 bbi-input */
+.sct-settings-wrapper input[type="text"],
+.sct-settings-wrapper input[type="number"],
+.sct-settings-wrapper input[type="password"],
+.sct-settings-wrapper textarea,
+.sct-settings-wrapper select,
+.sct-inpaint-dialog input[type="text"],
+.sct-inpaint-dialog input[type="number"],
+.sct-inpaint-dialog textarea,
+.sct-inpaint-dialog select {
+  background: var(--sct-surface-2) !important;
+  border: 1px solid var(--sct-line-strong) !important;
+  border-radius: var(--sct-radius-sm) !important;
+  color: var(--sct-ink) !important;
+  font-family: var(--sct-font-sans);
+  transition: border-color var(--sct-dur) var(--sct-ease), box-shadow var(--sct-dur) var(--sct-ease);
+}
+
+.sct-settings-wrapper input:focus,
+.sct-settings-wrapper textarea:focus,
+.sct-settings-wrapper select:focus,
+.sct-inpaint-dialog input:focus,
+.sct-inpaint-dialog textarea:focus,
+.sct-inpaint-dialog select:focus {
+  border-color: var(--sct-accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--sct-accent-soft) !important;
+}
+
+.sct-settings-wrapper select,
+.sct-inpaint-dialog select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px !important;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238E9392' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9.5 12 15.5 18 9.5'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+}
+
+/* 复选框与滑块: 主题色 (原生 accent-color, 轻量不抢戏) */
+.sct-settings-wrapper input[type="checkbox"],
+.sct-inpaint-dialog input[type="checkbox"] {
+  accent-color: var(--sct-accent);
+  cursor: pointer;
+}
+
+.sct-settings-wrapper input[type="range"],
+.sct-inpaint-dialog input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 4px;
+  margin: 6px 0 10px;
+  border-radius: var(--sct-radius-pill);
+  background: var(--sct-surface-2);
+  outline: none;
+  cursor: pointer;
+}
+
+.sct-settings-wrapper input[type="range"]::-webkit-slider-thumb,
+.sct-inpaint-dialog input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--sct-radius-pill);
+  background: var(--sct-accent);
+  border: 2px solid var(--sct-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.sct-settings-wrapper input[type="range"]::-moz-range-thumb,
+.sct-inpaint-dialog input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--sct-radius-pill);
+  background: var(--sct-accent);
+  border: 2px solid var(--sct-surface);
+}
+
+.sct-lora-strength {
+  width: 100% !important;
+}
+
+.sct-lora-str-val {
+  color: var(--sct-accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 /* --------------------------------------------------------------------------
-   7. 多 LoRA 管理卡片与尺寸芯片 (LoRA Cards & Dimension Chips)
+   8. 多 LoRA 管理卡片与尺寸芯片 (LoRA Cards & Dimension Chips)
    -------------------------------------------------------------------------- */
 .sct-lora-list {
   display: flex;
@@ -519,23 +827,24 @@
 }
 
 .sct-lora-card {
-  background: rgba(20, 20, 32, 0.6);
-  border: 1px solid rgba(168, 85, 247, 0.25);
-  border-radius: 10px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius);
   padding: 4px;
-  transition: all 0.2s ease;
+  transition: background var(--sct-dur) var(--sct-ease), border-color var(--sct-dur) var(--sct-ease),
+    box-shadow var(--sct-dur) var(--sct-ease);
   position: relative;
   overflow: hidden;
 }
 
 .sct-lora-card:hover {
-  border-color: rgba(168, 85, 247, 0.5);
+  border-color: var(--sct-line-strong);
 }
 
 .sct-lora-card.expanded {
-  background: rgba(24, 20, 38, 0.85);
-  border-color: rgba(168, 85, 247, 0.65);
-  box-shadow: 0 4px 16px rgba(168, 85, 247, 0.15);
+  background: var(--sct-surface-2);
+  border-color: var(--sct-accent);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
 }
 
 /* 表面层（仅展示角色关键词与精简状态，整行可点击） */
@@ -545,13 +854,13 @@
   justify-content: space-between;
   padding: 8px 10px;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: var(--sct-radius-sm);
   user-select: none;
-  transition: background 0.15s ease;
+  transition: background 0.15s var(--sct-ease);
 }
 
 .sct-lora-summary-bar:hover {
-  background: rgba(168, 85, 247, 0.12);
+  background: var(--sct-accent-soft);
 }
 
 .sct-lora-summary-main {
@@ -577,11 +886,11 @@
 .sct-lora-kw-text {
   font-size: 13px;
   font-weight: 600;
-  color: #f1f5f9;
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(99, 102, 241, 0.2));
-  border: 1px solid rgba(168, 85, 247, 0.4);
-  border-radius: 6px;
-  padding: 3px 10px;
+  color: var(--sct-ink);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -591,26 +900,26 @@
 
 .sct-lora-kw-empty {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
+  color: var(--sct-ink-muted);
 }
 
 .sct-badge-always {
   font-size: 10px;
-  color: #38bdf8;
-  background: rgba(56, 189, 248, 0.15);
-  border: 1px solid rgba(56, 189, 248, 0.35);
-  border-radius: 4px;
-  padding: 2px 6px;
+  color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+  border: 1px solid transparent;
+  border-radius: var(--sct-radius-pill);
+  padding: 2px 8px;
   flex-shrink: 0;
 }
 
 .sct-badge-disabled {
   font-size: 10px;
-  color: #94a3b8;
-  background: rgba(148, 163, 184, 0.15);
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 4px;
-  padding: 2px 6px;
+  color: var(--sct-ink-muted);
+  background: transparent;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-pill);
+  padding: 2px 8px;
   flex-shrink: 0;
 }
 
@@ -624,24 +933,24 @@
 .sct-lora-chevron {
   font-size: 11px;
   font-weight: 500;
-  color: #c084fc;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(168, 85, 247, 0.25);
-  border-radius: 6px;
+  color: var(--sct-ink-soft);
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-sm);
   padding: 3px 8px;
-  transition: all 0.15s ease;
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-lora-summary-bar:hover .sct-lora-chevron {
-  background: rgba(168, 85, 247, 0.2);
-  border-color: rgba(168, 85, 247, 0.5);
-  color: #fff;
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
 }
 
 /* 详情层（展开后展示全部完整设置） */
 .sct-lora-detail-body {
-  padding: 10px 10px 8px 10px;
-  border-top: 1px dashed rgba(168, 85, 247, 0.25);
+  padding: 10px;
+  border-top: 1px dashed var(--sct-line);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -654,41 +963,43 @@
   justify-content: space-between;
   margin-top: 4px;
   padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--sct-line);
 }
 
 .sct-lora-del-btn {
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #f87171;
-  border-radius: 6px;
+  background: var(--sct-danger-soft);
+  border: 1px solid rgba(217, 107, 107, 0.4);
+  color: var(--sct-danger);
+  border-radius: var(--sct-radius-sm);
   padding: 3px 10px;
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-lora-del-btn:hover {
-  background: rgba(239, 68, 68, 0.3);
-  color: #fff;
+  border-color: var(--sct-danger);
+  color: var(--sct-danger);
 }
 
 .sct-lora-collapse-btn {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #e2e8f0;
-  border-radius: 6px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  color: var(--sct-ink-soft);
+  border-radius: var(--sct-radius-sm);
   padding: 3px 10px;
   font-size: 11px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-lora-collapse-btn:hover {
-  background: rgba(168, 85, 247, 0.2);
-  border-color: #a855f7;
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
 }
 
+/* 尺寸/选项芯片 */
 .sct-chip-group {
   display: flex;
   flex-wrap: wrap;
@@ -697,30 +1008,36 @@
 }
 
 .sct-chip-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 3px 8px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-pill);
+  padding: 4px 10px;
   font-size: 11px;
-  color: #e2e8f0;
+  color: var(--sct-ink-soft);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s var(--sct-ease);
 }
 
-.sct-chip-btn:hover, .sct-chip-btn.active {
-  background: rgba(168, 85, 247, 0.25);
-  border-color: #a855f7;
-  color: #fff;
+.sct-chip-btn:hover {
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
+}
+
+.sct-chip-btn.active {
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
+  font-weight: 600;
 }
 
 .sct-code-box {
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-sm);
   padding: 8px 10px;
   font-size: 11px;
-  font-family: monospace;
-  color: #a5f3fc;
+  font-family: var(--sct-font-mono);
+  color: var(--sct-ink-soft);
   white-space: pre-wrap;
   word-break: break-all;
   user-select: all;
@@ -733,26 +1050,26 @@
   height: auto !important;
   box-sizing: border-box !important;
   min-height: 60px !important;
-  line-height: 1.5 !important;
+  line-height: 1.6 !important;
   padding: 8px 10px !important;
   font-size: 12px !important;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-family: var(--sct-font-sans) !important;
   white-space: pre-wrap !important;
   word-wrap: break-word !important;
   word-break: break-word !important;
   overflow-wrap: break-word !important;
   resize: vertical !important;
-  border-radius: 8px !important;
-  background: rgba(0, 0, 0, 0.35) !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
-  color: #f1f5f9 !important;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+  border-radius: var(--sct-radius-sm) !important;
+  background: var(--sct-surface-2) !important;
+  border: 1px solid var(--sct-line-strong) !important;
+  color: var(--sct-ink) !important;
+  transition: border-color var(--sct-dur) var(--sct-ease), box-shadow var(--sct-dur) var(--sct-ease) !important;
 }
 
 .sct-textarea-autowrap:focus {
-  border-color: #a855f7 !important;
+  border-color: var(--sct-accent) !important;
   outline: none !important;
-  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.25) !important;
+  box-shadow: 0 0 0 2px var(--sct-accent-soft) !important;
 }
 
 .sct-textarea-autowrap.sct-lora-triggers {
@@ -760,12 +1077,12 @@
 }
 
 /* --------------------------------------------------------------------------
-   8. 引擎切换与小米 TTS 专属卡片 (Engine Box & Xiaomi TTS Card)
+   9. 引擎切换与小米 TTS 专属卡片 (Engine Box & Xiaomi TTS Card)
    -------------------------------------------------------------------------- */
 .sct-engine-box {
-  background: rgba(239, 68, 68, 0.05);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 10px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius);
   padding: 12px;
   margin-top: 8px;
   margin-bottom: 10px;
@@ -774,10 +1091,10 @@
 .sct-engine-box-header {
   font-weight: 600;
   font-size: 13px;
-  color: #fca5a5;
+  color: var(--sct-ink);
   margin-bottom: 10px;
   padding-bottom: 6px;
-  border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+  border-bottom: 1px solid var(--sct-line);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -786,28 +1103,28 @@
 .sct-engine-chips .sct-engine-btn {
   font-size: 12px;
   padding: 5px 12px;
-  border-radius: 8px;
+  border-radius: var(--sct-radius-sm);
 }
 
 .sct-engine-chips .sct-engine-btn[data-engine="xiaomi"].active {
-  background: rgba(239, 68, 68, 0.25);
-  border-color: #ef4444;
-  color: #fff;
-  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
+  font-weight: 600;
 }
 
 .sct-engine-chips .sct-engine-btn[data-engine="webspeech"].active {
-  background: rgba(59, 130, 246, 0.25);
-  border-color: #3b82f6;
-  color: #fff;
-  box-shadow: 0 0 10px rgba(59, 130, 246, 0.3);
+  background: rgba(113, 140, 193, 0.18);
+  border-color: #718cc1;
+  color: #a9bfe0;
+  font-weight: 600;
 }
 
 .sct-engine-chips .sct-engine-btn[data-engine="openai"].active {
-  background: rgba(16, 185, 129, 0.25);
-  border-color: #10b981;
-  color: #fff;
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+  background: rgba(82, 158, 147, 0.18);
+  border-color: #529E93;
+  color: #8ed0c6;
+  font-weight: 600;
 }
 
 .sct-voice-chips .sct-v-chip {
@@ -816,15 +1133,14 @@
 }
 
 .sct-voice-chips .sct-v-chip.active {
-  background: rgba(239, 68, 68, 0.3);
-  border-color: #f87171;
-  color: #fff;
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
   font-weight: 600;
-  box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
 }
 
 /* --------------------------------------------------------------------------
-   9. 图像局部重绘弹窗 (Inpainting Modal & Canvas)
+   10. 图像局部重绘弹窗 (Inpainting Modal & Canvas) —— 窗口面板语
    -------------------------------------------------------------------------- */
 .sct-inpaint-overlay {
   position: fixed;
@@ -832,9 +1148,10 @@
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(0, 0, 0, 0.82);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  height: 100dvh;
+  background: var(--sct-overlay);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   z-index: 100000;
   display: flex;
   align-items: center;
@@ -845,67 +1162,71 @@
 }
 
 .sct-inpaint-dialog {
-  background: #13141f;
-  border: 1px solid rgba(168, 85, 247, 0.45);
-  border-radius: 14px;
+  background: var(--sct-bg);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-win);
   width: 100%;
-  max-width: 860px;
+  max-width: 880px;
   max-height: 94vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7), 0 0 20px rgba(168, 85, 247, 0.2);
+  box-shadow: var(--sct-shadow);
   overflow: hidden;
+  font-family: var(--sct-font-sans);
+  color: var(--sct-ink);
+  font-size: 13px;
 }
 
 .sct-inpaint-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px;
-  background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 14px 18px;
+  background: var(--sct-surface);
+  border-bottom: 1px solid var(--sct-line);
+  flex-shrink: 0;
 }
 
 .sct-inpaint-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--sct-ink);
 }
 
 .sct-inpaint-close-btn {
   background: transparent;
   border: none;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--sct-ink-muted);
   font-size: 16px;
   cursor: pointer;
   padding: 4px 8px;
-  border-radius: 6px;
-  transition: all 0.15s ease;
+  border-radius: var(--sct-radius-sm);
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-inpaint-close-btn:hover {
-  background: rgba(239, 68, 68, 0.2);
-  color: #ef4444;
+  background: var(--sct-danger-soft);
+  color: var(--sct-danger);
 }
 
 .sct-inpaint-body {
-  padding: 16px;
+  padding: 14px 16px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .sct-inpaint-stage-wrapper {
   display: flex;
   flex-direction: column;
   align-items: center;
-  background: rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 10px;
+  background: var(--sct-surface-2);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius);
   padding: 12px;
 }
 
@@ -918,11 +1239,10 @@
   max-width: 100%;
   max-height: 52vh;
   overflow: auto !important;
-  border-radius: 8px;
+  border-radius: var(--sct-radius-sm);
   line-height: 0;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  background: #090a0f;
-  scrollbar-width: thin;
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.35);
+  background: #2C2B33;
 }
 
 .sct-inpaint-canvas-stage {
@@ -930,7 +1250,7 @@
   display: inline-block;
   line-height: 0;
   margin: auto;
-  transition: width 0.15s ease, height 0.15s ease;
+  transition: width 0.15s var(--sct-ease), height 0.15s var(--sct-ease);
 }
 
 .sct-inpaint-canvas-stage img {
@@ -954,7 +1274,7 @@
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  max-width: 600px;
+  max-width: 640px;
   margin-top: 10px;
   flex-wrap: wrap;
   gap: 10px;
@@ -968,19 +1288,29 @@
 
 .sct-brush-size-group {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--sct-ink-soft);
 }
 
+/* 工具按钮激活态: 青瓷底 + 深墨字 (对齐 bbi-seg.is-on / bbi-fab--on) */
 .sct-inpaint-toolbar .sct-tool-btn.active {
-  background: rgba(168, 85, 247, 0.35);
-  border-color: #a855f7;
-  color: #fff;
-  box-shadow: 0 0 10px rgba(168, 85, 247, 0.4);
+  background: var(--sct-accent);
+  border-color: var(--sct-accent);
+  color: var(--sct-accent-ink);
+}
+
+.sct-tool-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .sct-inpaint-form {
   display: flex;
   flex-direction: column;
+}
+
+.sct-inpaint-form label {
+  font-weight: 600;
+  color: var(--sct-ink);
 }
 
 .sct-inpaint-footer-btns {
@@ -990,26 +1320,13 @@
   margin-top: 12px;
 }
 
-.sct-primary-btn {
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.35), rgba(99, 102, 241, 0.35)) !important;
-  border-color: #a855f7 !important;
-  color: #fff !important;
-  font-weight: 600 !important;
-  padding: 6px 16px !important;
-}
-
-.sct-primary-btn:hover {
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.5), rgba(99, 102, 241, 0.5)) !important;
-  box-shadow: 0 0 14px rgba(168, 85, 247, 0.4) !important;
-}
-
 /* AI 智能分割面板 (Segment Anything) */
 .sct-inpaint-sam-panel {
-  margin-top: 10px;
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(168, 85, 247, 0.25);
-  border-radius: 10px;
+  margin-top: 4px;
+  padding: 12px;
+  background: var(--sct-surface);
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-win);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1026,7 +1343,7 @@
 .sct-sam-title {
   font-size: 13px;
   font-weight: 600;
-  color: #d8b4fe;
+  color: var(--sct-accent);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1035,7 +1352,7 @@
 .sct-sam-status {
   font-size: 11px;
   font-weight: normal;
-  color: #38bdf8;
+  color: var(--sct-accent);
   animation: sct-pulse 1.5s infinite;
 }
 
@@ -1051,75 +1368,88 @@
 }
 
 .sct-sam-mode-label {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
+  font-size: 11.5px;
+  color: var(--sct-ink-soft);
   display: inline-flex;
   align-items: center;
   gap: 4px;
   cursor: pointer;
   user-select: none;
+}
+
+.sct-sam-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .sct-sam-tags-container {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  align-items: center;
 }
 
+/* 快捷部位芯片: 胶囊语 (accent-soft 底) */
 .sct-sam-chip {
-  background: rgba(168, 85, 247, 0.12);
-  color: #e9d5ff;
-  border: 1px solid rgba(168, 85, 247, 0.3);
-  border-radius: 14px;
-  padding: 4px 10px;
+  background: var(--sct-accent-soft);
+  color: var(--sct-ink-soft);
+  border: 1px solid transparent;
+  border-radius: var(--sct-radius-pill);
+  padding: 4px 11px;
   font-size: 11.5px;
+  font-family: var(--sct-font-sans);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: all 0.15s var(--sct-ease);
   user-select: none;
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .sct-sam-chip:hover {
-  background: rgba(168, 85, 247, 0.28);
-  border-color: #c084fc;
-  color: #fff;
+  background: rgba(118, 171, 174, 0.22);
+  border-color: var(--sct-accent);
+  color: var(--sct-ink);
   transform: translateY(-1px);
 }
 
 .sct-sam-chip:active {
   transform: scale(0.96);
-  background: rgba(168, 85, 247, 0.45);
 }
 
 .sct-sam-custom-row {
   display: flex;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 2px;
+  flex-wrap: wrap;
 }
 
 .sct-sam-custom-row input {
   flex: 1;
+  min-width: 160px;
   font-size: 12px;
-  padding: 5px 10px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #fff;
+  padding: 6px 10px;
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-surface-2) !important;
+  border: 1px solid var(--sct-line-strong) !important;
+  color: var(--sct-ink) !important;
 }
 
 .sct-sam-custom-row input:focus {
-  border-color: #a855f7;
-  outline: none;
+  border-color: var(--sct-accent) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 2px var(--sct-accent-soft) !important;
 }
 
-
-
+.sct-comfy-slot {
+  display: none;
+}
 
 /* ============ 画板常用英文提示词包 ============ */
 .sct-prompt-pack {
-  margin-top: 6px;
+  margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1133,67 +1463,72 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  border-left: 2px solid rgba(139, 92, 246, 0.45);
+  border-left: 2px solid var(--sct-accent);
   padding-left: 6px;
 }
 
 .sct-pack-group-label {
   font-size: 10.5px;
-  opacity: 0.65;
+  color: var(--sct-ink-muted);
   margin-right: 2px;
   flex-shrink: 0;
 }
 
 .sct-pack-chip {
   font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: rgba(88, 101, 242, 0.18);
-  border: 1px solid rgba(139, 92, 246, 0.4);
-  color: #c7ccff;
+  font-family: var(--sct-font-sans);
+  padding: 2px 8px;
+  border-radius: var(--sct-radius-pill);
+  background: var(--sct-accent-soft);
+  border: 1px solid transparent;
+  color: var(--sct-ink-soft);
   cursor: pointer;
   white-space: nowrap;
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-pack-chip:hover {
-  background: rgba(88, 101, 242, 0.32);
-  border-color: rgba(139, 92, 246, 0.7);
+  background: rgba(118, 171, 174, 0.22);
+  border-color: var(--sct-accent);
+  color: var(--sct-ink);
 }
 
 .sct-pack-chip:active {
   transform: scale(0.94);
 }
 
-/* ============ 撤销/重做按钮禁用态 ============ */
-.sct-tool-btn:disabled {
-  cursor: not-allowed;
-}
 /* ============ SAM2 一键分区选择 ============ */
 .sct-region-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin: 6px 0 4px;
+  margin: 4px 0;
 }
 
 .sct-region-header .sct-region-title {
   font-size: 11.5px;
-  opacity: 0.8;
+  color: var(--sct-accent);
+  font-weight: 600;
 }
 
-.sct-region-header .sct-region-clear {
-  color: #ffb4b4;
-  background: rgba(239, 68, 68, 0.15);
-  border-color: rgba(239, 68, 68, 0.4);
+.sct-pack-chip.sct-region-clear {
+  color: var(--sct-danger);
+  background: var(--sct-danger-soft);
+  border-color: rgba(217, 107, 107, 0.4);
   font-size: 10.5px;
+}
+
+.sct-pack-chip.sct-region-clear:hover {
+  border-color: var(--sct-danger);
+  color: var(--sct-danger);
 }
 
 .sct-region-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  max-height: 84px;
+  max-height: 96px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -1203,24 +1538,27 @@
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  color: #e5e7ff;
+  font-family: var(--sct-font-sans);
+  padding: 3px 10px;
+  border-radius: var(--sct-radius-pill);
+  background: var(--sct-surface-2);
+  border: 1px solid var(--sct-line);
+  color: var(--sct-ink-soft);
   cursor: pointer;
   white-space: nowrap;
+  transition: all 0.15s var(--sct-ease);
 }
 
 .sct-region-chip:hover {
-  background: rgba(255, 255, 255, 0.16);
+  border-color: var(--sct-line-strong);
+  color: var(--sct-ink);
 }
 
 .sct-region-chip.active {
-  background: rgba(88, 101, 242, 0.3);
-  border-color: #8b5cf6;
-  box-shadow: 0 0 8px rgba(139, 92, 246, 0.5);
-  color: #fff;
+  background: var(--sct-accent-soft);
+  border-color: var(--sct-accent);
+  box-shadow: 0 0 8px rgba(118, 171, 174, 0.35);
+  color: var(--sct-accent);
 }
 
 .sct-region-swatch {
@@ -1229,4 +1567,36 @@
   border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.5);
   display: inline-block;
+}
+
+/* ============ 魔杖菜单与通用细节 ============ */
+.sct-zoom-group {
+  align-items: center;
+}
+
+.sct-zoom-group #sct-zoom-val {
+  font-size: 12px;
+  min-width: 38px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--sct-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 响应式: 窄屏面板收紧 */
+@media (max-width: 640px) {
+  .sct-settings-section {
+    padding: 12px;
+    border-radius: 12px;
+  }
+  .sct-inpaint-dialog {
+    max-height: 96dvh;
+    border-radius: 14px;
+  }
+  .sct-setting-col label {
+    font-size: 12.5px;
+  }
+  .sct-hint {
+    font-size: 10.5px;
+  }
 }

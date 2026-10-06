@@ -2861,7 +2861,7 @@
     const currentUrl = normalizedImages[safeIdx];
 
     const loraBadgeHtml = activeLoras && activeLoras.length > 0 
-      ? `<span style="font-size:10px; background:rgba(168,85,247,0.3); border:1px solid rgba(168,85,247,0.5); padding:1px 6px; border-radius:8px; color:#f0abfc;">LoRA: ${activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', ')}</span>`
+      ? `<span class="sct-lora-badge" title="${escapeHtml(activeLoras.map(l => l.name).join(', '))}">🎭 LoRA: ${escapeHtml(activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', '))}</span>`
       : '';
 
     container.innerHTML = `
@@ -3286,7 +3286,7 @@
           <div class="sct-loading-text">${escapeHtml(progressText)}</div>
           <div class="sct-loading-hint">提示词: ${escapeHtml(promptText.slice(0, 50))}...</div>
           <div style="margin-top: 8px;">
-            <button type="button" class="sct-cancel-draw-btn" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #fca5a5; font-size: 11px; padding: 4px 12px; border-radius: 6px; cursor: pointer;">🛑 中止此次生图并清空排队</button>
+            <button type="button" class="sct-cancel-draw-btn">🛑 中止此次生图并清空排队</button>
           </div>
         </div>
       </div>
@@ -3311,10 +3311,10 @@
             <span>⚠️</span>
             <span>ComfyUI 生图失败</span>
           </div>
-          <div style="opacity: 0.8; font-size: 12px; margin-bottom: 8px;">${escapeHtml(err || '未能连接到 ComfyUI 服务')}</div>
-          <div style="display: flex; gap: 8px; justify-content: center;">
+          <div class="sct-error-desc">${escapeHtml(err || '未能连接到 ComfyUI 服务')}</div>
+          <div class="sct-error-btn-row">
             <button type="button" class="sct-comfy-btn sct-error-retry">🔄 重新尝试</button>
-            <button type="button" class="sct-comfy-btn sct-error-clear" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.35); color: #fca5a5;">🛑 清空后台排队</button>
+            <button type="button" class="sct-comfy-btn sct-btn-danger sct-error-clear">🛑 清空后台排队</button>
           </div>
         </div>
       </div>
@@ -3721,9 +3721,9 @@
           } else {
             // 对于历史消息（未曾生图或页面刷新后）或者关闭了自动生图的情况，仅渲染引导卡片与【立即开始生图】按钮，绝不自作主张发起网络请求！
             cardContainer.innerHTML = `
-              <div class="sct-comfy-card" style="padding: 12px; text-align: center;">
-                <span style="font-size: 13px; color: #c084fc;">🎨 检测到绘画提示词: <i>${escapeHtml(item.prompt.slice(0, 35))}...</i></span>
-                <div style="margin-top: 8px;">
+              <div class="sct-comfy-card sct-guide-card">
+                <span class="sct-guide-text">🎨 检测到绘画提示词: <i>${escapeHtml(item.prompt.slice(0, 35))}...</i></span>
+                <div class="sct-guide-row">
                   <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
                 </div>
               </div>
