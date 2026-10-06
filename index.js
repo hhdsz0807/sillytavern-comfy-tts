@@ -2404,6 +2404,112 @@
     return loraAllVariants(lora).filter(v => !v.triggerWords && !v.keywords);
   }
 
+  // ---------------------------------------------------------------------------
+  // 激活判定工具(与 detectActiveLoras 同一套规则,供「诊断」与搜索复用)
+  // ---------------------------------------------------------------------------
+  // 兜底路径的「泛词」判定:单词与词组都要挡(blue hair / school uniform / white frilled apron …)
+  const LORA_GENERIC_WORD = /^(?:\d?girls?|\d?boys?|solo|sfw|nsfw|female|male|anime|manga|style|illustration|realistic|photo|detailed|highres|absurdres|best|quality|amazing|very|aesthetic|masterpiece|blue|red|black|white|pink|purple|green|yellow|orange|brown|blonde|blond|silver|grey|gray|aqua|cyan|dark|light|pale|long|short|medium|wavy|curly|straight|messy|fluffy|twin|twintails?|ponytail|braid|bun|bangs|ahoge|side|front|back|with|and|of|the|school|summer|winter|casual|formal|frilled|frill|lace|ribbon|striped|pleated|mini|maxi|tight|loose|thigh|knee|high|low|open|closed)$/i;
+  const LORA_GENERIC_NOUN = /^(?:hair|haired|eyes?|eyed|eyebrows?|lashes|face|skin|lips|mouth|expression|uniform|serafuku|dress|shirt|blouse|skirt|coat|jacket|sweater|hoodie|apron|socks?|thighhighs?|pantyhose|shoes?|boots?|sandals|sneakers|smile|smiling|grin|blush|pose|body|background|classroom|bedroom|window|sky|room|city|street|outfit|clothes|clothing|lighting)$/i;
+  function isGenericFallbackToken(token) {
+    const t = String(token || '').trim().toLowerCase().replace(/[_-]/g, ' ').replace(/\s+/g, ' ');
+    if (!t) return true;
+    const words = t.split(' ');
+    if (words.some(w => LORA_GENERIC_NOUN.test(w)) && words.every(w => LORA_GENERIC_WORD.test(w) || LORA_GENERIC_NOUN.test(w))) return true;
+    return words.every(w => LORA_GENERIC_WORD.test(w));
+  }
+
+  /** 把一个字段展开成多种写法(原样 / 下划线→空格 / 两词名顺序互换) */
+  function expandLoraTokens(raw, minLen = 2) {
+    const out = new Set();
+    const norm = (s) => s.replace(/[_-]/g, ' ').replace(/\s+/g, ' ').trim();
+    (raw || '')
+      .split(/[,，\n|]/)
+      .map(k => k.trim().toLowerCase())
+      .filter(k => k.length >= minLen)
+      .forEach(tok => {
+        out.add(tok);
+        const spaced = norm(tok);
+        if (!spaced) return;
+        out.add(spaced);
+        const parts = spaced.split(' ').filter(Boolean);
+        if (parts.length === 2) out.add(`${parts[1]} ${parts[0]}`);
+      });
+    return [...out];
+  }
+
+  /**
+   * 诊断:一段画面提示词会激活哪些 LoRA、命中词是什么、谁抢走了动态名额、谁没命中
+   * 专门用来回答「为什么这个角色 LoRA 没激活」
+   */
+  function diagnoseLoraActivation(text) {
+    const loras = getSettings().comfyLoras || [];
+    const lower = String(text || '').toLowerCase();
+    const haystacks = [lower, lower.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
+    const hitToken = (list) => {
+      for (const tok of list) if (haystacks.some(h => h.includes(tok))) return tok;
+      return '';
+    };
+    const rows = [];
+
+    loras.forEach((item, idx) => {
+      const name = String(item.name || '').trim();
+      if (!item.enabled) return rows.push({ idx, item, state: 'disabled', stage: '条目已停用', token: '' });
+      if (!name) return rows.push({ idx, item, state: 'noname', stage: '未填 LoRA 文件名(不会挂载)', token: '' });
+      if (item.alwaysOn) return rows.push({ idx, item, state: 'alwaysOn', stage: '常驻生效(每张图都挂)', token: '' });
+
+      const kwTokens = expandLoraTokens(item.keywords, 2);
+      const variantTokens = loraVariantList(item).flatMap(v => expandLoraTokens(v.keywords, 2));
+      const kwHit = hitToken(kwTokens);
+      const varHit = kwHit ? '' : hitToken(variantTokens);
+      const cleanName = name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
+      const fileHit = (kwHit || varHit) ? '' : (cleanName.length > 3 && haystacks.some(h => h.includes(cleanName)) ? cleanName : '');
+      let fallbackHit = '';
+      if (!kwHit && !varHit && !fileHit && kwTokens.length === 0 && variantTokens.length === 0) {
+        fallbackHit = hitToken(expandLoraTokens(item.triggerWords, 3).filter(k => !isGenericFallbackToken(k)));
+      }
+      const token = kwHit || varHit || fileHit || fallbackHit;
+      rows.push({
+        idx,
+        item,
+        state: token ? 'matched' : 'nomatch',
+        stage: kwHit ? '激活关键词' : (varHit ? '分组关键词' : (fileHit ? 'LoRA 文件名' : (fallbackHit ? '特征词兜底命中(建议补写激活关键词)' : ''))),
+        token,
+        noKeywords: kwTokens.length === 0 && variantTokens.length === 0,
+      });
+    });
+
+    const matched = rows.filter(r => r.state === 'matched');
+    const dynamicMatched = matched.filter(r => !r.item.alwaysOn);
+    return {
+      rows,
+      matched,
+      dynamic: dynamicMatched,
+      winner: dynamicMatched[0] || null,
+      crowded: dynamicMatched.slice(1),
+      alwaysOn: matched.filter(r => r.item.alwaysOn),
+    };
+  }
+
+  // LoRA 列表搜索/筛选(渲染后可重复调用;状态保存在 loraListFilter 里)
+  let loraListFilter = '';
+  function applyLoraFilter(keyword, container) {
+    if (typeof keyword === 'string') loraListFilter = keyword;
+    const listEl = container || document.getElementById('sct-lora-items-container');
+    if (!listEl) return 0;
+    const kw = loraListFilter.trim().toLowerCase();
+    const cards = [...listEl.querySelectorAll('.sct-lora-card')];
+    let shown = 0;
+    cards.forEach(card => {
+      const hay = card.dataset.search || '';
+      const visible = !kw || hay.includes(kw);
+      card.style.display = visible ? '' : 'none';
+      if (visible) shown++;
+    });
+    const countEl = document.getElementById('sct-lora-search-count');
+    if (countEl) countEl.textContent = kw ? `匹配 ${shown} / ${cards.length} 条` : `共 ${cards.length} 条`;
+    return shown;
+  }
+
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
   function scoreLoraVariant(variant, promptText, fullText) {
     const words = (variant.keywords || '')
@@ -2519,23 +2625,7 @@
 
       // 配置侧容错:一个词展开成多种常见写法 ——
       //   原样 / 下划线→空格 / 两词名顺序互换(anna yanami ↔ yanami anna)
-      // 这样 AI 写 "anna yanami" 也能命中你配的 "yanami_anna",不必穷举所有写法
-      const expand = (raw, minLen = 2) => {
-        const out = new Set();
-        (raw || '')
-          .split(/[,，\n|]/)
-          .map(k => k.trim().toLowerCase())
-          .filter(k => k.length >= minLen)
-          .forEach(tok => {
-            out.add(tok);
-            const spaced = norm(tok);
-            if (!spaced) return;
-            out.add(spaced);
-            const parts = spaced.split(' ').filter(Boolean);
-            if (parts.length === 2) out.add(`${parts[1]} ${parts[0]}`);
-          });
-        return [...out];
-      };
+      const expand = (raw, minLen = 2) => expandLoraTokens(raw, minLen);
       const hit = (list) => list.some(tok => haystacks.some(hay => hay.includes(tok)));
 
       // 正式激活依据 = 角色激活关键词 + 各分组的组关键词(这两处的语义才是"命中即挂载")
@@ -2553,8 +2643,10 @@
       }
 
       // 兼容老配置:完全没配激活关键词时,才退回用特征词(去泛词)与文件名兜底
+      // ★ 兜底路径必须过滤「通用外貌/质量/场景」词,否则这些半配置条目会靠 blue hair /
+      //   school uniform 抢先命中,把「每图仅 1 个动态角色」的唯一名额占掉,真正的角色反而挂不上
       const generic = ['1girl', '1boy', '2girls', '2boys', 'solo', 'masterpiece', 'best quality'];
-      const fallbackTokens = expand(lora.triggerWords, 3).filter(k => !generic.includes(k));
+      const fallbackTokens = expand(lora.triggerWords, 3).filter(k => !generic.includes(k) && !isGenericFallbackToken(k));
       if (hit(fallbackTokens)) return true;
       return cleanName.length > 3 && haystacks.some(hay => hay.includes(cleanName));
     }
@@ -5571,6 +5663,14 @@
       const card = document.createElement('div');
       card.className = `sct-lora-card ${isExpanded ? 'expanded' : ''}`;
       card.dataset.idx = String(idx);
+      // 搜索用索引:中文标题 + 激活词 + 特征词 + 文件名 + 分组名/组关键词
+      card.dataset.search = [
+        item.title || '',
+        item.keywords || '',
+        item.triggerWords || '',
+        item.name || '',
+        loraAllVariants(item).map(v => `${v.label || ''} ${v.keywords || ''}`).join(' '),
+      ].join(' ').toLowerCase();
 
       const kwText = (item.keywords || '').trim();
       const kwFirst = kwText.split(/[,，]/)[0].trim();
@@ -6038,6 +6138,9 @@
 
       container.appendChild(card);
     });
+
+    // 渲染完成后重新套用当前搜索关键词(增删/改名后筛选依然生效)
+    applyLoraFilter(undefined, container);
   }
 
   /**
@@ -6260,10 +6363,26 @@
             </div>
             <div class="sct-hint">表面仅展示角色关键词，点击任意条目即可展开详细配置（模型、权重与特征词）。正文出现关键词时自动挂载 LoRA 并注入特征词（为防止 LoRA 特征词串台，动态角色 LoRA 每张图最多激活 1 个；常驻 LoRA 不受限全量生效）。</div>
 
+            <div class="sct-lora-search-row">
+              <input type="text" id="sct-lora-search" class="text_pole" placeholder="🔍 搜索角色:中文名 / 激活 tag / 文件名 / 分组名" autocomplete="off" />
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-lora-search-clear">✕</button>
+              <span class="sct-hint" id="sct-lora-search-count"></span>
+            </div>
+
             <div id="sct-lora-items-container" class="sct-lora-list"></div>
 
-            <div style="margin-top:6px;">
+            <div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
               <button type="button" class="sct-comfy-btn" id="sct-btn-add-lora">➕ 添加一条角色 LoRA 配置</button>
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-btn-diag-lora">🔎 诊断:这段提示词会激活哪些 LoRA</button>
+            </div>
+
+            <div class="sct-setting-col sct-lora-diag" id="sct-lora-diag-wrap" style="display:none;">
+              <label for="sct-lora-diag-input">把 AI 生成的画面提示词粘进来(或点上面按钮用最后一条消息的画面前缀)</label>
+              <textarea id="sct-lora-diag-input" class="text_pole sct-textarea-autowrap" rows="3" placeholder="sfw, 1girl, solo, anna yanami, blue hair, school uniform …"></textarea>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-lora-diag-run">🔎 分析</button>
+              </div>
+              <div id="sct-lora-diag-result" class="sct-lora-diag-result"></div>
             </div>
 
             <div class="sct-setting-col" style="margin-top:10px;">
@@ -6799,6 +6918,87 @@
     // 渲染 LoRA 列表
     const loraContainer = container.querySelector('#sct-lora-items-container');
     renderLoraList(loraContainer);
+
+    // 🔍 LoRA 搜索/筛选(89 条也好找):匹配 中文名/激活 tag/文件名/分组名
+    const loraSearchInput = container.querySelector('#sct-lora-search');
+    loraSearchInput?.addEventListener('input', (e) => {
+      const kw = e.target.value;
+      const shown = applyLoraFilter(kw, loraContainer);
+      // 只剩一条时自动展开,省得再点一次
+      if (kw.trim() && shown === 1) {
+        const card = [...loraContainer.querySelectorAll('.sct-lora-card')].find(c => c.style.display !== 'none');
+        const idx = card ? parseInt(card.dataset.idx, 10) : -1;
+        if (idx >= 0 && !expandedLoraIndices.has(idx)) {
+          expandedLoraIndices.add(idx);
+          renderLoraList(loraContainer);
+        }
+      }
+    });
+    container.querySelector('#sct-lora-search-clear')?.addEventListener('click', () => {
+      if (loraSearchInput) loraSearchInput.value = '';
+      applyLoraFilter('', loraContainer);
+    });
+
+    // 🔎 激活诊断:这段提示词会激活哪些 LoRA / 谁抢走了唯一动态名额
+    const diagWrap = container.querySelector('#sct-lora-diag-wrap');
+    container.querySelector('#sct-btn-diag-lora')?.addEventListener('click', () => {
+      if (!diagWrap) return;
+      const show = diagWrap.style.display === 'none';
+      diagWrap.style.display = show ? 'flex' : 'none';
+      if (show) {
+        const input = container.querySelector('#sct-lora-diag-input');
+        // 没填就自动带出最后一条消息里的画面提示词
+        if (input && !input.value.trim()) {
+          const mesNodes = [...document.querySelectorAll('#chat .mes')];
+          const lastText = mesNodes.length ? (mesNodes[mesNodes.length - 1].querySelector('.mes_text')?.textContent || '') : '';
+          const m = lastText.match(/<image>([\s\S]*?)<\/image>/i);
+          input.value = (m ? m[1] : lastText).trim().slice(0, 2000);
+        }
+      }
+    });
+    container.querySelector('#sct-lora-diag-run')?.addEventListener('click', () => {
+      const input = container.querySelector('#sct-lora-diag-input');
+      const out = container.querySelector('#sct-lora-diag-result');
+      if (!input || !out) return;
+      const text = input.value.trim();
+      if (!text) {
+        out.innerHTML = '<div class="sct-hint">先把画面提示词粘进来</div>';
+        return;
+      }
+      const diag = diagnoseLoraActivation(text);
+      const nm = (r) => escapeHtml((r.item.title || '').trim() || r.item.name || `条目 #${r.idx + 1}`);
+      const fileOf = (r) => escapeHtml(r.item.name || '');
+      const lines = [];
+      lines.push(`<div class="sct-diag-head">共 ${diag.rows.length} 条配置 · 常驻命中 ${diag.alwaysOn.length} 个 · 动态命中 ${diag.dynamic.length} 个(每图只用第 1 个)</div>`);
+      if (diag.alwaysOn.length) {
+        lines.push('<div class="sct-diag-group">🟢 常驻生效(每张都挂)</div>');
+        diag.alwaysOn.forEach(r => lines.push(`<div class="sct-diag-line">· ${nm(r)} <span class="sct-diag-file">${fileOf(r)}</span></div>`));
+      }
+      if (diag.winner) {
+        lines.push('<div class="sct-diag-group">✅ 本次实际挂载的动态角色(唯一名额)</div>');
+        lines.push(`<div class="sct-diag-line ok">· ${nm(diag.winner)} · 命中「<b>${escapeHtml(diag.winner.token)}</b>」(${diag.winner.stage}) <span class="sct-diag-file">${fileOf(diag.winner)}</span></div>`);
+      } else {
+        lines.push('<div class="sct-diag-group">⚠️ 没有任何动态角色命中</div>');
+      }
+      if (diag.crowded.length) {
+        lines.push('<div class="sct-diag-group">🟡 也命中了,但名额被上面那个占了(不会挂载)</div>');
+        diag.crowded.forEach(r => lines.push(`<div class="sct-diag-line warn">· ${nm(r)} · 命中「<b>${escapeHtml(r.token)}</b>」(${r.stage})</div>`));
+      }
+      const missed = diag.rows.filter(r => r.state === 'nomatch');
+      const broken = diag.rows.filter(r => r.state === 'disabled' || r.state === 'noname');
+      if (broken.length) {
+        lines.push('<div class="sct-diag-group">⛔ 配置有问题(不会参与)</div>');
+        broken.slice(0, 8).forEach(r => lines.push(`<div class="sct-diag-line">· ${nm(r)} — ${escapeHtml(r.stage)}</div>`));
+      }
+      if (missed.length) {
+        lines.push(`<div class="sct-diag-group">⚪ 未命中 ${missed.length} 条(展示前 6 条)</div>`);
+        missed.slice(0, 6).forEach(r => {
+          const firstKw = (r.item.keywords || '').split(/[,，]/)[0].trim();
+          lines.push(`<div class="sct-diag-line">· ${nm(r)} — 激活词${firstKw ? `「${escapeHtml(firstKw)}」` : '(空)'}${r.noKeywords ? ' <b>没写激活关键词</b>' : ''}</div>`);
+        });
+      }
+      out.innerHTML = lines.join('');
+    });
 
     container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
       const curLoras = getSettings().comfyLoras || [];

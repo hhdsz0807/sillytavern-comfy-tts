@@ -2056,3 +2056,78 @@
   background: var(--sct-line);
   margin: 4px 2px;
 }
+/* ============ LoRA 搜索框 与 激活诊断面板 ============ */
+.sct-lora-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+  flex-wrap: wrap;
+}
+
+.sct-lora-search-row #sct-lora-search {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.sct-lora-search-row #sct-lora-search-count {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--sct-ink-muted);
+  white-space: nowrap;
+}
+
+.sct-lora-diag {
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--sct-line-strong);
+  border-radius: var(--sct-radius);
+  background: var(--sct-bg);
+}
+
+.sct-lora-diag-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 340px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sct-diag-head {
+  color: var(--sct-ink-soft);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--sct-line);
+}
+
+.sct-diag-group {
+  margin-top: 6px;
+  font-weight: 600;
+  color: var(--sct-accent);
+}
+
+.sct-diag-line {
+  padding: 3px 0 3px 8px;
+  border-left: 2px solid var(--sct-line);
+  color: var(--sct-ink-soft);
+  word-break: break-word;
+}
+
+.sct-diag-line.ok {
+  border-left-color: var(--sct-accent);
+  color: var(--sct-ink);
+}
+
+.sct-diag-line.warn {
+  border-left-color: var(--sct-warning);
+  color: var(--sct-warning);
+}
+
+.sct-diag-file {
+  font-family: var(--sct-font-mono);
+  font-size: 10.5px;
+  color: var(--sct-ink-muted);
+  word-break: break-all;
+}
