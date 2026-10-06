@@ -95,12 +95,14 @@
     comfyGlobalExcludeKeywords: '',
 
     // 多 LoRA 规则库 (Array of LoRA objects)
-    // 结构: [{ id, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn,
-    //          variants: [{ id, label, keywords, triggerWords }], activeVariantId }]
+    // 结构: [{ id, title, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn,
+    //          variants: [{ id, label, keywords, triggerWords }], activeVariantId, civitaiUrl, civitai, aiNote }]
+    // title = 中文标题(给人看的角色名), keywords = 英文激活 tag, triggerWords = 注入的角色特征词
     // variants = 激活词分组:同一角色多套激活词(校服/泳装/便服…),出图时选其中一组生效
     comfyLoras: [
       {
         id: 'default_lora_1',
+        title: '示例角色(改成中文名)',
         name: '',
         strengthModel: 0.8,
         strengthClip: 0.8,
@@ -2772,16 +2774,18 @@
       '你是 ComfyUI / SillyTavern 生图插件的 LoRA 配置助手。',
       '用户给你一个 LoRA 文件名,可能还有作者说明或示例提示词。请输出**严格 JSON**(不要解释、不要代码围栏):',
       '{',
-      '  "keywords": "激活关键词,逗号分隔",',
+      '  "title": "中文标题(角色中文名,能确定作品就写成「作品名·角色名」;不确定就只写角色名)",',
+      '  "keywords": "激活关键词,逗号分隔(英文触发 tag 必须放最前)",',
       '  "triggerWords": "基础特征注入词,逗号分隔(可空)",',
-      '  "variants": [ { "label": "分组名", "keywords": "本组激活关键词", "triggerWords": "本组注入词" } ]',
+      '  "variants": [ { "label": "分组名(用角色中文名)", "keywords": "本组激活关键词", "triggerWords": "本组注入词" } ]',
       '}',
       '规则:',
-      '1) keywords = 「出现就应挂载该 LoRA」的判别词:优先用 LoRA 的触发 tag(保留下划线原样写法)、角色名(英文与中文都要)、常见写法变体;',
-      '2) 若该 LoRA 含多个角色或多套服装 → 拆成多个 variants,每个角色/服装一组;每组的 keywords 只写该组独有判别词,triggerWords 写该组完整注入词;',
-      '3) 不要把 blue hair / school uniform 这类通用外貌词当作唯一判别词(它们可以出现在 triggerWords 里用于注入);',
-      '4) triggerWords 里的 tag 保留下划线写法(如 yakishio_lemon),那是 LoRA 训练口径;',
-      '5) variants 最多 8 组;没有多角色/多服装时 variants 给空数组。',
+      '1) title 是给人看的中文名,必须简洁可读(如「八奈见杏菜」「葬送的芙莉莲·菲伦」);禁止直接照抄英文文件名;',
+      '2) keywords = 「出现就应挂载该 LoRA」的判别词:**英文触发 tag 放最前(保留下划线原样写法)**,随后可附角色中文名与常见写法变体;',
+      '3) 若该 LoRA 含多个角色或多套服装 → 拆成多个 variants,每个角色/服装一组,label 用角色中文名;每组的 keywords 只写该组独有判别词,triggerWords 写该组完整的角色特征注入词;',
+      '4) 不要把 blue hair / school uniform 这类通用外貌词当作唯一判别词(它们可以出现在 triggerWords 里用于注入);',
+      '5) triggerWords 里的 tag 保留下划线写法(如 yakishio_lemon),那是 LoRA 训练口径;',
+      '6) variants 最多 8 组;没有多角色/多服装时 variants 给空数组。',
       extra ? `额外要求:${extra}` : '',
       '只输出 JSON。',
     ].filter(Boolean).join('\n');
@@ -2882,6 +2886,29 @@
     return match ? { id: match[1] } : null;
   }
 
+  // 从任意文本里猜一个中文标题(C 站模型名 / 文件名里常带中文名)
+  // 模型名常见结构是「作品丨角色」(如 丨金牌得主_狼嵜光),角色在最后一段,故优先取最后一段含中文的
+  function guessCjkTitle(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const segments = raw
+      .split(/[丨|/_\-–—,，·:：()（）\[\]【】]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+    const longestCjkRun = (s) => {
+      const runs = s.match(/[\u4e00-\u9fa5]+/g) || [];
+      return runs.length ? runs.reduce((best, cur) => (cur.length > best.length ? cur : best), '') : '';
+    };
+    // 从最后一段往前找:第一段里含「连续 ≥2 个汉字」的,就是角色名
+    // (能自动跳过「負けヒロインが…」这类日语假名段,也避免取到作品名)
+    const cjkSegments = segments.filter(s => /[\u4e00-\u9fa5]/.test(s));
+    for (let i = cjkSegments.length - 1; i >= 0; i--) {
+      const run = longestCjkRun(cjkSegments[i]);
+      if (run.length >= 2) return run;
+    }
+    return longestCjkRun(raw);
+  }
+
   // 抓取 C 站模型资料(公开 API):模型名 / 官方触发词 / 标签 / 底座 / 简介
   async function fetchCivitaiInfo(url) {
     const parsed = parseCivitaiUrl(url);
@@ -2910,6 +2937,7 @@
     return {
       id: parsed.id,
       name: String(data?.name || '').trim(),
+      titleGuess: guessCjkTitle(data?.name || ''),
       type: String(data?.type || '').trim(),
       baseModel: String(versions[0]?.baseModel || '').trim(),
       trainedWords,
@@ -3111,6 +3139,9 @@
             if (live) {
               live.civitai = info;
               live.aiNote = formatCivitaiNote(info);
+              if (!(live.title || '').trim()) {
+                live.title = info.titleGuess || guessCjkTitle(live.name) || info.name || '';
+              }
               if (!(live.keywords || '').trim() && info.trainedWords.length > 0) live.keywords = info.trainedWords.join(', ');
               if (!(live.triggerWords || '').trim() && info.trainedWords.length > 0) live.triggerWords = info.trainedWords.join(', ');
               saveSettings({ comfyLoras: getSettings().comfyLoras });
@@ -3176,11 +3207,12 @@
     return cfg;
   }
 
-  /** 把 AI 结果写进指定 LoRA 条目(关键词 / 特征词 / 分组) */
+  /** 把 AI 结果写进指定 LoRA 条目(中文标题 / 激活词 / 特征词 / 分组) */
   function applyAiLoraConfig(idx, cfg) {
     const loras = getSettings().comfyLoras || [];
     const item = loras[idx];
     if (!item) return { variants: 0 };
+    if (cfg.title) item.title = String(cfg.title).trim();
     if (cfg.keywords) item.keywords = String(cfg.keywords).trim();
     if (cfg.triggerWords) item.triggerWords = String(cfg.triggerWords).trim();
     let variantCount = 0;
@@ -5487,9 +5519,16 @@
       card.dataset.idx = String(idx);
 
       const kwText = (item.keywords || '').trim();
-      const displayKw = kwText 
-        ? `<span class="sct-lora-kw-text" title="${escapeHtml(kwText)}">${escapeHtml(kwText)}</span>` 
-        : '<i class="sct-lora-kw-empty">未设置角色关键词 (点此展开配置)</i>';
+      const kwFirst = kwText.split(/[,，]/)[0].trim();
+      // 三段式摘要:① 中文标题(看得懂) ② 英文激活 tag(实际挂载依据) ③ 文件名
+      const titleText = (item.title || '').trim() || guessCjkTitle(item.name) || kwFirst || '';
+      const displayTitle = titleText || '(未命名角色 · 点开配置)';
+      const actTagHtml = kwFirst
+        ? `<span class="sct-lora-acttag" title="激活依据:出现这个 tag 才挂载此 LoRA">🔑 ${escapeHtml(kwFirst)}</span>`
+        : '<span class="sct-lora-acttag is-empty">🔑 未设置激活 tag</span>';
+      const fileHtml = item.name
+        ? `<span class="sct-lora-file" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>`
+        : '<span class="sct-lora-file is-empty">未设置 LoRA 文件</span>';
 
       // 分组计数:总数 + 其中空组数(空组=误点添加的残留,可一键清理)
       const variantTotal = loraAllVariants(item).length;
@@ -5503,11 +5542,14 @@
         : '';
 
       card.innerHTML = `
-        <!-- 表面层：仅展示角色关键词与精简状态，点击整行展开/收起详情 -->
+        <!-- 表面层：中文标题 + 激活 tag + 文件名，点击整行展开/收起详情 -->
         <div class="sct-lora-summary-bar">
           <div class="sct-lora-summary-main">
             <span class="sct-lora-role-icon">🎭</span>
-            <div class="sct-lora-kw-display">${displayKw}</div>
+            <div class="sct-lora-kw-display">
+              <div class="sct-lora-title" title="中文标题(可展开修改)">${escapeHtml(displayTitle)}</div>
+              <div class="sct-lora-subline">${actTagHtml}${fileHtml}</div>
+            </div>
             ${item.alwaysOn ? '<span class="sct-badge-always" title="即使正文未匹配到关键词也会默认挂载">常驻</span>' : ''}
             ${variantBadge}
             ${!item.enabled ? '<span class="sct-badge-disabled">已停用</span>' : ''}
@@ -5520,7 +5562,11 @@
         <!-- 详细配置层：点击后展开 -->
         <div class="sct-lora-detail-body" style="${isExpanded ? 'display:flex;' : 'display:none;'}">
           <div class="sct-setting-col">
-            <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(唯一激活依据:出现该词才挂载;建议同时写 LoRA 触发 tag 与中文名)</span></label>
+            <label>角色标题 · 中文名 <span style="font-size:11px; opacity:0.6;">(只给人看,便于认出是哪位角色;AI 生成与 C 站抓取会自动填)</span></label>
+            <input type="text" class="text_pole sct-lora-title-input" data-idx="${idx}" placeholder="如 八奈见杏菜 / 葬送的芙莉莲·菲伦" value="${escapeHtml(titleText)}" />
+          </div>
+          <div class="sct-setting-col">
+            <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(唯一激活依据:出现该词才挂载;英文触发 tag 放最前)</span></label>
             <textarea class="text_pole sct-textarea-autowrap sct-lora-keywords" data-idx="${idx}" rows="2" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发">${escapeHtml(item.keywords || '')}</textarea>
           </div>
 
@@ -5630,17 +5676,29 @@
         });
       }
 
-      // 实时响应关键词输入并同步到表面展示
+      // 实时响应关键词输入并同步到表面展示(仅更新副行里的激活 tag,保留中文标题与文件名)
       const kwInput = card.querySelector('.sct-lora-keywords');
       const kwDisplay = card.querySelector('.sct-lora-kw-display');
       kwInput.addEventListener('input', (e) => {
         const val = e.target.value;
         loras[idx].keywords = val;
-        if (val.trim()) {
-          kwDisplay.innerHTML = `<span class="sct-lora-kw-text" title="${escapeHtml(val)}">${escapeHtml(val)}</span>`;
-        } else {
-          kwDisplay.innerHTML = '<i class="sct-lora-kw-empty">未设置角色关键词 (点此展开配置)</i>';
+        const firstTag = val.split(/[,，]/)[0].trim();
+        const tagEl = kwDisplay.querySelector('.sct-lora-acttag');
+        if (tagEl) {
+          tagEl.className = firstTag ? 'sct-lora-acttag' : 'sct-lora-acttag is-empty';
+          tagEl.textContent = firstTag ? `🔑 ${firstTag}` : '🔑 未设置激活 tag';
+          tagEl.title = firstTag ? '激活依据:出现这个 tag 才挂载此 LoRA' : '';
         }
+        saveSettings({ comfyLoras: loras });
+      });
+
+      // 中文标题输入:实时同步到卡片表面
+      const titleInput = card.querySelector('.sct-lora-title-input');
+      titleInput?.addEventListener('input', (e) => {
+        const val = e.target.value;
+        loras[idx].title = val;
+        const titleEl = kwDisplay.querySelector('.sct-lora-title');
+        if (titleEl) titleEl.textContent = val.trim() || '(未命名角色 · 点开配置)';
         saveSettings({ comfyLoras: loras });
       });
 
@@ -5765,6 +5823,10 @@
             loras[idx].civitaiUrl = url;
             loras[idx].civitai = info;
             loras[idx].aiNote = formatCivitaiNote(info);
+            // 中文标题还空着 → 用模型名里的中文名打底(如「丨金牌得主_狼嵜光」)
+            if (!(loras[idx].title || '').trim()) {
+              loras[idx].title = info.titleGuess || guessCjkTitle(loras[idx].name) || info.name || '';
+            }
             // 关键字还空着 → 顺手用官方触发词打底(有 AI 时也可能被覆盖)
             if (!(loras[idx].keywords || '').trim() && info.trainedWords.length > 0) {
               loras[idx].keywords = info.trainedWords.join(', ');
@@ -6288,6 +6350,7 @@
               <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                 <button type="button" class="sct-comfy-btn" id="sct-batch-run">🚀 开始一键配置</button>
                 <button type="button" class="sct-comfy-btn sct-btn-danger" id="sct-batch-stop" disabled>🛑 停止</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-batch-titles">🏷️ 用文件名/C站名补中文标题</button>
                 <span class="sct-hint" id="sct-batch-progress">未运行</span>
               </div>
               <div class="sct-hint">
@@ -6899,6 +6962,25 @@
     batchStopBtn?.addEventListener('click', () => {
       loraBatchState.stop = true;
       if (batchProgress) batchProgress.textContent = '正在停止(当前这项跑完就停)…';
+    });
+
+    // 🏷️ 不用 AI,直接从「C 站模型名 / 文件名」里提取中文标题补齐
+    container.querySelector('#sct-batch-titles')?.addEventListener('click', () => {
+      const loras = getSettings().comfyLoras || [];
+      let filled = 0;
+      loras.forEach(item => {
+        if (String(item.title || '').trim()) return;
+        const guess = (item.civitai && item.civitai.name ? guessCjkTitle(item.civitai.name) : '')
+          || guessCjkTitle(item.name)
+          || (item.civitai && item.civitai.name ? item.civitai.name : '');
+        if (guess) {
+          item.title = guess;
+          filled++;
+        }
+      });
+      if (filled > 0) saveSettings({ comfyLoras: loras });
+      if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
+      showToast(filled > 0 ? `已为 ${filled} 条补上中文标题` : '现有条目都已有标题(或文件/C站名里没有中文)', filled > 0 ? 'success' : 'info');
     });
 
     const runCivitaiMapImport = (text) => {

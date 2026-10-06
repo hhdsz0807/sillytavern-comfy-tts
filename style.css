@@ -1874,3 +1874,75 @@
   margin: 0;
   accent-color: var(--sct-accent);
 }
+/* ============ LoRA 卡片摘要:中文标题 + 激活 tag + 文件名 三段式 ============ */
+.sct-lora-kw-display {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.sct-lora-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--sct-ink);
+  line-height: 1.35;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sct-lora-subline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sct-lora-acttag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-family: var(--sct-font-mono);
+  font-weight: 600;
+  color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+  border-radius: var(--sct-radius-pill);
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.sct-lora-acttag.is-empty {
+  color: var(--sct-warning);
+  background: var(--sct-warning-soft);
+}
+
+.sct-lora-file {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  font-family: var(--sct-font-mono);
+  color: var(--sct-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sct-lora-file.is-empty {
+  color: var(--sct-warning);
+}
+
+/* 摘要栏在窄屏(手机)下改为上下堆叠,避免标题被挤没 */
+@media (max-width: 560px) {
+  .sct-lora-summary-main {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .sct-lora-title {
+    white-space: normal;
+  }
+  .sct-lora-subline {
+    flex-wrap: wrap;
+  }
+}
