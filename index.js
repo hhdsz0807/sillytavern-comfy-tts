@@ -6412,6 +6412,7 @@
   let galleryItems = [];
   let gallerySource = 'all';
   let galleryKeyword = '';
+  let galleryEscHandler = null;
 
   /** 同步来源:插件 localStorage 记录 + 当前聊天消息 extra */
   function collectLocalGalleryItems(source) {
@@ -6450,34 +6451,48 @@
     return items;
   }
 
-  /** 异步来源:ComfyUI /history 里的本次运行输出 */
-  async function collectComfyHistoryItems() {
+  /** 异步来源:ComfyUI /history 里的本次运行输出(带超时,不通也不会把界面卡死) */
+  async function collectComfyHistoryItems(timeoutMs = 8000) {
     const host = getCleanComfyHost();
-    const res = await fetch(`${host}/history`);
-    if (!res.ok) throw new Error(`ComfyUI /history 返回 ${res.status}`);
-    const data = await res.json();
-    const items = [];
-    Object.values(data || {}).forEach(entry => {
-      Object.values(entry?.outputs || {}).forEach(nodeOut => {
-        (nodeOut?.images || []).forEach(img => {
-          if (!img || !img.filename) return;
-          const url = `${host}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
-          items.push({
-            key: comfyFileKey(url),
-            url,
-            prompt: (Array.isArray(nodeOut?.text) && nodeOut.text[0]) || '',
-            time: 0,
-            sources: ['ComfyUI 输出'],
-            chat: '',
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const res = await fetch(`${host}/history`, controller ? { signal: controller.signal } : {});
+      if (!res.ok) throw new Error(`ComfyUI /history 返回 ${res.status}`);
+      const data = await res.json();
+      const items = [];
+      Object.values(data || {}).forEach(entry => {
+        Object.values(entry?.outputs || {}).forEach(nodeOut => {
+          (nodeOut?.images || []).forEach(img => {
+            if (!img || !img.filename) return;
+            const url = `${host}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
+            items.push({
+              key: comfyFileKey(url),
+              url,
+              prompt: (Array.isArray(nodeOut?.text) && nodeOut.text[0]) || '',
+              time: 0,
+              sources: ['ComfyUI 输出'],
+              chat: '',
+            });
           });
         });
       });
-    });
-    return items;
+      return items;
+    } catch (err) {
+      if (err && err.name === 'AbortError') throw new Error(`读取超时(${Math.round(timeoutMs / 1000)}s),ComfyUI 可能连不上`);
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   function closeImageGallery() {
-    if (galleryOverlay && galleryOverlay.parentElement) galleryOverlay.parentElement.removeChild(galleryOverlay);
+    // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
+    document.querySelectorAll('.sct-gallery-overlay').forEach(el => el.remove());
+    if (galleryEscHandler) {
+      document.removeEventListener('keydown', galleryEscHandler);
+      galleryEscHandler = null;
+    }
     galleryOverlay = null;
   }
 
@@ -6526,6 +6541,7 @@
     const refreshBtn = overlay.querySelector('#sct-gallery-refresh');
 
     const renderGrid = () => {
+      if (!grid.isConnected) return; // 遮罩已被关闭,不再做无谓渲染
       const kw = galleryKeyword.trim().toLowerCase();
       const list = galleryItems
         .filter(it => !galleryHiddenKeys.has(it.key))
@@ -6598,25 +6614,30 @@
       });
     };
 
-    const load = async () => {
-      grid.innerHTML = '<div class="sct-gallery-empty">读取中…</div>';
+    const loadLocal = () => {
       gallerySource = sourceSel.value;
       galleryItems = collectLocalGalleryItems(gallerySource);
-      if (gallerySource === 'all' || gallerySource === 'comfy') {
-        try {
-          const comfyItems = await collectComfyHistoryItems();
-          const seen = new Set(galleryItems.map(i => i.key));
-          comfyItems.forEach(it => {
-            if (seen.has(it.key)) return;
-            seen.add(it.key);
-            galleryItems.push(it);
-          });
-          hintEl.textContent = 'ComfyUI 输出历史来自本次运行(/history),重启 ComfyUI 后会清空;插件记录与聊天记录是长期保存的。';
-        } catch (err) {
-          hintEl.textContent = `读取 ComfyUI 输出历史失败:${err.message}`;
-        }
-      } else {
-        hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开),当前聊天记录保存在消息 extra 里。';
+      if (gallerySource === 'plugin') hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开)。';
+      else if (gallerySource === 'chat') hintEl.textContent = '当前聊天记录保存在消息 extra 里。';
+      else hintEl.textContent = '已显示本地记录;正在读取 ComfyUI 输出历史…';
+      renderGrid();
+    };
+
+    const load = async () => {
+      // ★ 先同步渲染本地记录,再异步补 ComfyUI 历史 —— 任何一边不通都不会卡在「读取中」
+      loadLocal();
+      if (gallerySource !== 'all' && gallerySource !== 'comfy') return;
+      try {
+        const comfyItems = await collectComfyHistoryItems();
+        const seen = new Set(galleryItems.map(i => i.key));
+        comfyItems.forEach(it => {
+          if (seen.has(it.key)) return;
+          seen.add(it.key);
+          galleryItems.push(it);
+        });
+        hintEl.textContent = 'ComfyUI 输出历史来自本次运行(/history),重启 ComfyUI 后会清空;插件记录与聊天记录长期保存。';
+      } catch (err) {
+        hintEl.textContent = `读取 ComfyUI 输出历史失败:${err.message}`;
       }
       renderGrid();
     };
@@ -6628,7 +6649,19 @@
     });
     refreshBtn.addEventListener('click', load);
 
-    await load();
+    // Esc 关闭
+    galleryEscHandler = (e) => {
+      if (e.key === 'Escape') closeImageGallery();
+    };
+    document.addEventListener('keydown', galleryEscHandler);
+
+    try {
+      await load();
+    } catch (err) {
+      // 任何异常都要在界面里说出来,绝不静默卡在「读取中」
+      grid.innerHTML = `<div class="sct-gallery-empty">读取失败:${escapeHtml(err?.message || String(err))}</div>`;
+      hintEl.textContent = '可点「🔄 刷新」重试;若一直失败,先确认 ComfyUI 是否在线。';
+    }
   }
 
   /** 从记录里删除某张图(localStorage 任务 + 当前聊天 extra 两处) */
@@ -6688,7 +6721,7 @@
       return;
     }
     const overlay = document.createElement('div');
-    overlay.className = 'sct-gallery-overlay';
+    overlay.className = 'sct-lora-picker-overlay';
     overlay.innerHTML = `
       <div class="sct-lora-picker-modal">
         <div class="sct-gallery-head">
@@ -6702,7 +6735,14 @@
     document.body.appendChild(overlay);
     const listEl = overlay.querySelector('#sct-lp-list');
     const searchEl = overlay.querySelector('#sct-lp-search');
-    const close = () => overlay.remove();
+    const close = () => {
+      document.removeEventListener('keydown', pickerEsc);
+      overlay.remove();
+    };
+    const pickerEsc = (e) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', pickerEsc);
     overlay.querySelector('#sct-lp-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) close();

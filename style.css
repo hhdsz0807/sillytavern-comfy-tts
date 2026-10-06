@@ -2418,3 +2418,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 预览图选择器专用遮罩(与图片管理独立,各自可关) */
+.sct-lora-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 31000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--sct-overlay);
+  backdrop-filter: blur(3px);
+}
