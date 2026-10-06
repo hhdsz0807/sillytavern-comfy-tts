@@ -4348,12 +4348,15 @@
 
           <div class="sct-setting-col">
             <label>选择或填入 LoRA 模型文件名</label>
-            <div style="display:flex; gap:6px;">
-              <input type="text" class="text_pole sct-lora-name" data-idx="${idx}" placeholder="如 nagi_v1.safetensors" value="${escapeHtml(item.name || '')}" style="flex:1;" />
-              <select class="text_pole sct-lora-select" data-idx="${idx}" style="max-width:140px;">
-                <option value="">(扫描列表)</option>
-                ${cachedLoras.map(l => `<option value="${escapeHtml(l)}" ${l === item.name ? 'selected' : ''}>${escapeHtml(l)}</option>`).join('')}
-              </select>
+            <div class="sct-lora-picker">
+              <input type="text" class="text_pole sct-lora-name" data-idx="${idx}" placeholder="如 nagi_v1.safetensors (可直接手输)" value="${escapeHtml(item.name || '')}" />
+              <input type="text" class="text_pole sct-lora-filter" data-idx="${idx}" placeholder="🔍 搜索 LoRA 文件名… (输入即筛选)" value="" autocomplete="off" />
+              <div class="sct-lora-options" data-idx="${idx}"></div>
+            </div>
+            <div class="sct-hint sct-lora-picker-hint">
+              ${cachedLoras && cachedLoras.length
+                ? `共 ${cachedLoras.length} 个候选 · 点搜索框或输入关键词筛选,点条目即选中`
+                : '尚未扫描到 LoRA 列表 —— 点上方「📡 测试 ComfyUI 连接与扫描全部模型」拉取,或直接手输文件名'}
             </div>
           </div>
 
@@ -4436,14 +4439,64 @@
         saveSettings({ comfyLoras: loras });
       });
 
-      const select = card.querySelector('.sct-lora-select');
-      select.addEventListener('change', (e) => {
-        if (e.target.value) {
-          card.querySelector('.sct-lora-name').value = e.target.value;
-          loras[idx].name = e.target.value;
-          saveSettings({ comfyLoras: loras });
+      // LoRA 文件名搜索选择器:输入即筛选,点条目即选中(mousedown 先于 blur,避免列表被先收起)
+      const pickerName = card.querySelector('.sct-lora-name');
+      const pickerFilter = card.querySelector('.sct-lora-filter');
+      const pickerOptions = card.querySelector('.sct-lora-options');
+
+      const pickLoraName = (picked) => {
+        pickerName.value = picked;
+        loras[idx].name = picked;
+        saveSettings({ comfyLoras: loras });
+        pickerOptions.classList.remove('is-open');
+        pickerFilter.value = '';
+      };
+
+      const renderLoraOptions = (keyword = '') => {
+        if (!pickerOptions) return;
+        const kw = keyword.trim().toLowerCase();
+        const matched = (cachedLoras || [])
+          .filter(name => !kw || name.toLowerCase().includes(kw))
+          .slice(0, 200);
+        if (matched.length === 0) {
+          pickerOptions.innerHTML = `<div class="sct-lora-option is-empty">${
+            (cachedLoras && cachedLoras.length) ? '没有匹配的 LoRA' : '尚未扫描到 LoRA 列表'
+          }</div>`;
+        } else {
+          pickerOptions.innerHTML = matched
+            .map(name => `<button type="button" class="sct-lora-option" data-name="${escapeHtml(name)}" title="${escapeHtml(name)}">${escapeHtml(name)}</button>`)
+            .join('');
+          pickerOptions.querySelectorAll('.sct-lora-option[data-name]').forEach(btn => {
+            btn.addEventListener('mousedown', (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              pickLoraName(btn.getAttribute('data-name') || '');
+            });
+          });
         }
-      });
+        pickerOptions.classList.add('is-open');
+      };
+
+      if (pickerFilter && pickerOptions) {
+        pickerFilter.addEventListener('focus', () => renderLoraOptions(pickerFilter.value));
+        pickerFilter.addEventListener('input', () => renderLoraOptions(pickerFilter.value));
+        pickerFilter.addEventListener('blur', () => {
+          setTimeout(() => pickerOptions.classList.remove('is-open'), 150);
+        });
+        pickerFilter.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            pickerOptions.classList.remove('is-open');
+            pickerFilter.blur();
+            return;
+          }
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const first = pickerOptions.querySelector('.sct-lora-option[data-name]');
+            if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+          }
+        });
+      }
 
       const strRange = card.querySelector('.sct-lora-strength');
       const strVal = card.querySelector('.sct-lora-str-val');

@@ -1600,3 +1600,76 @@
     font-size: 10.5px;
   }
 }
+
+/* ============ LoRA 文件名搜索选择器 ============ */
+.sct-lora-picker {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sct-lora-picker .sct-lora-name {
+  font-family: var(--sct-font-mono);
+  font-size: 12px;
+}
+
+.sct-lora-picker .sct-lora-filter {
+  font-size: 12px;
+}
+
+.sct-lora-options {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--sct-line-strong);
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-bg);
+}
+
+.sct-lora-options.is-open {
+  display: flex;
+}
+
+.sct-lora-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--sct-ink-soft);
+  font-family: var(--sct-font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background var(--sct-dur) var(--sct-ease), color var(--sct-dur) var(--sct-ease);
+}
+
+.sct-lora-option:hover {
+  background: var(--sct-accent-soft);
+  color: var(--sct-accent);
+}
+
+.sct-lora-option.is-empty {
+  cursor: default;
+  font-family: var(--sct-font-sans);
+  color: var(--sct-ink-muted);
+}
+
+.sct-lora-option.is-empty:hover {
+  background: transparent;
+  color: var(--sct-ink-muted);
+}
+
+.sct-lora-picker-hint {
+  font-size: 11px;
+  color: var(--sct-ink-muted);
+}
