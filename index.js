@@ -2931,6 +2931,65 @@
     return lines.join('\n');
   }
 
+  // 解析「文件名 → C 站地址」对照表:支持扫描脚本的 JSON、CSV,或纯文本行(文件名 => URL)
+  function parseCivitaiMap(text) {
+    const out = new Map();
+    const raw = String(text || '').trim();
+    if (!raw) return out;
+    const addPair = (file, url) => {
+      const u = String(url || '').trim();
+      if (!file || !/civitai\.com\/models\//i.test(u)) return;
+      const key = String(file).trim().replace(/\\/g, '/').replace(/^"|"$/g, '').toLowerCase();
+      if (!key) return;
+      out.set(key, u);
+      const base = key.split('/').pop();
+      if (base && !out.has(base)) out.set(base, u);
+    };
+
+    // 1) JSON 数组(扫描脚本输出)
+    if (raw.startsWith('[') || raw.startsWith('{')) {
+      try {
+        const data = JSON.parse(raw);
+        const list = Array.isArray(data) ? data : (Array.isArray(data.items) ? data.items : []);
+        list.forEach(item => {
+          if (!item) return;
+          addPair(item.file || item.filename || item.name, item.url || item.civitaiUrl || item.link);
+        });
+        if (out.size > 0) return out;
+      } catch (_) {}
+    }
+
+    // 2) CSV / 纯文本:逐行找 URL,左边当文件名
+    raw.split(/\r?\n/).forEach(line => {
+      const m = line.match(/(https?:\/\/civitai\.com\/models\/[^\s"'|,]+)/i);
+      if (!m) return;
+      const url = m[1];
+      const left = line.slice(0, m.index);
+      let file = left.replace(/^\s*"|"\s*$/g, '').split(/"?\s*(?:=>|\||,|\t)\s*"?/).filter(Boolean).pop() || '';
+      file = file.replace(/^"+|"+$/g, '').trim();
+      if (!file || /^(文件名|file|name)$/i.test(file)) return;
+      addPair(file, url);
+    });
+    return out;
+  }
+
+  // 把对照表套用到已有 LoRA 条目(按文件名匹配,C 站链接填进去)
+  function applyCivitaiMap(map) {
+    const loras = getSettings().comfyLoras || [];
+    let applied = 0;
+    loras.forEach(item => {
+      const name = String(item.name || '').replace(/\\/g, '/').toLowerCase();
+      if (!name) return;
+      const url = map.get(name) || map.get(name.split('/').pop()) || '';
+      if (url && (item.civitaiUrl || '') !== url) {
+        item.civitaiUrl = url;
+        applied++;
+      }
+    });
+    if (applied > 0) saveSettings({ comfyLoras: loras });
+    return applied;
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
     const endpoint = (s.comfyAiAssistEndpoint || '').trim();
@@ -6058,6 +6117,28 @@
             </div>
           </div>
 
+          <!-- 板块 4.8: 批量导入 C 站地址对照表 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>📥</span>
+              <span>批量导入 C 站地址对照表</span>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-civitai-map-text">对照表内容(JSON / CSV / 每行「文件名 => 地址」)</label>
+              <textarea id="sct-civitai-map-text" class="text_pole sct-textarea-autowrap" rows="3" placeholder="anna_yanami.safetensors => https://civitai.com/models/607474&#10;或直接粘贴扫描脚本产出的 lora-civitai-map.json 全文"></textarea>
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-apply">📥 套用到匹配的 LoRA 条目</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-file-btn">📄 选择对照表文件</button>
+                <input type="file" id="sct-civitai-map-file" accept=".json,.csv,.txt" style="display:none;" />
+                <span class="sct-hint" id="sct-civitai-map-state"></span>
+              </div>
+              <div class="sct-hint">
+                按 LoRA 文件名匹配已有的条目并填入其「C 站链接」;之后再逐条点卡片里的「🌐 抓取 C 站资料 + 🤖 生成配置」即可。
+              </div>
+            </div>
+          </div>
+
           <!-- 板块 5: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
@@ -6587,6 +6668,51 @@
       const input = container.querySelector('#sct-cfg-ai-model');
       if (input) input.value = e.target.value;
       saveSettings({ comfyAiAssistModel: e.target.value });
+    });
+
+    // 📥 批量导入 C 站地址对照表
+    const runCivitaiMapImport = (text) => {
+      const map = parseCivitaiMap(text);
+      const state = container.querySelector('#sct-civitai-map-state');
+      if (map.size === 0) {
+        if (state) state.textContent = '没解析出任何有效条目';
+        showToast('对照表里没找到有效的 C 站地址(检查格式)', 'warning');
+        return;
+      }
+      const applied = applyCivitaiMap(map);
+      if (state) state.textContent = `解析 ${map.size} 条,套用 ${applied} 条`;
+      if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
+      showToast(
+        applied > 0
+          ? `已套用 ${applied} 条 C 站地址到对应 LoRA 条目(展开卡片可见)`
+          : `解析到 ${map.size} 条,但没有匹配上任何 LoRA 条目(文件名需与条目里的文件名一致)`,
+        applied > 0 ? 'success' : 'warning'
+      );
+    };
+
+    container.querySelector('#sct-civitai-map-apply')?.addEventListener('click', () => {
+      const box = container.querySelector('#sct-civitai-map-text');
+      runCivitaiMapImport(box ? box.value : '');
+    });
+
+    const civitaiMapFile = container.querySelector('#sct-civitai-map-file');
+    container.querySelector('#sct-civitai-map-file-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      civitaiMapFile?.click();
+    });
+    civitaiMapFile?.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const box = container.querySelector('#sct-civitai-map-text');
+        if (box) box.value = text.slice(0, 200000);
+        runCivitaiMapImport(text);
+      } catch (err) {
+        showToast(`读取对照表失败: ${err.message}`, 'error');
+      } finally {
+        e.target.value = '';
+      }
     });
 
     // 自动配图指令
