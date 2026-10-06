@@ -2332,9 +2332,15 @@
   // 激活词分组(变体):同一个角色/同一份 LoRA 可以有多套激活词(校服/泳装/便服…)
   // 出图时"用哪一组":手动指定 activeVariantId 优先 → 图片 tag 命中组关键词 → 正文命中 → 回落基础特征词
   // ---------------------------------------------------------------------------
-  function loraVariantList(lora) {
+  /** 编辑用:全部分组(含刚添加、还没填内容的空组)——UI 渲染必须用它,否则新组看不见 */
+  function loraAllVariants(lora) {
     if (!lora || !Array.isArray(lora.variants)) return [];
-    return lora.variants.filter(v => v && (v.triggerWords || v.keywords));
+    return lora.variants.filter(v => v && typeof v === 'object');
+  }
+
+  /** 生效用:至少填了关键词或特征词的组才参与匹配与注入 */
+  function loraVariantList(lora) {
+    return loraAllVariants(lora).filter(v => v.triggerWords || v.keywords);
   }
 
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
@@ -4395,7 +4401,7 @@
             <span class="sct-lora-role-icon">🎭</span>
             <div class="sct-lora-kw-display">${displayKw}</div>
             ${item.alwaysOn ? '<span class="sct-badge-always" title="即使正文未匹配到关键词也会默认挂载">常驻</span>' : ''}
-            ${loraVariantList(item).length ? `<span class="sct-badge-variants" title="激活词分组数;展开可切换用哪一组">${loraVariantList(item).length} 组激活词</span>` : ''}
+            ${loraAllVariants(item).length ? `<span class="sct-badge-variants" title="激活词分组数;展开可切换用哪一组">${loraAllVariants(item).length} 组激活词</span>` : ''}
             ${!item.enabled ? '<span class="sct-badge-disabled">已停用</span>' : ''}
           </div>
           <div class="sct-lora-summary-action">
@@ -4418,15 +4424,16 @@
           <!-- 激活词分组:同一角色多套词(校服/泳装/便服…),出图时用其中一组 -->
           <div class="sct-setting-col sct-lora-variants">
             <label>激活词分组 <span style="font-size:11px; opacity:0.6;">(同一角色的多套激活词,出图时用哪一组)</span></label>
-            ${loraVariantList(item).length ? `
+            ${loraAllVariants(item).length ? `
               <select class="text_pole sct-lora-variant-mode" data-idx="${idx}">
                 <option value="" ${!item.activeVariantId ? 'selected' : ''}>🔄 自动(按图片 tag / 正文命中组关键词)</option>
-                ${loraVariantList(item).map(v => `<option value="${escapeHtml(v.id || '')}" ${item.activeVariantId === v.id ? 'selected' : ''}>${escapeHtml(v.label || '(未命名组)')}${v.keywords ? ` — ${escapeHtml(v.keywords.slice(0, 24))}` : ''}</option>`).join('')}
+                ${loraAllVariants(item).map(v => `<option value="${escapeHtml(v.id || '')}" ${item.activeVariantId === v.id ? 'selected' : ''}>${escapeHtml(v.label || '(未命名组)')}${v.keywords ? ` — ${escapeHtml(v.keywords.slice(0, 24))}` : ''}</option>`).join('')}
               </select>
             ` : ''}
-            ${loraVariantList(item).map((v, vi) => `
-              <div class="sct-lora-variant" data-vidx="${vi}">
+            ${loraAllVariants(item).map((v, vi) => `
+              <div class="sct-lora-variant${(v.keywords || v.triggerWords) ? '' : ' is-blank'}" data-vidx="${vi}">
                 <div class="sct-lora-variant-head">
+                  <span class="sct-lora-variant-no">第 ${vi + 1} 组</span>
                   <input type="text" class="text_pole sct-lora-variant-label" data-idx="${idx}" data-vidx="${vi}" placeholder="组名,如 校服" value="${escapeHtml(v.label || '')}" />
                   <button type="button" class="sct-lora-del-btn sct-lora-variant-del" data-idx="${idx}" data-vidx="${vi}" title="删除这一组">✕</button>
                 </div>
