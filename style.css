@@ -1840,3 +1840,37 @@
   flex: 0 0 auto;
   padding: 3px 9px;
 }
+/* ============ 一键配置全部 LoRA:选项与进度 ============ */
+.sct-batch-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sct-batch-opt {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-bg);
+  font-size: 12.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color var(--sct-dur) var(--sct-ease), background var(--sct-dur) var(--sct-ease);
+}
+
+.sct-batch-opt:hover {
+  border-color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+}
+
+.sct-batch-opt input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--sct-accent);
+}

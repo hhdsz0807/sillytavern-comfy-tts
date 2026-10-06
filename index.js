@@ -3038,6 +3038,113 @@
     return applied;
   }
 
+  // 批量配置状态(串行执行,可随时停止)
+  let loraBatchState = { running: false, stop: false };
+
+  /** 为尚未建条目的 LoRA 建一条默认配置(角色 LoRA:启用但不常驻) */
+  function createLoraEntry(fileName) {
+    const loras = getSettings().comfyLoras || [];
+    if (loras.some(item => String(item.name || '').trim().toLowerCase() === String(fileName).trim().toLowerCase())) {
+      return false;
+    }
+    loras.push({
+      id: `lora_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: String(fileName).trim(),
+      strengthModel: 0.8,
+      strengthClip: 0.8,
+      keywords: '',
+      triggerWords: '',
+      variants: [],
+      activeVariantId: '',
+      enabled: true,
+      alwaysOn: false,
+    });
+    saveSettings({ comfyLoras: loras });
+    return true;
+  }
+
+  /**
+   * 一键配置所有 LoRA:串行 逐个执行「抓 C 站资料 → AI 生成配置 → 写入」
+   * @param {object} opts { createMissing, skipConfigured, fetchCivitai, onProgress, onFinish }
+   */
+  async function runLoraBatchConfig(opts = {}) {
+    const { createMissing = false, skipConfigured = true, fetchCivitai = true, onProgress, onFinish } = opts;
+    if (loraBatchState.running) return { ok: false, reason: '已在运行' };
+
+    loraBatchState = { running: true, stop: false };
+    const stats = { total: 0, created: 0, fetched: 0, configured: 0, skipped: 0, failed: 0, stopped: false };
+    const errors = [];
+
+    try {
+      // 1) 需要时先为缺失的 LoRA 建条目
+      if (createMissing) {
+        const existing = new Set((getSettings().comfyLoras || []).map(i => String(i.name || '').trim().toLowerCase()));
+        for (const name of cachedLoras || []) {
+          if (!existing.has(String(name).trim().toLowerCase())) {
+            if (createLoraEntry(name)) stats.created++;
+          }
+        }
+      }
+
+      const loras = getSettings().comfyLoras || [];
+      stats.total = loras.length;
+
+      // 2) 串行处理
+      for (let idx = 0; idx < loras.length; idx++) {
+        if (loraBatchState.stop) {
+          stats.stopped = true;
+          break;
+        }
+        const item = loras[idx];
+        if (!item || !String(item.name || '').trim()) continue;
+        if (!item.enabled) { stats.skipped++; continue; }
+        if (skipConfigured && String(item.keywords || '').trim()) { stats.skipped++; continue; }
+
+        const label = `[${idx + 1}/${loras.length}] ${item.name}`;
+        if (onProgress) onProgress(`${label} · 处理中…`, stats);
+
+        // 2a) 抓 C 站资料(有链接才抓)
+        if (fetchCivitai && String(item.civitaiUrl || '').trim() && parseCivitaiUrl(item.civitaiUrl)) {
+          try {
+            const info = await fetchCivitaiInfo(item.civitaiUrl);
+            const live = (getSettings().comfyLoras || [])[idx];
+            if (live) {
+              live.civitai = info;
+              live.aiNote = formatCivitaiNote(info);
+              if (!(live.keywords || '').trim() && info.trainedWords.length > 0) live.keywords = info.trainedWords.join(', ');
+              if (!(live.triggerWords || '').trim() && info.trainedWords.length > 0) live.triggerWords = info.trainedWords.join(', ');
+              saveSettings({ comfyLoras: getSettings().comfyLoras });
+            }
+            stats.fetched++;
+          } catch (err) {
+            errors.push(`${item.name} 抓取: ${err.message}`);
+          }
+          await new Promise(r => setTimeout(r, 300));
+          if (loraBatchState.stop) { stats.stopped = true; break; }
+        }
+
+        // 2b) AI 生成配置
+        try {
+          if (onProgress) onProgress(`${label} · AI 生成中…`, stats);
+          const live = (getSettings().comfyLoras || [])[idx];
+          const cfg = await requestAiLoraConfig(live || item);
+          applyAiLoraConfig(idx, cfg);
+          stats.configured++;
+        } catch (err) {
+          stats.failed++;
+          errors.push(`${item.name} AI: ${err.message}`);
+        }
+        await new Promise(r => setTimeout(r, 400));
+      }
+    } finally {
+      loraBatchState.running = false;
+    }
+
+    const result = { ok: true, ...stats, errors };
+    if (onFinish) onFinish(result);
+    return result;
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
     const endpoint = (s.comfyAiAssistEndpoint || '').trim();
@@ -6165,6 +6272,32 @@
             </div>
           </div>
 
+          <!-- 板块 4.7.5: 一键配置全部 LoRA -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🚀</span>
+              <span>一键配置全部 LoRA</span>
+            </div>
+
+            <div class="sct-setting-col">
+              <div class="sct-batch-opts">
+                <label class="sct-batch-opt"><input type="checkbox" id="sct-batch-create" /> 为还没建条目的 LoRA 自动建条目</label>
+                <label class="sct-batch-opt"><input type="checkbox" id="sct-batch-skip" checked /> 跳过已配好激活词的条目</label>
+                <label class="sct-batch-opt"><input type="checkbox" id="sct-batch-fetch" checked /> 先抓取 C 站资料(有链接的条目)</label>
+              </div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <button type="button" class="sct-comfy-btn" id="sct-batch-run">🚀 开始一键配置</button>
+                <button type="button" class="sct-comfy-btn sct-btn-danger" id="sct-batch-stop" disabled>🛑 停止</button>
+                <span class="sct-hint" id="sct-batch-progress">未运行</span>
+              </div>
+              <div class="sct-hint">
+                <b>串行逐个处理</b>(每项之间限速,避免接口被封):抓 C 站资料 → AI 生成激活词/特征词/分组 → 写入配置。
+                中途可随时「🛑 停止」,已完成的不会丢;结束后会汇总 成功/跳过/失败 数量。
+                <br>先点上面的「🔄 获取模型列表」确保模型名已填好,再开始。
+              </div>
+            </div>
+          </div>
+
           <!-- 板块 4.8: 批量导入 C 站地址对照表 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
@@ -6719,7 +6852,55 @@
       saveSettings({ comfyAiAssistModel: e.target.value });
     });
 
-    // 📥 批量导入 C 站地址对照表
+    // 🚀 一键配置全部 LoRA
+    const batchRunBtn = container.querySelector('#sct-batch-run');
+    const batchStopBtn = container.querySelector('#sct-batch-stop');
+    const batchProgress = container.querySelector('#sct-batch-progress');
+
+    const setBatchUi = (running, text) => {
+      if (batchRunBtn) batchRunBtn.disabled = running;
+      if (batchStopBtn) batchStopBtn.disabled = !running;
+      if (batchProgress && text) batchProgress.textContent = text;
+    };
+
+    batchRunBtn?.addEventListener('click', async () => {
+      const createMissing = !!container.querySelector('#sct-batch-create')?.checked;
+      const skipConfigured = !!container.querySelector('#sct-batch-skip')?.checked;
+      const fetchCivitai = !!container.querySelector('#sct-batch-fetch')?.checked;
+
+      const loras = getSettings().comfyLoras || [];
+      if (loras.length === 0 && !createMissing) {
+        showToast('还没有任何 LoRA 条目:可勾选「自动建条目」或先手动添加', 'warning');
+        return;
+      }
+      setBatchUi(true, '准备中…');
+      const result = await runLoraBatchConfig({
+        createMissing,
+        skipConfigured,
+        fetchCivitai,
+        onProgress: (text, stats) => {
+          setBatchUi(true, `${text} · 成功 ${stats.configured} / 失败 ${stats.failed} / 跳过 ${stats.skipped}`);
+        },
+        onFinish: (res) => {
+          setBatchUi(false, `${res.stopped ? '已停止' : '已完成'} · 成功 ${res.configured} · 抓取 ${res.fetched} · 新建 ${res.created} · 跳过 ${res.skipped} · 失败 ${res.failed}`);
+        },
+      });
+      if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
+      if (!result.ok) {
+        showToast(`未开始: ${result.reason}`, 'warning');
+        return;
+      }
+      showToast(
+        `${result.stopped ? '已手动停止' : '一键配置完成'}:成功 ${result.configured} 个${result.created ? `,新建条目 ${result.created} 个` : ''}${result.failed ? `,失败 ${result.failed} 个` : ''}${result.errors.length ? `(首个错误: ${result.errors[0]})` : ''}`,
+        result.failed > 0 ? 'warning' : 'success'
+      );
+    });
+
+    batchStopBtn?.addEventListener('click', () => {
+      loraBatchState.stop = true;
+      if (batchProgress) batchProgress.textContent = '正在停止(当前这项跑完就停)…';
+    });
+
     const runCivitaiMapImport = (text) => {
       const map = parseCivitaiMap(text);
       const state = container.querySelector('#sct-civitai-map-state');
