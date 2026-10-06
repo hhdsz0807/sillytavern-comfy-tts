@@ -6404,6 +6404,357 @@
     refreshCurrent();
   }
 
+  /* ==========================================================================
+     🖼️ 生成图片管理:聚合「插件记录(全部聊天) / 当前聊天 / ComfyUI 输出历史」,
+        支持搜索、大图查看、下载、复制提示词、设为角色预览图、删除记录
+     ========================================================================== */
+  let galleryOverlay = null;
+  let galleryItems = [];
+  let gallerySource = 'all';
+  let galleryKeyword = '';
+
+  /** 同步来源:插件 localStorage 记录 + 当前聊天消息 extra */
+  function collectLocalGalleryItems(source) {
+    const items = [];
+    const seen = new Map();
+    const add = (url, prompt, time, sourceLabel, chatLabel) => {
+      const norm = normalizeComfyImageUrl(url);
+      if (!norm) return;
+      const key = comfyFileKey(norm);
+      if (seen.has(key)) {
+        const exist = seen.get(key);
+        if (!exist.prompt && prompt) exist.prompt = prompt;
+        if (!exist.sources.includes(sourceLabel)) exist.sources.push(sourceLabel);
+        return;
+      }
+      const entry = { key, url: norm, prompt: prompt || '', time: time || 0, sources: [sourceLabel], chat: chatLabel || '' };
+      seen.set(key, entry);
+      items.push(entry);
+    };
+
+    if (source === 'all' || source === 'plugin') {
+      const all = getPersistentTasks();
+      Object.entries(all || {}).forEach(([taskKey, data]) => {
+        (data?.images || []).forEach(url => add(url, data?.prompt, data?.updatedAt, '插件记录', taskKey));
+      });
+    }
+    if (source === 'all' || source === 'chat') {
+      const ctx = getSTContext();
+      (ctx?.chat || []).forEach((mes, i) => {
+        const slots = mes?.extra?.sct_images || {};
+        Object.entries(slots).forEach(([slotIdx, d]) => {
+          (d?.images || []).forEach(url => add(url, d?.prompt, d?.savedAt, '当前聊天', `消息 #${i} · 槽位 ${slotIdx}`));
+        });
+      });
+    }
+    return items;
+  }
+
+  /** 异步来源:ComfyUI /history 里的本次运行输出 */
+  async function collectComfyHistoryItems() {
+    const host = getCleanComfyHost();
+    const res = await fetch(`${host}/history`);
+    if (!res.ok) throw new Error(`ComfyUI /history 返回 ${res.status}`);
+    const data = await res.json();
+    const items = [];
+    Object.values(data || {}).forEach(entry => {
+      Object.values(entry?.outputs || {}).forEach(nodeOut => {
+        (nodeOut?.images || []).forEach(img => {
+          if (!img || !img.filename) return;
+          const url = `${host}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
+          items.push({
+            key: comfyFileKey(url),
+            url,
+            prompt: (Array.isArray(nodeOut?.text) && nodeOut.text[0]) || '',
+            time: 0,
+            sources: ['ComfyUI 输出'],
+            chat: '',
+          });
+        });
+      });
+    });
+    return items;
+  }
+
+  function closeImageGallery() {
+    if (galleryOverlay && galleryOverlay.parentElement) galleryOverlay.parentElement.removeChild(galleryOverlay);
+    galleryOverlay = null;
+  }
+
+  /** 打开图片管理界面 */
+  async function openImageGallery() {
+    closeImageGallery();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'sct-gallery-overlay';
+    overlay.innerHTML = `
+      <div class="sct-gallery-modal">
+        <div class="sct-gallery-head">
+          <span class="sct-gallery-title">🖼️ 生成图片管理</span>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-close">✕ 关闭</button>
+        </div>
+        <div class="sct-gallery-tools">
+          <select id="sct-gallery-source" class="text_pole">
+            <option value="all">全部来源</option>
+            <option value="plugin">插件记录(含其它聊天)</option>
+            <option value="chat">当前聊天</option>
+            <option value="comfy">ComfyUI 输出历史</option>
+          </select>
+          <input type="text" id="sct-gallery-search" class="text_pole" placeholder="🔍 搜索提示词 / 来源 / 聊天" autocomplete="off" />
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-refresh">🔄 刷新</button>
+          <span class="sct-gallery-count" id="sct-gallery-count"></span>
+        </div>
+        <div class="sct-gallery-grid" id="sct-gallery-grid"></div>
+        <div class="sct-gallery-hint" id="sct-gallery-hint"></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    galleryOverlay = overlay;
+
+    overlay.addEventListener('click', (e) => e.stopPropagation());
+    overlay.querySelector('#sct-gallery-close').addEventListener('click', closeImageGallery);
+    // 点背景关闭(点弹窗内部不关)
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) closeImageGallery();
+    });
+
+    const sourceSel = overlay.querySelector('#sct-gallery-source');
+    const searchInput = overlay.querySelector('#sct-gallery-search');
+    const grid = overlay.querySelector('#sct-gallery-grid');
+    const countEl = overlay.querySelector('#sct-gallery-count');
+    const hintEl = overlay.querySelector('#sct-gallery-hint');
+    const refreshBtn = overlay.querySelector('#sct-gallery-refresh');
+
+    const renderGrid = () => {
+      const kw = galleryKeyword.trim().toLowerCase();
+      const list = galleryItems
+        .filter(it => !galleryHiddenKeys.has(it.key))
+        .filter(it => !kw || `${it.prompt} ${it.sources.join(' ')} ${it.chat}`.toLowerCase().includes(kw))
+        .sort((a, b) => (b.time || 0) - (a.time || 0));
+
+      countEl.textContent = `${list.length} 张 / 共 ${galleryItems.length} 张`;
+      if (list.length === 0) {
+        grid.innerHTML = '<div class="sct-gallery-empty">没有图片。换个来源或点「🔄 刷新」试试。</div>';
+        return;
+      }
+      grid.innerHTML = list.map((it, i) => `
+        <div class="sct-gallery-cell" data-key="${escapeHtml(it.key)}" data-idx="${i}">
+          <img loading="lazy" src="${escapeHtml(it.url)}" alt="" />
+          <div class="sct-gallery-cell-ops">
+            <button type="button" class="sct-gallery-op" data-act="view" title="大图查看">🔍</button>
+            <button type="button" class="sct-gallery-op" data-act="download" title="下载">⬇️</button>
+            <button type="button" class="sct-gallery-op" data-act="prompt" title="复制提示词">📋</button>
+            <button type="button" class="sct-gallery-op" data-act="lora" title="设为角色 LoRA 预览图">🖼️</button>
+            <button type="button" class="sct-gallery-op is-danger" data-act="del" title="从记录里删除">🗑️</button>
+          </div>
+          <div class="sct-gallery-cell-info">
+            <span class="sct-gallery-cell-src">${escapeHtml(it.sources.join(' / '))}</span>
+            ${it.prompt ? `<span class="sct-gallery-cell-prompt" title="${escapeHtml(it.prompt)}">${escapeHtml(it.prompt)}</span>` : ''}
+          </div>
+        </div>
+      `).join('');
+
+      grid.querySelectorAll('.sct-gallery-cell').forEach(cell => {
+        const key = cell.getAttribute('data-key');
+        const item = galleryItems.find(x => x.key === key);
+        if (!item) return;
+        cell.querySelectorAll('.sct-gallery-op').forEach(btn => {
+          btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const act = btn.getAttribute('data-act');
+            if (act === 'view') {
+              openLightbox(item.url, item.prompt || '', [], null);
+            } else if (act === 'download') {
+              try {
+                const res = await fetch(item.url);
+                const blob = await res.blob();
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = decodeURIComponent((item.url.split('filename=')[1] || 'image.png').split('&')[0]);
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+              } catch (err) {
+                showToast(`下载失败: ${err.message}`, 'error');
+              }
+            } else if (act === 'prompt') {
+              if (!item.prompt) {
+                showToast('这张图没有记录提示词', 'warning');
+                return;
+              }
+              navigator.clipboard.writeText(item.prompt)
+                .then(() => showToast('提示词已复制', 'success'))
+                .catch(() => showToast('复制失败,请手动复制', 'warning'));
+            } else if (act === 'lora') {
+              openLoraPreviewPicker(item);
+            } else if (act === 'del') {
+              deleteGalleryImage(item);
+              renderGrid();
+            }
+          });
+        });
+      });
+    };
+
+    const load = async () => {
+      grid.innerHTML = '<div class="sct-gallery-empty">读取中…</div>';
+      gallerySource = sourceSel.value;
+      galleryItems = collectLocalGalleryItems(gallerySource);
+      if (gallerySource === 'all' || gallerySource === 'comfy') {
+        try {
+          const comfyItems = await collectComfyHistoryItems();
+          const seen = new Set(galleryItems.map(i => i.key));
+          comfyItems.forEach(it => {
+            if (seen.has(it.key)) return;
+            seen.add(it.key);
+            galleryItems.push(it);
+          });
+          hintEl.textContent = 'ComfyUI 输出历史来自本次运行(/history),重启 ComfyUI 后会清空;插件记录与聊天记录是长期保存的。';
+        } catch (err) {
+          hintEl.textContent = `读取 ComfyUI 输出历史失败:${err.message}`;
+        }
+      } else {
+        hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开),当前聊天记录保存在消息 extra 里。';
+      }
+      renderGrid();
+    };
+
+    sourceSel.addEventListener('change', load);
+    searchInput.addEventListener('input', (e) => {
+      galleryKeyword = e.target.value;
+      renderGrid();
+    });
+    refreshBtn.addEventListener('click', load);
+
+    await load();
+  }
+
+  /** 从记录里删除某张图(localStorage 任务 + 当前聊天 extra 两处) */
+  function deleteGalleryImage(item) {
+    let removed = 0;
+    const key = item.key;
+    try {
+      const all = getPersistentTasks();
+      let dirty = false;
+      Object.keys(all).forEach(taskKey => {
+        const data = all[taskKey];
+        if (!Array.isArray(data?.images)) return;
+        const next = data.images.filter(u => comfyFileKey(normalizeComfyImageUrl(u)) !== key);
+        if (next.length !== data.images.length) {
+          removed += data.images.length - next.length;
+          if (next.length === 0) delete all[taskKey];
+          else data.images = next;
+          dirty = true;
+        }
+      });
+      if (dirty) localStorage.setItem(SCT_STORAGE_KEY, JSON.stringify(all));
+    } catch (_) {}
+    try {
+      const ctx = getSTContext();
+      let dirty = false;
+      (ctx?.chat || []).forEach(mes => {
+        const slots = mes?.extra?.sct_images || {};
+        Object.keys(slots).forEach(slotIdx => {
+          const d = slots[slotIdx];
+          if (!Array.isArray(d?.images)) return;
+          const next = d.images.filter(u => comfyFileKey(normalizeComfyImageUrl(u)) !== key);
+          if (next.length !== d.images.length) {
+            removed += d.images.length - next.length;
+            if (next.length === 0) delete slots[slotIdx];
+            else d.images = next;
+            dirty = true;
+          }
+        });
+      });
+      if (dirty && typeof ctx?.saveChatDebounced === 'function') ctx.saveChatDebounced();
+    } catch (_) {}
+    // ComfyUI 输出历史没有删除接口,只能在界面里隐藏
+    if (removed === 0) {
+      galleryHiddenKeys.add(key);
+      showToast('该图来自 ComfyUI 输出历史,ComfyUI 没有删除文件的接口 —— 已在界面里隐藏', 'info');
+    } else {
+      galleryHiddenKeys.add(key);
+      showToast(`已从记录中移除 ${removed} 条(ComfyUI 服务器上的文件不会被删)`, 'success');
+    }
+  }
+
+  /** 选择一条角色 LoRA,把这张图设为它的预览图 */
+  function openLoraPreviewPicker(item) {
+    const loras = getSettings().comfyLoras || [];
+    if (loras.length === 0) {
+      showToast('还没有 LoRA 条目', 'warning');
+      return;
+    }
+    const overlay = document.createElement('div');
+    overlay.className = 'sct-gallery-overlay';
+    overlay.innerHTML = `
+      <div class="sct-lora-picker-modal">
+        <div class="sct-gallery-head">
+          <span class="sct-gallery-title">🖼️ 设为哪个角色的预览图</span>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-lp-close">✕</button>
+        </div>
+        <input type="text" id="sct-lp-search" class="text_pole" placeholder="🔍 搜索角色(中文名 / 文件名)" autocomplete="off" />
+        <div class="sct-lp-list" id="sct-lp-list"></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const listEl = overlay.querySelector('#sct-lp-list');
+    const searchEl = overlay.querySelector('#sct-lp-search');
+    const close = () => overlay.remove();
+    overlay.querySelector('#sct-lp-close').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+
+    const render = () => {
+      const kw = (searchEl.value || '').trim().toLowerCase();
+      const rows = loras
+        .map((item, idx) => ({ item, idx }))
+        .filter(({ item }) => !kw || `${item.title || ''} ${item.name || ''}`.toLowerCase().includes(kw));
+      listEl.innerHTML = rows.map(({ item, idx }) => {
+        const thumb = loraPreviewUrl(item);
+        return `<button type="button" class="sct-lp-item" data-idx="${idx}">
+          ${thumb ? `<img src="${escapeHtml(thumb)}" loading="lazy" alt="" />` : '<span class="sct-lp-thumb-ph">🖼️</span>'}
+          <span class="sct-lp-name">${escapeHtml((item.title || '').trim() || item.name || `条目 #${idx + 1}`)}</span>
+          <span class="sct-lp-file">${escapeHtml(item.name || '')}</span>
+        </button>`;
+      }).join('') || '<div class="sct-gallery-empty">没有匹配的角色</div>';
+
+      listEl.querySelectorAll('.sct-lp-item').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const idx = parseInt(btn.getAttribute('data-idx'), 10);
+          const target = (getSettings().comfyLoras || [])[idx];
+          if (!target) return;
+          btn.disabled = true;
+          try {
+            const res = await fetch(item.url);
+            const blob = await res.blob();
+            const ext = (item.url.match(/filename=([^&]*)/) || [])[1] || '';
+            const lower = decodeURIComponent(ext).toLowerCase();
+            const useExt = lower.endsWith('.png') ? '.png' : (lower.endsWith('.webp') ? '.webp' : '.jpeg');
+            const name = `${loraPreviewKey(target.name)}${useExt}`;
+            const saved = await uploadComfyInputImage(getCleanComfyHost(), blob, name, LORA_PREVIEW_SUBFOLDER);
+            target.previewFile = saved || name;
+            target.previewVer = Date.now();
+            target.previewOff = false;
+            saveSettings({ comfyLoras: getSettings().comfyLoras });
+            const liveList = document.getElementById('sct-lora-items-container');
+            if (liveList) renderLoraList(liveList);
+            showToast(`已设为「${(target.title || target.name || '').trim()}」的预览图`, 'success');
+            close();
+          } catch (err) {
+            btn.disabled = false;
+            showToast(`设置失败: ${err.message}`, 'error');
+          }
+        });
+      });
+    };
+    searchEl.addEventListener('input', render);
+    render();
+  }
+
   function injectSettingsPanel() {
     const parent = document.getElementById('extensions_settings');
     if (!parent || document.getElementById('sct-settings-container')) return;
@@ -6505,6 +6856,19 @@
               <label for="sct-cfg-global-exclude">🚫 通用排除关键词 (从正向提示词中剔除 · 黑名单)</label>
               <textarea id="sct-cfg-global-exclude" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如: hat, glasses, twintails, *sword* —— 最终正向提示词里出现这些词就自动删掉">${s.comfyGlobalExcludeKeywords || ''}</textarea>
               <div class="sct-hint" style="margin-top:2px;">作用在<b>正向提示词</b>上：无论词来自画面标签、通用角色关键词还是各处注入，只要命中就自动剔除（按逗号分段匹配，不误伤其它词）。支持 <b>*</b> 通配：<code>hat*</code> 前缀、<code>*hat*</code> 包含。始终生效，与 LoRA 是否激活无关。</div>
+            </div>
+          </div>
+
+          <!-- 板块 2.5: 生成图片管理 -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🖼️</span>
+              <span>生成图片管理</span>
+            </div>
+            <div class="sct-hint">集中查看所有生成过的图片(插件记录含其它聊天、当前聊天、ComfyUI 本次输出),可搜索、看大图、下载、复制提示词、<b>一键设为某个角色的 LoRA 预览图</b>、从记录里删除。</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+              <button type="button" class="sct-comfy-btn" id="sct-btn-open-gallery">🖼️ 打开图片管理</button>
+              <span class="sct-hint" id="sct-gallery-stat"></span>
             </div>
           </div>
 
@@ -7134,6 +7498,23 @@
       }
       out.innerHTML = lines.join('');
     });
+
+    // 🖼️ 生成图片管理
+    const galleryBtn = container.querySelector('#sct-btn-open-gallery');
+    if (galleryBtn) {
+      const statEl = container.querySelector('#sct-gallery-stat');
+      const refreshStat = () => {
+        try {
+          const local = collectLocalGalleryItems('all').length;
+          if (statEl) statEl.textContent = `插件+聊天记录里共 ${local} 张`;
+        } catch (_) {}
+      };
+      refreshStat();
+      galleryBtn.addEventListener('click', async () => {
+        await openImageGallery();
+        refreshStat();
+      });
+    }
 
     container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
       const curLoras = getSettings().comfyLoras || [];

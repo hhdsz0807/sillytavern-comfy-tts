@@ -2191,3 +2191,230 @@
     height: 104px;
   }
 }
+/* ============ 🖼️ 生成图片管理 ============ */
+.sct-gallery-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--sct-overlay);
+  backdrop-filter: blur(3px);
+}
+
+.sct-gallery-modal,
+.sct-lora-picker-modal {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(96vw, 1080px);
+  max-height: 92vh;
+  padding: 14px;
+  background: var(--sct-surface);
+  border: 1px solid var(--sct-line-strong);
+  border-radius: var(--sct-radius-win);
+  box-shadow: var(--sct-shadow);
+  overflow: hidden;
+}
+
+.sct-lora-picker-modal {
+  width: min(92vw, 520px);
+}
+
+.sct-gallery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--sct-line);
+}
+
+.sct-gallery-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--sct-accent);
+}
+
+.sct-gallery-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sct-gallery-tools #sct-gallery-source {
+  flex: 0 1 200px;
+}
+
+.sct-gallery-tools #sct-gallery-search {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.sct-gallery-count {
+  font-size: 11.5px;
+  color: var(--sct-ink-muted);
+  white-space: nowrap;
+}
+
+.sct-gallery-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  align-content: start;
+}
+
+.sct-gallery-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius);
+  overflow: hidden;
+  background: var(--sct-bg);
+}
+
+.sct-gallery-cell img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+  background: var(--sct-surface-2);
+}
+
+.sct-gallery-cell-ops {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--sct-line);
+}
+
+.sct-gallery-op {
+  padding: 7px 0;
+  border: 0;
+  border-right: 1px solid var(--sct-line);
+  background: var(--sct-surface-2);
+  color: var(--sct-ink-soft);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background var(--sct-dur) var(--sct-ease), color var(--sct-dur) var(--sct-ease);
+}
+
+.sct-gallery-op:last-child {
+  border-right: 0;
+}
+
+.sct-gallery-op:hover {
+  background: var(--sct-accent-soft);
+  color: var(--sct-accent);
+}
+
+.sct-gallery-op.is-danger:hover {
+  background: var(--sct-danger-soft);
+  color: var(--sct-danger);
+}
+
+.sct-gallery-cell-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--sct-line);
+}
+
+.sct-gallery-cell-src {
+  font-size: 10.5px;
+  color: var(--sct-accent);
+}
+
+.sct-gallery-cell-prompt {
+  font-size: 10.5px;
+  color: var(--sct-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sct-gallery-empty {
+  grid-column: 1 / -1;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--sct-ink-muted);
+  font-size: 12.5px;
+}
+
+.sct-gallery-hint {
+  font-size: 11px;
+  color: var(--sct-ink-muted);
+  line-height: 1.5;
+}
+
+/* LoRA 预览图选择器 */
+.sct-lp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sct-lp-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-bg);
+  color: var(--sct-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--sct-dur) var(--sct-ease), background var(--sct-dur) var(--sct-ease);
+}
+
+.sct-lp-item:hover {
+  border-color: var(--sct-accent);
+  background: var(--sct-accent-soft);
+}
+
+.sct-lp-item img,
+.sct-lp-thumb-ph {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--sct-radius-sm);
+  object-fit: cover;
+  border: 1px solid var(--sct-line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.sct-lp-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sct-lp-file {
+  flex: 0 1 40%;
+  min-width: 0;
+  font-family: var(--sct-font-mono);
+  font-size: 10.5px;
+  color: var(--sct-ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
