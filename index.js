@@ -166,6 +166,8 @@
   let cachedIpAdapterWeightTypes = [];
   let cachedClipVisionModels = [];
   let cachedNodeSpecs = {};
+  // AI 辅助:从接口 /models 拉到的模型名列表(供下拉选择)
+  let cachedAiModels = [];
 
   // 全局生图任务去重与状态记录表 (杜绝重复触发与无限刷图)
   // key: taskKey
@@ -2796,13 +2798,86 @@
     ];
   }
 
+  // 由 chat 接口地址推导 /models 候选地址(兼容 /v1/chat/completions、自定义路径、Ollama 等)
+  function deriveAiModelsEndpoints(chatEndpoint) {
+    const url = String(chatEndpoint || '').trim();
+    if (!url) return [];
+    const out = [];
+    try {
+      const u = new URL(url);
+      const path = u.pathname.replace(/\/+$/, '');
+      const bases = [];
+      if (/\/chat\/completions$/i.test(path)) bases.push(path.replace(/\/chat\/completions$/i, ''));
+      else bases.push(path);
+      bases.forEach(base => {
+        out.push(`${u.origin}${base}/models`);
+        const v1 = base.match(/^(.*\/v1)(\/.*)?$/i);
+        if (v1 && v1[1]) out.push(`${u.origin}${v1[1]}/models`);
+      });
+    } catch (_) {
+      out.push(`${url.replace(/\/+$/, '')}/models`);
+    }
+    return [...new Set(out)];
+  }
+
+  // 拉取可用模型名:GET /models(OpenAI 兼容 {data:[{id}]},也兼容 {data:{models:[{name}]}})
+  async function fetchAiModelList() {
+    const s = getSettings();
+    const key = (s.comfyAiAssistKey || '').trim();
+    const candidates = deriveAiModelsEndpoints(s.comfyAiAssistEndpoint);
+    if (candidates.length === 0) throw new Error('未配置 AI 接口地址');
+    let lastError = '';
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, { headers: key ? { 'Authorization': `Bearer ${key}` } : {} });
+        if (!res.ok) {
+          lastError = `HTTP ${res.status}`;
+          continue;
+        }
+        const data = await res.json();
+        const list = Array.isArray(data?.data) ? data.data
+          : Array.isArray(data?.data?.models) ? data.data.models
+          : Array.isArray(data?.models) ? data.models
+          : [];
+        const names = list
+          .map(m => (typeof m === 'string' ? m : (m?.id || m?.name || m?.model || '')))
+          .map(n => String(n).trim())
+          .filter(Boolean);
+        if (names.length > 0) {
+          cachedAiModels = names;
+          return names;
+        }
+        lastError = '返回里没有模型名';
+      } catch (err) {
+        lastError = err.message;
+      }
+    }
+    throw new Error(`获取模型列表失败(${candidates.join(' 或 ')}):${lastError || '未知错误'}`);
+  }
+
+  // 从模型列表里挑一个"像对话模型"的;挑不到就取第一个可用的
+  function pickChatModel(models) {
+    const list = Array.isArray(models) ? models : [];
+    if (list.length === 0) return '';
+    const prefer = /(chat|deepseek|gpt-4|gpt-3|qwen|glm|claude|llama|mimo|moonshot|abab|grok|gemini|doubao|hunyuan|ernie|yi-)/i;
+    const skip = /(embed|rerank|whisper|tts|audio|speech|image|vision-encoder|moderation|dall|stable)/i;
+    return list.find(m => prefer.test(m) && !skip.test(m)) || list.find(m => !skip.test(m)) || list[0];
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
     const endpoint = (s.comfyAiAssistEndpoint || '').trim();
     const key = (s.comfyAiAssistKey || '').trim();
-    const model = (s.comfyAiAssistModel || '').trim() || 'deepseek-chat';
+    let model = (s.comfyAiAssistModel || '').trim();
     if (!endpoint) throw new Error('未配置 AI 接口地址(设置面板 → 🤖 AI 辅助配置)');
     if (!key) throw new Error('未配置 AI API Key(设置面板 → 🤖 AI 辅助配置)');
+    if (!model) {
+      // 没填模型名 → 自动从接口拉列表挑一个对话模型,省得手填
+      const models = await fetchAiModelList();
+      model = pickChatModel(models);
+      if (!model) throw new Error('未配置模型名,且无法从接口获取模型列表(请在设置面板点「获取模型列表」)');
+      saveSettings({ comfyAiAssistModel: model });
+    }
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -5836,7 +5911,18 @@
 
             <div class="sct-setting-col">
               <label for="sct-cfg-ai-model">模型名</label>
-              <input type="text" id="sct-cfg-ai-model" class="text_pole" placeholder="deepseek-chat" value="${escapeHtml(s.comfyAiAssistModel || '')}" />
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <input type="text" id="sct-cfg-ai-model" class="text_pole" placeholder="留空则调用时自动获取" value="${escapeHtml(s.comfyAiAssistModel || '')}" style="flex:1; min-width:130px;" />
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-fetch-models">🔄 获取模型列表</button>
+                <select id="sct-ai-model-select" class="text_pole" style="max-width:190px;">
+                  <option value="">(点左侧按钮拉取)</option>
+                  ${(cachedAiModels || []).map(m => `<option value="${escapeHtml(m)}" ${m === s.comfyAiAssistModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-hint">
+                点「🔄 获取模型列表」会请求接口的 <code>/models</code> 拉取可用模型名(自动从上面的接口地址推导)。
+                <b>模型名留空也行</b> —— 调用时会自动挑一个对话模型并记住。
+              </div>
             </div>
 
             <div class="sct-setting-col">
@@ -6338,6 +6424,46 @@
     container.querySelector('#sct-toggle-ai-key-vis')?.addEventListener('click', () => {
       const input = container.querySelector('#sct-cfg-ai-key');
       if (input) input.type = input.type === 'password' ? 'text' : 'password';
+    });
+
+    // 🔄 获取模型列表:调用接口 /models 并填进下拉
+    container.querySelector('#sct-ai-fetch-models')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ 拉取中…';
+      try {
+        const models = await fetchAiModelList();
+        const select = container.querySelector('#sct-ai-model-select');
+        const current = (container.querySelector('#sct-cfg-ai-model')?.value || '').trim();
+        if (select) {
+          select.innerHTML = '<option value="">(选择模型)</option>' +
+            models.map(m => `<option value="${escapeHtml(m)}" ${m === current ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('');
+        }
+        // 原来没填 → 自动挑一个对话模型填上
+        if (!current) {
+          const picked = pickChatModel(models);
+          if (picked) {
+            const input = container.querySelector('#sct-cfg-ai-model');
+            if (input) input.value = picked;
+            if (select) select.value = picked;
+            saveSettings({ comfyAiAssistModel: picked });
+          }
+        }
+        showToast(`获取到 ${models.length} 个模型${!current ? `,已自动选用 ${getSettings().comfyAiAssistModel}` : ''}`, 'success');
+      } catch (err) {
+        showToast(`获取模型列表失败: ${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
+    container.querySelector('#sct-ai-model-select')?.addEventListener('change', (e) => {
+      if (!e.target.value) return;
+      const input = container.querySelector('#sct-cfg-ai-model');
+      if (input) input.value = e.target.value;
+      saveSettings({ comfyAiAssistModel: e.target.value });
     });
 
     // 自动配图指令
