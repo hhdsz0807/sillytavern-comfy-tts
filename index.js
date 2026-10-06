@@ -7500,18 +7500,31 @@
 
     // 🔎 激活诊断:这段提示词会激活哪些 LoRA / 谁抢走了唯一动态名额
     const diagWrap = container.querySelector('#sct-lora-diag-wrap');
+
+    /** 从聊天记录里取最近一段「画面提示词」:优先 <image> 块,其次不含 HTML 的普通消息 */
+    const pickLatestImagePrompt = () => {
+      const mesNodes = [...document.querySelectorAll('#chat .mes')].reverse();
+      let fallback = '';
+      for (const node of mesNodes) {
+        const raw = node.querySelector('.mes_text')?.textContent || '';
+        if (!raw.trim()) continue;
+        const m = raw.match(/<image>([\s\S]*?)<\/image>/i);
+        if (m) return m[1].trim();
+        const looksLikeHtml = /<!DOCTYPE|<html|<style|<\/div>|class=/.test(raw);
+        if (!looksLikeHtml && !fallback) fallback = raw.trim();
+      }
+      return fallback;
+    };
+
     container.querySelector('#sct-btn-diag-lora')?.addEventListener('click', () => {
       if (!diagWrap) return;
       const show = diagWrap.style.display === 'none';
       diagWrap.style.display = show ? 'flex' : 'none';
       if (show) {
         const input = container.querySelector('#sct-lora-diag-input');
-        // 没填就自动带出最后一条消息里的画面提示词
+        // 已有内容就别覆盖;没有则自动带出最近一段画面提示词(自动跳过卡片 HTML)
         if (input && !input.value.trim()) {
-          const mesNodes = [...document.querySelectorAll('#chat .mes')];
-          const lastText = mesNodes.length ? (mesNodes[mesNodes.length - 1].querySelector('.mes_text')?.textContent || '') : '';
-          const m = lastText.match(/<image>([\s\S]*?)<\/image>/i);
-          input.value = (m ? m[1] : lastText).trim().slice(0, 2000);
+          input.value = pickLatestImagePrompt().slice(0, 2000);
         }
       }
     });
@@ -7524,10 +7537,19 @@
         out.innerHTML = '<div class="sct-hint">先把画面提示词粘进来</div>';
         return;
       }
+      // 防呆:喂进来的不是画面提示词(例如整段卡片 HTML / 代码块)时直接说清楚,别让用户以为没命中
+      const looksLikeHtml = /<!DOCTYPE|<html|<style|<\/div>|class=|```/.test(text);
+      const looksLikeTags = /,/.test(text) && /[a-z_]{3,}/i.test(text);
+      if (looksLikeHtml && !looksLikeTags) {
+        out.innerHTML = '<div class="sct-diag-line warn">这段文本看着不是画面提示词(像是卡片 HTML / 代码块),里面不会有角色 tag,所以必然是「命中 0 个」。请粘贴 AI 生成的那段英文 tag(通常形如 <code>sfw, 1girl, solo, anna yanami, …</code>)。</div>';
+        return;
+      }
       const diag = diagnoseLoraActivation(text);
+      const preview = text.replace(/\s+/g, ' ').slice(0, 80);
       const nm = (r) => escapeHtml((r.item.title || '').trim() || r.item.name || `条目 #${r.idx + 1}`);
       const fileOf = (r) => escapeHtml(r.item.name || '');
       const lines = [];
+      lines.push(`<div class="sct-diag-head">分析文本:${escapeHtml(preview)}${text.length > 80 ? '…' : ''}</div>`);
       lines.push(`<div class="sct-diag-head">共 ${diag.rows.length} 条配置 · 常驻命中 ${diag.alwaysOn.length} 个 · 动态命中 ${diag.dynamic.length} 个(每图只用第 1 个)</div>`);
       if (diag.alwaysOn.length) {
         lines.push('<div class="sct-diag-group">🟢 常驻生效(每张都挂)</div>');
