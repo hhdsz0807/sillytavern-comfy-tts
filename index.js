@@ -6541,6 +6541,7 @@
             <option value="comfy">ComfyUI 输出历史</option>
           </select>
           <input type="text" id="sct-gallery-search" class="text_pole" placeholder="🔍 搜索提示词 / 来源 / 聊天" autocomplete="off" />
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-view">📋 列表视图</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-refresh">🔄 刷新</button>
           <span class="sct-gallery-count" id="sct-gallery-count"></span>
         </div>
@@ -6584,6 +6585,9 @@
     const counts = { plugin: 0, chat: 0, dom: 0, comfy: 0 };
     let imgOk = 0;
     let imgFail = 0;
+    let firstCellSize = '-';
+    let galleryView = 'grid';
+    let autoSwitchedView = false;
     const renderStatus = () => {
       if (!statusEl || !statusEl.isConnected) return;
       const host = getCleanComfyHost();
@@ -6592,10 +6596,13 @@
       parts.push(`来源:插件记录 ${counts.plugin} · 当前聊天 ${counts.chat} · 当前页面 ${counts.dom} · ComfyUI 输出 ${counts.comfy}`);
       parts.push(`ComfyUI 地址 ${host || '(未配置)'}`);
       if (imgOk || imgFail) parts.push(`图片加载 成功 ${imgOk} / 失败 ${imgFail}`);
+      parts.push(`首格尺寸 ${firstCellSize}`);
       if (/127\.0\.0\.1|localhost/i.test(host) && pageHost && !/^(127\.0\.0\.1|localhost)$/i.test(pageHost)) {
         parts.push(`⚠️ 地址填的是 127.0.0.1,但你正从 ${pageHost} 访问 —— 手机上这指向手机自己,图片必然加载不出来!请把 ComfyUI 地址改成电脑局域网 IP(如 http://192.168.1.6:8188)`);
       } else if (imgFail > 0 && imgOk === 0) {
         parts.push('⚠️ 全部图片加载失败:多半是 ComfyUI 地址/端口不对,或手机与电脑不在同一网络');
+      } else if (firstCellSize === '0x0' || firstCellSize.endsWith('x0')) {
+        parts.push('⚠️ 网格高度被压成 0(布局塌陷)—— 已自动切到列表视图显示');
       }
       statusEl.textContent = parts.join('  |  ');
     };
@@ -6615,7 +6622,9 @@
       }
       grid.innerHTML = list.map((it, i) => `
         <div class="sct-gallery-cell" data-key="${escapeHtml(it.key)}" data-idx="${i}">
-          <img loading="lazy" src="${escapeHtml(it.url)}" alt="" />
+          <div class="sct-gallery-cell-img">
+            <img loading="lazy" src="${escapeHtml(it.url)}" alt="" />
+          </div>
           <div class="sct-gallery-cell-ops">
             <button type="button" class="sct-gallery-op" data-act="view" title="大图查看">🔍</button>
             <button type="button" class="sct-gallery-op" data-act="download" title="下载">⬇️</button>
@@ -6629,6 +6638,29 @@
           </div>
         </div>
       `).join('');
+
+      // 尺寸自检:网格塌陷时一眼能看出来(状态栏会显示「首格 0x0」)
+      const firstCell = grid.querySelector('.sct-gallery-cell');
+      if (firstCell) {
+        const w = firstCell.offsetWidth;
+        const h = firstCell.offsetHeight;
+        firstCellSize = `${w}x${h}`;
+        grid.classList.remove('is-collapsed');
+        // 网格塌陷 → 自动切列表视图兜底(只切一次,避免来回跳)
+        if (h < 30 && galleryView === 'grid' && !autoSwitchedView) {
+          autoSwitchedView = true;
+          galleryView = 'list';
+          grid.classList.add('is-list');
+          const viewBtn = overlay.querySelector('#sct-gallery-view');
+          if (viewBtn) viewBtn.textContent = '▦ 网格视图';
+          showToast('检测到网格布局异常,已自动切换为列表视图显示', 'info');
+          renderGrid();
+          return;
+        }
+        if (h < 30) grid.classList.add('is-collapsed');
+      } else {
+        firstCellSize = '-';
+      }
 
       grid.querySelectorAll('.sct-gallery-cell').forEach(cell => {
         const key = cell.getAttribute('data-key');
@@ -6657,6 +6689,7 @@
             } else if (act === 'download') {
               try {
                 const res = await fetch(item.url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const blob = await res.blob();
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
@@ -6666,7 +6699,9 @@
                 a.remove();
                 setTimeout(() => URL.revokeObjectURL(a.href), 5000);
               } catch (err) {
-                showToast(`下载失败: ${err.message}`, 'error');
+                // 跨域(如 cloudflare 隧道)取 blob 可能被 CORS 拦 —— 退化为直接在新标签打开,由浏览器保存
+                showToast(`直接下载失败(${err.message}),改为在新标签打开图片`, 'warning');
+                window.open(item.url, '_blank');
               }
             } else if (act === 'prompt') {
               if (!item.prompt) {
@@ -6747,6 +6782,12 @@
     };
 
     sourceSel.addEventListener('change', load);
+    overlay.querySelector('#sct-gallery-view')?.addEventListener('click', (e) => {
+      galleryView = galleryView === 'grid' ? 'list' : 'grid';
+      grid.classList.toggle('is-list', galleryView === 'list');
+      e.currentTarget.textContent = galleryView === 'list' ? '▦ 网格视图' : '📋 列表视图';
+      renderGrid();
+    });
     searchInput.addEventListener('input', (e) => {
       galleryKeyword = e.target.value;
       renderGrid();
