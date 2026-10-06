@@ -5111,13 +5111,21 @@
                 <span class="sct-guide-text">🎨 检测到绘画提示词: <i>${escapeHtml(item.prompt.slice(0, 35))}...</i></span>
                 <div class="sct-guide-row">
                   <button type="button" class="sct-comfy-btn sct-start-draw">立即开始生图</button>
+                  ${s.comfyAutoDrawTags ? '' : '<button type="button" class="sct-comfy-btn sct-btn-xs sct-enable-autodraw" title="以后检测到生图标签就自动出图">🎨 开启自动生图</button>'}
                 </div>
+                ${s.comfyAutoDrawTags ? '' : '<div class="sct-guide-hint">自动生图当前<b>已关闭</b>:抽卡满意后再点上面的按钮 👍</div>'}
               </div>
             `;
             cardContainer.querySelector('.sct-start-draw').addEventListener('click', (e) => {
               e.preventDefault();
               e.stopPropagation();
               triggerComfyDraw(item.prompt, cardContainer, activeLoras, taskKey);
+            });
+            cardContainer.querySelector('.sct-enable-autodraw')?.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              saveSettings({ comfyAutoDrawTags: true });
+              updateAutoDrawToggle(true);
             });
           }
         });
@@ -5529,6 +5537,51 @@
 
     (document.body || document.documentElement).appendChild(btn);
     ttsButton = btn;
+    return btn;
+  }
+
+  // 自动生图浮动开关:正文抽卡时不想立刻出图,一键关掉,满意后再手动点「立即开始生图」
+  let autoDrawToggleEl = null;
+
+  function updateAutoDrawToggle(notify) {
+    const s = getSettings();
+    const on = !!s.comfyAutoDrawTags;
+    if (autoDrawToggleEl && autoDrawToggleEl.isConnected) {
+      autoDrawToggleEl.style.display = s.comfyEnabled ? 'flex' : 'none';
+      autoDrawToggleEl.classList.toggle('is-on', on);
+      autoDrawToggleEl.classList.toggle('is-off', !on);
+      autoDrawToggleEl.innerHTML = `<span>🎨</span><span>自动生图</span><b>${on ? '开' : '关'}</b>`;
+      autoDrawToggleEl.title = on
+        ? '正文出现 <image> 标签会立刻生图。点一下关闭 —— 抽卡满意后再手动点「立即开始生图」'
+        : '已关闭自动生图:正文的 <image> 标签只显示「立即开始生图」按钮,满意后再点';
+    }
+    // 同步设置面板里的同名勾选框
+    const cb = document.getElementById('sct-cfg-auto-draw');
+    if (cb) cb.checked = on;
+    if (notify) {
+      showToast(
+        on
+          ? '已开启自动生图:检测到正文生图标签会立刻出图'
+          : '已关闭自动生图:抽卡时只显示「立即开始生图」,满意后再点',
+        on ? 'success' : 'info'
+      );
+    }
+  }
+
+  function getAutoDrawToggle() {
+    if (autoDrawToggleEl && autoDrawToggleEl.isConnected) return autoDrawToggleEl;
+    const btn = document.createElement('div');
+    btn.id = 'sct-autodraw-toggle';
+    btn.className = 'sct-autodraw-toggle';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      saveSettings({ comfyAutoDrawTags: !getSettings().comfyAutoDrawTags });
+      updateAutoDrawToggle(true);
+    });
+    (document.documentElement || document.body).appendChild(btn);
+    autoDrawToggleEl = btn;
+    updateAutoDrawToggle(false);
     return btn;
   }
 
@@ -7845,7 +7898,10 @@
     });
 
     // 绑定基础事件与保存
-    container.querySelector('#sct-cfg-comfy-enabled').addEventListener('change', (e) => saveSettings({ comfyEnabled: e.target.checked }));
+    container.querySelector('#sct-cfg-comfy-enabled').addEventListener('change', (e) => {
+      saveSettings({ comfyEnabled: e.target.checked });
+      updateAutoDrawToggle(false);
+    });
     container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
     container.querySelector('#sct-cfg-workflow').addEventListener('change', (e) => saveSettings({ comfyWorkflow: e.target.value }));
     container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
@@ -8351,7 +8407,10 @@
     });
 
     // 自动配图指令
-    container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => saveSettings({ comfyAutoDrawTags: e.target.checked }));
+    container.querySelector('#sct-cfg-auto-draw').addEventListener('change', (e) => {
+      saveSettings({ comfyAutoDrawTags: e.target.checked });
+      updateAutoDrawToggle(false);
+    });
     container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
     container.querySelector('#sct-cfg-auto-inject-inst').addEventListener('change', (e) => saveSettings({ autoInjectImageInstruction: e.target.checked }));
 
@@ -8750,6 +8809,8 @@
       initChecks++;
       injectSettingsPanel();
       injectWandMenuButton();
+      getAutoDrawToggle();   // 聊天页常驻的「自动生图 开/关」悬浮开关
+      updateAutoDrawToggle(false);
       scanAllMessages();
       updateExtensionPrompt();
 

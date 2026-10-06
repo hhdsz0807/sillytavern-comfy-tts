@@ -2666,3 +2666,62 @@
   /* 弹窗内部也不再超出可视区(用 dvh,手机自动减去地址栏) */
   max-height: calc(100dvh - 24px);
 }
+/* ============ 自动生图 浮动开关(聊天页常驻,一键切) ============ */
+.sct-autodraw-toggle {
+  position: fixed !important;
+  left: 12px !important;
+  bottom: 96px !important;
+  z-index: 2147483600 !important;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 13px;
+  border-radius: var(--sct-radius-pill);
+  border: 1px solid var(--sct-line-strong);
+  background: rgba(55, 53, 62, 0.92);
+  color: var(--sct-ink-muted);
+  font-family: var(--sct-font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  box-shadow: var(--sct-shadow);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+  transition: transform 0.15s var(--sct-ease), border-color var(--sct-dur) var(--sct-ease), color var(--sct-dur) var(--sct-ease);
+}
+
+.sct-autodraw-toggle b {
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.sct-autodraw-toggle.is-on {
+  border-color: var(--sct-accent);
+  color: var(--sct-accent);
+}
+
+.sct-autodraw-toggle.is-off {
+  border-color: var(--sct-warning);
+  color: var(--sct-warning);
+}
+
+.sct-autodraw-toggle:active {
+  transform: scale(0.95);
+}
+
+/* 引导卡片上的状态提示 */
+.sct-guide-hint {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--sct-ink-muted);
+  text-align: center;
+}
+
+.sct-guide-hint b {
+  color: var(--sct-warning);
+}
