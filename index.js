@@ -2502,29 +2502,30 @@
     // Helper: 检查某个 LoRA 是否与指定文本匹配
     function matchLoraAgainstText(lora, text) {
       if (!lora.enabled || !lora.name) return false;
-      // 检查配置的关键词 (如 'emilia, 艾米莉亚')
-      if (lora.keywords) {
-        const kws = lora.keywords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(Boolean);
-        if (kws.some(k => text.includes(k))) return true;
-      }
-      // 检查触发词特定特征 (去除 1girl/1boy 等泛词)
-      if (lora.triggerWords) {
-        const tws = lora.triggerWords.split(/[,，\n|]/).map(k => k.trim().toLowerCase()).filter(k => k.length > 2 && !['1girl', '1boy', 'solo', 'masterpiece', '2girls'].includes(k));
-        if (tws.some(k => text.includes(k))) return true;
-      }
-      // 检查 LoRA 文件名本身的主名
+      const tokens = (raw, minLen = 2) => (raw || '')
+        .split(/[,，\n|]/)
+        .map(k => k.trim().toLowerCase())
+        .filter(k => k.length >= minLen);
+
+      // 正式激活依据 = 角色激活关键词 + 各分组的组关键词(这两处的语义才是"命中即挂载")
+      const keywordTokens = tokens(lora.keywords, 2);
+      const variantTokens = loraVariantList(lora).flatMap(variant => tokens(variant.keywords, 2));
       const cleanName = lora.name.replace(/\.[^/.]+$/, '').trim().toLowerCase();
-      if (cleanName.length > 2 && text.includes(cleanName)) return true;
-      // 激活词分组里的组关键词同样能独立激活该 LoRA(例如「泳装」只写在某个分组里)
-      const variantHit = loraVariantList(lora).some(variant =>
-        (variant.keywords || '')
-          .split(/[,，\n|]/)
-          .map(k => k.trim().toLowerCase())
-          .filter(k => k.length > 1)
-          .some(k => text.includes(k))
-      );
-      if (variantHit) return true;
-      return false;
+
+      if (keywordTokens.length > 0 || variantTokens.length > 0) {
+        // ★ 有正式激活词时,绝不再拿「角色特征激活词」当激活依据 ——
+        //   否则 blue hair / blue eyes / school uniform 这类通用外貌词会把不相干的角色 LoRA 也拉起来
+        if (keywordTokens.some(k => text.includes(k))) return true;
+        if (variantTokens.some(k => text.includes(k))) return true;
+        if (cleanName.length > 3 && text.includes(cleanName)) return true;
+        return false;
+      }
+
+      // 兼容老配置:完全没配激活关键词时,才退回用特征词(去泛词)与文件名兜底
+      const generic = ['1girl', '1boy', '2girls', '2boys', 'solo', 'masterpiece', 'best quality'];
+      const fallbackTokens = tokens(lora.triggerWords, 3).filter(k => !generic.includes(k));
+      if (fallbackTokens.some(k => text.includes(k))) return true;
+      return cleanName.length > 3 && text.includes(cleanName);
     }
 
     // 第 0 阶段【最高优先级 · 绝对常驻】：所有已启用且勾选了常驻生效 (alwaysOn) 的 LoRA 必须直接无条件全量挂载！
@@ -5035,12 +5036,12 @@
         <!-- 详细配置层：点击后展开 -->
         <div class="sct-lora-detail-body" style="${isExpanded ? 'display:flex;' : 'display:none;'}">
           <div class="sct-setting-col">
-            <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(正文/提示词出现该词自动挂载 LoRA)</span></label>
+            <label>角色激活关键词 <span style="font-size:11px; opacity:0.6;">(唯一激活依据:出现该词才挂载;建议同时写 LoRA 触发 tag 与中文名)</span></label>
             <textarea class="text_pole sct-textarea-autowrap sct-lora-keywords" data-idx="${idx}" rows="2" placeholder="多个关键词用逗号隔开，如: 柚木凪, nagi, 银发">${escapeHtml(item.keywords || '')}</textarea>
           </div>
 
           <div class="sct-setting-col">
-            <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后自动注入正向提示词 · 宽屏多行自动换行)</span></label>
+            <label>角色特征激活词 <span style="font-size:11px; opacity:0.6;">(挂载后注入正向提示词 · 不作为激活依据 · 宽屏多行自动换行)</span></label>
             <textarea class="text_pole sct-textarea-autowrap sct-lora-triggers" data-idx="${idx}" rows="3" placeholder="如: nagi, 1girl, silver hair, purple eyes, school uniform, white ribbon, looking at viewer, gentle smile">${escapeHtml(item.triggerWords || '')}</textarea>
           </div>
 
