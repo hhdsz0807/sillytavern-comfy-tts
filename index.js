@@ -6541,6 +6541,11 @@
             <option value="comfy">ComfyUI 输出历史</option>
           </select>
           <input type="text" id="sct-gallery-search" class="text_pole" placeholder="🔍 搜索提示词 / 来源 / 聊天" autocomplete="off" />
+          <select id="sct-gallery-thumbsize" class="text_pole" title="缩略图大小">
+            <option value="s">小图</option>
+            <option value="m">中图</option>
+            <option value="l">大图</option>
+          </select>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-view">📋 列表视图</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-refresh">🔄 刷新</button>
           <span class="sct-gallery-count" id="sct-gallery-count"></span>
@@ -6588,6 +6593,13 @@
     let firstCellSize = '-';
     let galleryView = 'grid';
     let autoSwitchedView = false;
+    // 缩略图尺寸偏好(默认小图:一屏能看到更多张,且完整显示不裁切)
+    const GALLERY_SIZE_KEY = 'sct_gallery_thumb_size';
+    let galleryThumbSize = 's';
+    try {
+      const saved = localStorage.getItem(GALLERY_SIZE_KEY);
+      if (saved === 's' || saved === 'm' || saved === 'l') galleryThumbSize = saved;
+    } catch (_) {}
     const renderStatus = () => {
       if (!statusEl || !statusEl.isConnected) return;
       const host = getCleanComfyHost();
@@ -6782,6 +6794,21 @@
     };
 
     sourceSel.addEventListener('change', load);
+    // 缩略图尺寸:小/中/大,记住选择
+    const sizeSel = overlay.querySelector('#sct-gallery-thumbsize');
+    const applyThumbSize = () => {
+      grid.classList.remove('size-s', 'size-m', 'size-l');
+      grid.classList.add(`size-${galleryThumbSize}`);
+      if (sizeSel) sizeSel.value = galleryThumbSize;
+    };
+    sizeSel?.addEventListener('change', (e) => {
+      galleryThumbSize = e.target.value;
+      try {
+        localStorage.setItem(GALLERY_SIZE_KEY, galleryThumbSize);
+      } catch (_) {}
+      applyThumbSize();
+    });
+    applyThumbSize();
     overlay.querySelector('#sct-gallery-view')?.addEventListener('click', (e) => {
       galleryView = galleryView === 'grid' ? 'list' : 'grid';
       grid.classList.toggle('is-list', galleryView === 'list');

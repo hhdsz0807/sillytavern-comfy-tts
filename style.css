@@ -2533,3 +2533,81 @@
 .sct-gallery-modal .sct-gallery-grid {
   min-height: 0;
 }
+/* ============ 图片管理:铺满整屏 + 小图完整显示(不裁切) ============ */
+.sct-gallery-overlay {
+  padding: 8px;
+}
+
+.sct-gallery-modal {
+  width: min(100vw - 16px, 1200px);
+  height: calc(100vh - 16px);
+  max-height: calc(100vh - 16px);
+  padding: 10px;
+  gap: 8px;
+}
+
+/* 顶部工具栏压扁,把纵向空间都留给图片 */
+.sct-gallery-head {
+  padding-bottom: 6px;
+}
+
+.sct-gallery-title {
+  font-size: 13.5px;
+}
+
+.sct-gallery-tools {
+  gap: 6px;
+}
+
+.sct-gallery-tools select,
+.sct-gallery-tools input {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+
+.sct-gallery-tools .sct-comfy-btn {
+  padding: 5px 9px;
+  font-size: 11.5px;
+}
+
+/* 缩略图尺寸三档 */
+.sct-gallery-grid.size-s {
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: 6px;
+}
+
+.sct-gallery-grid.size-m {
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 8px;
+}
+
+.sct-gallery-grid.size-l {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+/* 完整显示整张图(不裁切),留深色底衬托 */
+.sct-gallery-cell-img img {
+  object-fit: contain;
+  background: #2b2a33;
+}
+
+/* 小图档位下操作条与信息更紧凑 */
+.sct-gallery-grid.size-s .sct-gallery-op {
+  padding: 4px 0;
+  font-size: 11px;
+}
+
+.sct-gallery-grid.size-s .sct-gallery-cell-info {
+  padding: 4px 6px;
+}
+
+.sct-gallery-grid.size-s .sct-gallery-cell-src,
+.sct-gallery-grid.size-s .sct-gallery-cell-prompt {
+  font-size: 9.5px;
+}
+
+.sct-gallery-grid.size-l .sct-gallery-op {
+  padding: 8px 0;
+  font-size: 14px;
+}
