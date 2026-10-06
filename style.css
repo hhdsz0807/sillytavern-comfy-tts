@@ -2441,3 +2441,29 @@
 .sct-gallery-foot .sct-comfy-btn {
   min-width: 200px;
 }
+/* 图片管理状态栏(排查用) */
+.sct-gallery-status {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--sct-ink-muted);
+  padding: 6px 8px;
+  background: var(--sct-bg);
+  border: 1px dashed var(--sct-line);
+  border-radius: var(--sct-radius-sm);
+  word-break: break-word;
+}
+
+/* 图裂的格子给个明显标记 */
+.sct-gallery-cell.is-broken img {
+  opacity: 0.25;
+  filter: grayscale(1);
+}
+
+.sct-gallery-cell.is-broken::after {
+  content: '图片加载失败';
+  display: block;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--sct-danger);
+  background: var(--sct-danger-soft);
+}

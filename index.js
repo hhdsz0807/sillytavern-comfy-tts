@@ -6453,6 +6453,29 @@
     return items;
   }
 
+  /** 第三个同步来源:直接扫当前页面上已经渲染出来的 ComfyUI 图片(聊天里的图/轮播图) */
+  function collectDomGalleryItems() {
+    const items = [];
+    const seen = new Set();
+    document.querySelectorAll('#chat img, .sct-comfy-card-container img, .mes_text img').forEach(img => {
+      const src = img.getAttribute('src') || '';
+      if (!/\/view\?/.test(src)) return;
+      const norm = normalizeComfyImageUrl(src);
+      const key = comfyFileKey(norm);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      items.push({
+        key,
+        url: norm,
+        prompt: img.getAttribute('title') || '',
+        time: 0,
+        sources: ['当前页面'],
+        chat: '',
+      });
+    });
+    return items;
+  }
+
   /** 异步来源:ComfyUI /history 里的本次运行输出(带超时,不通也不会把界面卡死) */
   async function collectComfyHistoryItems(timeoutMs = 8000) {
     const host = getCleanComfyHost();
@@ -6488,8 +6511,7 @@
     }
   }
 
-  function closeImageGallery() {
-    // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
+  function closeImageGallery() {    // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
     document.querySelectorAll('.sct-gallery-overlay').forEach(el => el.remove());
     if (galleryEscHandler) {
       document.removeEventListener('keydown', galleryEscHandler);
@@ -6513,6 +6535,7 @@
         <div class="sct-gallery-tools">
           <select id="sct-gallery-source" class="text_pole">
             <option value="all">全部来源</option>
+            <option value="dom">当前页面上的图(必有效)</option>
             <option value="plugin">插件记录(含其它聊天)</option>
             <option value="chat">当前聊天</option>
             <option value="comfy">ComfyUI 输出历史</option>
@@ -6523,6 +6546,7 @@
         </div>
         <div class="sct-gallery-grid" id="sct-gallery-grid"></div>
         <div class="sct-gallery-hint" id="sct-gallery-hint"></div>
+        <div class="sct-gallery-status" id="sct-gallery-status"></div>
         <div class="sct-gallery-foot">
           <button type="button" class="sct-comfy-btn" id="sct-gallery-close-bottom">✕ 关闭图片管理</button>
         </div>
@@ -6553,7 +6577,28 @@
     const grid = overlay.querySelector('#sct-gallery-grid');
     const countEl = overlay.querySelector('#sct-gallery-count');
     const hintEl = overlay.querySelector('#sct-gallery-hint');
+    const statusEl = overlay.querySelector('#sct-gallery-status');
     const refreshBtn = overlay.querySelector('#sct-gallery-refresh');
+
+    // 各来源计数 + 图片加载成败统计 + 地址填错警告 —— 一眼看出「为什么看不到图」
+    const counts = { plugin: 0, chat: 0, dom: 0, comfy: 0 };
+    let imgOk = 0;
+    let imgFail = 0;
+    const renderStatus = () => {
+      if (!statusEl || !statusEl.isConnected) return;
+      const host = getCleanComfyHost();
+      const pageHost = (typeof location !== 'undefined' && location.hostname) || '';
+      const parts = [];
+      parts.push(`来源:插件记录 ${counts.plugin} · 当前聊天 ${counts.chat} · 当前页面 ${counts.dom} · ComfyUI 输出 ${counts.comfy}`);
+      parts.push(`ComfyUI 地址 ${host || '(未配置)'}`);
+      if (imgOk || imgFail) parts.push(`图片加载 成功 ${imgOk} / 失败 ${imgFail}`);
+      if (/127\.0\.0\.1|localhost/i.test(host) && pageHost && !/^(127\.0\.0\.1|localhost)$/i.test(pageHost)) {
+        parts.push(`⚠️ 地址填的是 127.0.0.1,但你正从 ${pageHost} 访问 —— 手机上这指向手机自己,图片必然加载不出来!请把 ComfyUI 地址改成电脑局域网 IP(如 http://192.168.1.6:8188)`);
+      } else if (imgFail > 0 && imgOk === 0) {
+        parts.push('⚠️ 全部图片加载失败:多半是 ComfyUI 地址/端口不对,或手机与电脑不在同一网络');
+      }
+      statusEl.textContent = parts.join('  |  ');
+    };
 
     const renderGridInner = () => {
       if (!grid.isConnected) return; // 遮罩已被关闭,不再做无谓渲染
@@ -6588,6 +6633,19 @@
       grid.querySelectorAll('.sct-gallery-cell').forEach(cell => {
         const key = cell.getAttribute('data-key');
         const item = galleryItems.find(x => x.key === key);
+        // 统计图片能否真的加载出来(图裂还是空格子,一眼分清)
+        const imgEl = cell.querySelector('img');
+        if (imgEl) {
+          imgEl.addEventListener('load', () => {
+            imgOk++;
+            renderStatus();
+          });
+          imgEl.addEventListener('error', () => {
+            imgFail++;
+            cell.classList.add('is-broken');
+            renderStatus();
+          });
+        }
         if (!item) return;
         cell.querySelectorAll('.sct-gallery-op').forEach(btn => {
           btn.addEventListener('click', async (e) => {
@@ -6642,11 +6700,28 @@
 
     const loadLocal = () => {
       gallerySource = sourceSel.value;
-      galleryItems = collectLocalGalleryItems(gallerySource);
-      if (gallerySource === 'plugin') hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开)。';
-      else if (gallerySource === 'chat') hintEl.textContent = '当前聊天记录保存在消息 extra 里。';
+      // 分别统计三个同步来源,便于排查「到底哪一处是空的」
+      counts.plugin = collectLocalGalleryItems('plugin').length;
+      counts.chat = collectLocalGalleryItems('chat').length;
+      counts.dom = collectDomGalleryItems().length;
+      galleryItems = collectLocalGalleryItems(gallerySource === 'comfy' ? 'plugin' : gallerySource);
+      if (gallerySource === 'dom' || gallerySource === 'all') {
+        const seen = new Set(galleryItems.map(i => i.key));
+        collectDomGalleryItems().forEach(it => {
+          if (seen.has(it.key)) return;
+          seen.add(it.key);
+          galleryItems.push(it);
+        });
+      }
+      if (gallerySource === 'comfy') galleryItems = [];
+      imgOk = 0;
+      imgFail = 0;
+      if (gallerySource === 'plugin') hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开);若为 0,说明这个浏览器里没有生图记录。';
+      else if (gallerySource === 'chat') hintEl.textContent = '当前聊天记录保存在消息 extra 里;若为 0,说明本聊天没有带图记录。';
+      else if (gallerySource === 'dom') hintEl.textContent = '「当前页面上的图」直接扫聊天里已渲染的图片,只要有图必然能看到。';
       else hintEl.textContent = '已显示本地记录;正在读取 ComfyUI 输出历史…';
       renderGrid();
+      renderStatus();
     };
 
     const load = async () => {
@@ -6655,6 +6730,7 @@
       if (gallerySource !== 'all' && gallerySource !== 'comfy') return;
       try {
         const comfyItems = await collectComfyHistoryItems();
+        counts.comfy = comfyItems.length;
         const seen = new Set(galleryItems.map(i => i.key));
         comfyItems.forEach(it => {
           if (seen.has(it.key)) return;
@@ -6663,9 +6739,11 @@
         });
         hintEl.textContent = 'ComfyUI 输出历史来自本次运行(/history),重启 ComfyUI 后会清空;插件记录与聊天记录长期保存。';
       } catch (err) {
+        counts.comfy = 0;
         hintEl.textContent = `读取 ComfyUI 输出历史失败:${err.message}`;
       }
       renderGrid();
+      renderStatus();
     };
 
     sourceSel.addEventListener('change', load);
