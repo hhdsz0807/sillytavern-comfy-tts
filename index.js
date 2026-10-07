@@ -3201,37 +3201,61 @@
     return out;
   }
 
-  // 把对照表套用到已有 LoRA 条目(★ 宽松匹配:全路径→文件名→去扩展名→互为包含,尽量都能配上)
-  // 返回 { applied, unmatched:[] } —— unmatched 就是"没配好、需要单独重配"的那些
+  /**
+   * 文件名相似度打分(用于把对照表里的 C 站链接回填到每条 LoRA)
+   * ★ 只保留「精确 / 去扩展名 / 前缀 / 包含」四类明确关系;
+   *   刻意不做 token 重叠匹配 —— 同系列 LoRA(如 xxx-s1-illustriousxl-nochekaiser)会互相误配
+   */
+  function loraNameMatchScore(entryName, mapKey) {
+    const a = String(entryName || '').replace(/\\/g, '/').toLowerCase().trim();
+    const b = String(mapKey || '').replace(/\\/g, '/').toLowerCase().trim();
+    if (!a || !b) return 0;
+    const ab = a.split('/').pop();
+    const bb = b.split('/').pop();
+    if (a === b || ab === bb) return 100;
+    const an = ab.replace(/\.safetensors$/i, '');
+    const bn = bb.replace(/\.safetensors$/i, '');
+    if (an === bn) return 95;
+    if (an.length >= 8 && bn.length >= 8) {
+      if (bn.startsWith(an) || an.startsWith(bn)) return 80;   // anna_yanami ↔ anna_yanami-makeine_…_30
+      if (an.length >= 12 && bn.length >= 12 && (bn.includes(an) || an.includes(bn))) return 70;
+    }
+    return 0;
+  }
+
+  // 把对照表回填到各条 LoRA 的「C 站链接」(★ 每条取分数最高的唯一候选,避免误配)
   function applyCivitaiMap(map) {
     const loras = getSettings().comfyLoras || [];
+    const entries = [...map.entries()];
     let applied = 0;
     const unmatched = [];
 
     loras.forEach(item => {
       const raw = String(item.name || '').trim();
       if (!raw) return;
-      const norm = raw.replace(/\\/g, '/').toLowerCase();
-      const base = norm.split('/').pop();
-      const noExt = base.replace(/\.safetensors$/i, '');
 
-      let url = map.get(norm) || map.get(base) || map.get(noExt) || '';
-      if (!url) {
-        // 互为包含的宽松匹配(kb 至少 6 字符,避免误配)
-        for (const [k, v] of map.entries()) {
-          const kb = k.split('/').pop();
-          if (kb === base || kb === noExt) { url = v; break; }
-          if (kb.length > 6 && (norm.includes(kb) || kb.includes(base) || noExt.includes(kb.replace(/\.safetensors$/i, '')))) { url = v; break; }
+      let bestUrl = '';
+      let bestScore = 0;
+      let secondScore = 0;
+      for (const [k, v] of entries) {
+        const score = loraNameMatchScore(raw, k);
+        if (score > bestScore) {
+          secondScore = bestScore;
+          bestScore = score;
+          bestUrl = v;
+        } else if (score > secondScore) {
+          secondScore = score;
         }
       }
-
-      if (url) {
-        if ((item.civitaiUrl || '') !== url) {
-          item.civitaiUrl = url;
+      // 必须达到"明确关系"且唯一最优,才回填
+      const accepted = bestUrl && bestScore >= 70 && bestScore > secondScore;
+      if (accepted) {
+        if ((item.civitaiUrl || '') !== bestUrl) {
+          item.civitaiUrl = bestUrl;
           applied++;
         }
       } else if (!(item.civitaiUrl || '').trim()) {
-        unmatched.push(base);
+        unmatched.push(String(raw).split('/').pop());
       }
     });
 
@@ -8125,7 +8149,7 @@
               <label for="sct-civitai-map-text">对照表内容(JSON / CSV / 每行「文件名 => 地址」)</label>
               <textarea id="sct-civitai-map-text" class="text_pole sct-textarea-autowrap" rows="3" placeholder="anna_yanami.safetensors => https://civitai.com/models/607474&#10;或直接粘贴扫描脚本产出的 lora-civitai-map.json 全文"></textarea>
               <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-apply">📥 套用到匹配的 LoRA 条目</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-apply">📥 回填到每条 LoRA 的「C 站链接」框</button>
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-rename-map-apply">🔁 按此表更新条目文件名(改名后用)</button>
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-file-btn">📄 选择文件</button>
                 <input type="file" id="sct-civitai-map-file" accept=".json,.csv,.txt" style="display:none;" />
