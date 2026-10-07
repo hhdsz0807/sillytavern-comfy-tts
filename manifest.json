@@ -1,12 +1,12 @@
 {
   "display_name": "ComfyUI 绘图 & TTS 语音朗读",
   "name": "sillytavern-comfy-tts",
-  "version": "1.24.0",
+  "version": "1.24.1",
   "author": "DSH & SillyTavern",
   "description": "酒馆专属 ComfyUI 智能生图与划选/整条消息语音朗读插件。支持自动识别 <image> 标签、多图横向轮播、全屏大图预览、划选即时朗读胶囊、消息朗读按钮及个性化音色与画风配置。",
   "type": "extension",
   "loading_order": 60,
-  "js": "index.js?ver=1.24.0",
-  "css": "style.css?ver=1.24.0",
+  "js": "index.js?ver=1.24.1",
+  "css": "style.css?ver=1.24.1",
   "homePage": "https://github.com/hhdsz0807/sillytavern-comfy-tts"
 }

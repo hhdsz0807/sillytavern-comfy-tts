@@ -6697,82 +6697,12 @@
       persist();
     };
 
-    // 顶部工具条:只留一个「☰ 功能板块」按钮,列表点开才出现(不吸顶、不挡内容)
-    const toolbar = document.createElement('div');
-    toolbar.className = 'sct-section-toolbar';
-    toolbar.innerHTML = `
-      <button type="button" class="sct-comfy-btn sct-btn-xs sct-section-menu-btn" id="sct-sec-menu-btn" title="展开某个功能板块">☰ 功能板块</button>
-      <span class="sct-section-current" id="sct-sec-current"></span>
-      <div class="sct-section-menu" id="sct-sec-menu" style="display:none;">
-        <button type="button" class="sct-section-menu-item" data-act="expand">⬇️ 全部展开</button>
-        <button type="button" class="sct-section-menu-item" data-act="collapse">⬆️ 全部收起</button>
-        <div class="sct-section-menu-sep"></div>
-        ${liveItems.map((it, i) => `<button type="button" class="sct-section-menu-item" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
-      </div>
-    `;
-    const menu = toolbar.querySelector('#sct-sec-menu');
-    const menuBtn = toolbar.querySelector('#sct-sec-menu-btn');
-    const currentLabel = toolbar.querySelector('#sct-sec-current');
-
-    const closeMenu = () => { menu.style.display = 'none'; };
-    const refreshCurrent = () => {
-      const openOne = liveItems.find(it => !collapsed.has(it.id));
-      const openCount = liveItems.filter(it => !collapsed.has(it.id)).length;
-      if (currentLabel) {
-        currentLabel.textContent = openCount === 0
-          ? '全部已收起'
-          : (openCount === 1 && openOne ? openOne.label.replace(/^[^\p{L}\p{N}]+/u, '').slice(0, 14) : `已展开 ${openCount} 个板块`);
-      }
-    };
-
-    menuBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const willOpen = menu.style.display === 'none';
-      menu.style.display = willOpen ? 'flex' : 'none';
-    });
-    toolbar.addEventListener('click', (e) => e.stopPropagation());
-    document.addEventListener('click', closeMenu);
-
-    toolbar.querySelector('[data-act="expand"]').addEventListener('click', () => {
-      applyAll(false);
-      refreshCurrent();
-      closeMenu();
-    });
-    toolbar.querySelector('[data-act="collapse"]').addEventListener('click', () => {
-      applyAll(true);
-      refreshCurrent();
-      closeMenu();
-    });
-    toolbar.querySelectorAll('[data-chip]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt(btn.getAttribute('data-chip'), 10);
-        // 点一个开一个,其余自动收起(手风琴),面板永远清爽
-        liveItems.forEach((it, i) => {
-          if (i === idx) collapsed.delete(it.id);
-          else collapsed.add(it.id);
-          it.apply();
-        });
-        persist();
-        refreshCurrent();
-        closeMenu();
-        const target = liveItems[idx];
-        if (target) target.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      });
-    });
-
-    // 标题点击后刷新「当前展开」提示
-    liveItems.forEach(it => {
-      it.title.addEventListener('click', () => setTimeout(refreshCurrent, 0));
-    });
-
-    container.insertBefore(toolbar, container.firstChild);
-
+    // 工具条已移除(板块已合并到 5 个,不需要额外按钮占位);展开/收起直接点板块标题
     if (hasStored) {
       liveItems.forEach(it => it.apply());   // 沿用上次的展开/收起状态
     } else {
       applyAll(true);                    // 首次使用:默认全部收起,面板一眼看完
     }
-    refreshCurrent();
   }
 
   /* ==========================================================================
