@@ -3472,6 +3472,27 @@
     return model;
   }
 
+  /** 从 ComfyUI 拉取已发布的 C 站对照表(免粘贴,手机最省事) */
+  async function fetchCivitaiMapFromComfy() {
+    const host = getCleanComfyHost();
+    if (!host) throw new Error('未配置 ComfyUI 地址');
+    const url = `${host}/view?filename=${encodeURIComponent('_civitai_map.json')}&subfolder=${encodeURIComponent(LORA_PREVIEW_SUBFOLDER)}&type=input`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`ComfyUI 上没有对照表(HTTP ${res.status}) —— 需先在电脑上运行工具脚本发布`);
+    const data = await res.json();
+    const map = new Map();
+    Object.entries(data || {}).forEach(([k, v]) => {
+      if (typeof v !== 'string') return;
+      const key = String(k).trim().replace(/\\/g, '/').toLowerCase();
+      if (!key) return;
+      map.set(key, v);
+      const base = key.split('/').pop();
+      if (base && !map.has(base)) map.set(base, v);
+    });
+    if (map.size === 0) throw new Error('对照表是空的');
+    return map;
+  }
+
   async function requestAiLoraConfig(entry) {
     const s = getSettings();
     const endpoint = resolveAiEndpoint();
@@ -8147,7 +8168,11 @@
 
             <div class="sct-setting-col">
               <label for="sct-civitai-map-text">对照表内容(JSON / CSV / 每行「文件名 => 地址」)</label>
-              <textarea id="sct-civitai-map-text" class="text_pole sct-textarea-autowrap" rows="3" placeholder="anna_yanami.safetensors => https://civitai.com/models/607474&#10;或直接粘贴扫描脚本产出的 lora-civitai-map.json 全文"></textarea>
+              <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
+                <button type="button" class="sct-comfy-btn" id="sct-civitai-map-pull">☁️ 从 ComfyUI 一键拉取并回填(免粘贴)</button>
+                <span class="sct-hint">推荐:对照表已发布在 ComfyUI 的 input/sct_lora_preview/_civitai_map.json</span>
+              </div>
+              <textarea id="sct-civitai-map-text" class="text_pole sct-textarea-autowrap" rows="3" placeholder="或手动粘贴:「文件名 => 地址」每行一条 / 小体积 JSON"></textarea>
               <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-civitai-map-apply">📥 回填到每条 LoRA 的「C 站链接」框</button>
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-rename-map-apply">🔁 按此表更新条目文件名(改名后用)</button>
@@ -9063,6 +9088,32 @@
       runCivitaiMapImport(box ? box.value : '');
     });
 
+    // ☁️ 从 ComfyUI 一键拉取对照表并回填(手机上不用粘贴任何东西)
+    container.querySelector('#sct-civitai-map-pull')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ 拉取中…';
+      const state = container.querySelector('#sct-civitai-map-state');
+      try {
+        const map = await fetchCivitaiMapFromComfy();
+        if (state) state.textContent = `已从 ComfyUI 拉取 ${map.size} 条`;
+        const applied = applyCivitaiMap(map);
+        if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
+        if (state) state.textContent = `已拉取 ${map.size} 条,回填 ${applied.applied} 条${applied.unmatched.length ? `,未匹配 ${applied.unmatched.length} 条` : ''}`;
+        showToast(
+          `已从 ComfyUI 拉取并回填 ${applied.applied} 条 C 站链接${applied.unmatched.length ? `;未匹配 ${applied.unmatched.length} 条:${applied.unmatched.slice(0, 3).join(' / ')}${applied.unmatched.length > 3 ? ' …' : ''}` : ''}`,
+          applied.unmatched.length ? 'warning' : 'success'
+        );
+      } catch (err) {
+        if (state) state.textContent = `拉取失败:${err.message}`;
+        showToast(`拉取对照表失败:${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+
     // 🔁 应用重命名映射(LoRA 文件在电脑上改过名后,让条目跟着更新,避免失联)
     container.querySelector('#sct-rename-map-apply')?.addEventListener('click', () => {
       const box = container.querySelector('#sct-civitai-map-text');
@@ -9092,9 +9143,10 @@
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       try {
+        // ★ 直接解析文件全文(不再塞进文本框、也不截断 —— 大文件也能导入)
         const text = await file.text();
         const box = container.querySelector('#sct-civitai-map-text');
-        if (box) box.value = text.slice(0, 200000);
+        if (box) box.value = `(已从文件 ${file.name} 导入,${(text.length / 1024).toFixed(1)}KB,无需粘贴)`;
         runCivitaiMapImport(text);
       } catch (err) {
         showToast(`读取对照表失败: ${err.message}`, 'error');
