@@ -2575,10 +2575,12 @@
     return loraPreviewManifest;
   }
 
-  /** 取某条 LoRA 的预览图 URL(没有则返回空串) */
+  /** 取某条 LoRA 的预览图 URL:★ 优先用手机本地缓存(电脑重启/隧道换址后依然能显示) */
   function loraPreviewUrl(item) {
     if (!item || item.previewOff) return '';
     const key = loraPreviewKey(item.name);
+    const local = loraPreviewLocalUrls.get(key);
+    if (local) return local;
     const stem = String(item.name || '').split(/[\\/]/).pop().replace(/\.safetensors$/i, '');
     const manifest = loraPreviewManifest || {};
     const file = item.previewFile || manifest[item.name] || manifest[key] || manifest[stem] || '';
@@ -2586,6 +2588,49 @@
     const host = getCleanComfyHost();
     const ver = item.previewVer ? `&t=${encodeURIComponent(item.previewVer)}` : '';
     return `${host}/view?filename=${encodeURIComponent(file)}&subfolder=${encodeURIComponent(LORA_PREVIEW_SUBFOLDER)}&type=input${ver}`;
+  }
+
+  /** 把服务器版预览图地址(用于把服务器预览抓成本地副本) */
+  function loraPreviewServerUrl(item) {
+    const stem = String(item.name || '').split(/[\\/]/).pop().replace(/\.safetensors$/i, '');
+    const manifest = loraPreviewManifest || {};
+    const file = item.previewFile || manifest[item.name] || manifest[loraPreviewKey(item.name)] || manifest[stem] || '';
+    if (!file) return '';
+    return `${getCleanComfyHost()}/view?filename=${encodeURIComponent(file)}&subfolder=${encodeURIComponent(LORA_PREVIEW_SUBFOLDER)}&type=input`;
+  }
+
+  let loraPreviewAutoCacheRunning = false;
+
+  /** 后台把所有 LoRA 预览图抓一份存到手机本地(缩略图很小,86 张不到 1MB) */
+  async function autoCacheLoraPreviews(container, notify = false) {
+    if (loraPreviewAutoCacheRunning) return 0;
+    if (!getSettings().comfyLocalCacheEnabled) return 0;
+    loraPreviewAutoCacheRunning = true;
+    let saved = 0;
+    try {
+      const loras = getSettings().comfyLoras || [];
+      for (const item of loras) {
+        const key = loraPreviewKey(item.name);
+        if (!key || loraPreviewLocalUrls.has(key)) continue;
+        const url = loraPreviewServerUrl(item);
+        if (!url) continue;
+        if (await cacheLoraPreviewFromServer(key, url)) saved++;
+      }
+      if (saved > 0 && container) renderLoraList(container);
+      if (notify) {
+        showToast(
+          saved > 0
+            ? `已把 ${saved} 张 LoRA 预览图保存到手机本地 —— 以后电脑关着/隧道换址也能看`
+            : (loraPreviewLocalUrls.size > 0 ? '预览图都已在手机本地' : '没抓到预览图:确认 ComfyUI 地址可用'),
+          saved > 0 ? 'success' : 'info'
+        );
+      }
+    } catch (err) {
+      if (notify) showToast(`保存预览图失败:${err.message}`, 'error');
+    } finally {
+      loraPreviewAutoCacheRunning = false;
+    }
+    return saved;
   }
 
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
@@ -6160,8 +6205,15 @@
               live.previewOff = false;
               saveSettings({ comfyLoras: getSettings().comfyLoras });
             }
+            // ★ 同时存一份到手机本地(以后电脑关着/隧道换址也能显示)
+            try {
+              await putLocalPreview(loraPreviewKey(loras[idx].name), file);
+              const u = loraPreviewLocalUrls.get(loraPreviewKey(loras[idx].name));
+              if (u) URL.revokeObjectURL(u);
+              loraPreviewLocalUrls.set(loraPreviewKey(loras[idx].name), URL.createObjectURL(file));
+            } catch (_) {}
             renderLoraList(container);
-            showToast('预览图已更新', 'success');
+            showToast('预览图已更新(并已存到手机本地)', 'success');
           } catch (err) {
             btn.disabled = false;
             btn.textContent = originalText;
@@ -7386,6 +7438,14 @@
             target.previewVer = Date.now();
             target.previewOff = false;
             saveSettings({ comfyLoras: getSettings().comfyLoras });
+            // ★ 同时存到手机本地预览库
+            try {
+              const pkey = loraPreviewKey(target.name);
+              await putLocalPreview(pkey, blob);
+              const oldU = loraPreviewLocalUrls.get(pkey);
+              if (oldU) URL.revokeObjectURL(oldU);
+              loraPreviewLocalUrls.set(pkey, URL.createObjectURL(blob));
+            } catch (_) {}
             const liveList = document.getElementById('sct-lora-items-container');
             if (liveList) renderLoraList(liveList);
             showToast(`已设为「${(target.title || target.name || '').trim()}」的预览图`, 'success');
@@ -7408,6 +7468,7 @@
      ========================================================================== */
   const LOCAL_IMG_DB = 'sct_comfy_images';
   const LOCAL_IMG_STORE = 'images';
+  const LOCAL_PREVIEW_STORE = 'previews';
   let localImgDbPromise = null;
 
   function openLocalImageDb() {
@@ -7417,18 +7478,89 @@
         reject(new Error('当前浏览器不支持 IndexedDB'));
         return;
       }
-      const req = indexedDB.open(LOCAL_IMG_DB, 1);
+      const req = indexedDB.open(LOCAL_IMG_DB, 2);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(LOCAL_IMG_STORE)) {
           const store = db.createObjectStore(LOCAL_IMG_STORE, { keyPath: 'key' });
           store.createIndex('savedAt', 'savedAt');
         }
+        // v2:LoRA 预览图也存本地(电脑重启/隧道换址后依然能显示)
+        if (!db.objectStoreNames.contains(LOCAL_PREVIEW_STORE)) {
+          const pv = db.createObjectStore(LOCAL_PREVIEW_STORE, { keyPath: 'key' });
+          pv.createIndex('savedAt', 'savedAt');
+        }
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error || new Error('打开本地图片库失败'));
     });
     return localImgDbPromise;
+  }
+
+  /* ---- LoRA 预览图本地缓存 ---- */
+  let loraPreviewLocalUrls = new Map();   // loraPreviewKey → objectURL
+
+  async function putLocalPreview(key, blob, extra = {}) {
+    if (!key || !blob) return false;
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_PREVIEW_STORE, 'readwrite');
+      tx.objectStore(LOCAL_PREVIEW_STORE).put({ key, blob, size: blob.size, savedAt: Date.now(), ...extra });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function getAllLocalPreviews() {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_PREVIEW_STORE, 'readonly');
+      const req = tx.objectStore(LOCAL_PREVIEW_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function deleteLocalPreview(key) {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_PREVIEW_STORE, 'readwrite');
+      tx.objectStore(LOCAL_PREVIEW_STORE).delete(key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /** 读出全部本地预览图并建好可直接用的 objectURL(渲染时同步取用) */
+  async function loadLoraPreviewCache() {
+    try {
+      const list = await getAllLocalPreviews();
+      loraPreviewLocalUrls.forEach(u => {
+        try { URL.revokeObjectURL(u); } catch (_) {}
+      });
+      loraPreviewLocalUrls = new Map();
+      list.forEach(e => {
+        if (!e || !e.key || !e.blob) return;
+        try { loraPreviewLocalUrls.set(e.key, URL.createObjectURL(e.blob)); } catch (_) {}
+      });
+    } catch (_) {}
+    return loraPreviewLocalUrls.size;
+  }
+
+  /** 把服务器上的一张预览图抓到本地(已存在则跳过) */
+  async function cacheLoraPreviewFromServer(key, url) {
+    if (!key || !url || loraPreviewLocalUrls.has(key)) return false;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return false;
+      const blob = await res.blob();
+      if (!blob || blob.size < 1024) return false; // 太小多半是错误页
+      await putLocalPreview(key, blob);
+      loraPreviewLocalUrls.set(key, URL.createObjectURL(blob));
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   async function putLocalImages(entries) {
@@ -7642,6 +7774,7 @@
 
             <div style="margin-top:6px; display:flex; gap:8px; flex-wrap:wrap;">
               <button type="button" class="sct-comfy-btn" id="sct-btn-add-lora">➕ 添加一条角色 LoRA 配置</button>
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-btn-save-previews" title="把 LoRA 预览图存到手机本地,电脑关着也能看">📱 保存全部预览图到手机</button>
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-btn-diag-lora">🔎 诊断:这段提示词会激活哪些 LoRA</button>
             </div>
 
@@ -8215,6 +8348,28 @@
     // 预览图清单(异步拉取;拿到后重渲染一次,把缩略图补上)
     ensureLoraPreviewManifest().then(manifest => {
       if (manifest && Object.keys(manifest).length > 0) renderLoraList(loraContainer);
+    });
+    // 📱 预览图本地缓存:先读本地,再后台把服务器上还没存过的抓一份到手机
+    loadLoraPreviewCache().then(n => {
+      if (n > 0) renderLoraList(loraContainer);
+      setTimeout(() => autoCacheLoraPreviews(loraContainer), 2000);
+    });
+    container.querySelector('#sct-btn-save-previews')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ 保存中…';
+      try {
+        await loadLoraPreviewCache();
+        const n = await autoCacheLoraPreviews(loraContainer, true);
+        btn.textContent = `✅ 已存 ${loraPreviewLocalUrls.size} 张`;
+        setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 2500);
+        return;
+      } catch (err) {
+        showToast(`保存失败:${err.message}`, 'error');
+      }
+      btn.disabled = false;
+      btn.textContent = orig;
     });
 
     // 🔍 LoRA 搜索/筛选(89 条也好找):匹配 中文名/激活 tag/文件名/分组名
