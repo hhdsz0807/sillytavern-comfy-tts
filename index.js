@@ -95,6 +95,11 @@
     comfyLocalCacheEnabled: true,
     comfyLocalCacheMaxMB: 800,         // 本地图库容量上限(MB),超出自动删最旧的
 
+    // LoRA 特征词注入策略
+    // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
+    // false       = 只注入选中分组的特征词(旧的"完全替换"行为)
+    comfyLoraBaseAlwaysInject: true,
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -2675,11 +2680,19 @@
     const parts = [];
     const globalKw = (s.comfyGlobalLoraKeywords || '').trim();
     if (globalKw) parts.push(globalKw);
+    const baseAlways = s.comfyLoraBaseAlwaysInject !== false;
     list.forEach(l => {
       if (!l) return;
       const variant = resolveLoraVariant(l, promptText, fullText);
-      const tw = ((variant ? variant.triggerWords : l.triggerWords) || '').trim();
-      if (tw) parts.push(tw);
+      const baseTw = ((l.triggerWords) || '').trim();
+      if (variant) {
+        // 基础词 = 身份锚点(发色/眼睛/尾巴…):默认始终注入,保证换装不丢角色
+        if (baseAlways && baseTw) parts.push(baseTw);
+        const vTw = ((variant.triggerWords) || '').trim();
+        if (vTw) parts.push(vTw);
+      } else if (baseTw) {
+        parts.push(baseTw);
+      }
     });
 
     const seen = new Set();
@@ -7808,6 +7821,11 @@
             </div>
             <div class="sct-hint">激活规则(严格):<b>只有「角色激活关键词」与各分组的「激活关键词」能触发挂载</b> —— 特征激活词只负责注入、绝不参与判定,也不看 LoRA 文件名。所以<b>没写激活词的条目永远不会被自动激活</b>(勾了「常驻生效」才会每张都挂)。为防止特征串台,动态角色 LoRA 每张图最多激活 1 个(按列表顺序,第一个命中的胜出),常驻 LoRA 不受限。</div>
 
+            <div class="sct-setting-row">
+              <label for="sct-cfg-lora-base-always">分组生效时<b>基础特征词始终注入</b> <span style="opacity:.6; font-size:11px;">(推荐:基础放身份锚点=发色/眼睛/尾巴…,分组放这套衣服;关掉则只注入选中分组)</span></label>
+              <input type="checkbox" id="sct-cfg-lora-base-always" ${s.comfyLoraBaseAlwaysInject !== false ? 'checked' : ''} />
+            </div>
+
             <div class="sct-lora-search-row">
               <input type="text" id="sct-lora-search" class="text_pole" placeholder="🔍 搜索角色:中文名 / 激活 tag / 文件名 / 分组名" autocomplete="off" />
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-lora-search-clear">✕</button>
@@ -8579,6 +8597,17 @@
       trimLocalImages().then(n => {
         if (n > 0) showToast(`已按新上限清理最旧的 ${n} 张本地图`, 'info');
       });
+    });
+
+    // 分组生效时基础特征词是否始终注入
+    container.querySelector('#sct-cfg-lora-base-always')?.addEventListener('change', (e) => {
+      saveSettings({ comfyLoraBaseAlwaysInject: e.target.checked });
+      showToast(
+        e.target.checked
+          ? '已开启:基础特征词始终注入(基础放身份锚点,分组放服装 —— 换装不丢角色)'
+          : '已关闭:选中分组时只注入该分组的特征词(需要每组自己写全身)',
+        'info'
+      );
     });
 
     container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
