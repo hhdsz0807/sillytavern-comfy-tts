@@ -8151,12 +8151,15 @@
             </div>
           </div>
 
-          <!-- 板块 4.7: AI 辅助配置 -->
+          <!-- 板块 4.7: AI 自动配置与批量工具(接口 / 一键配置 / 对照表 合并为一个板块) -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🤖</span>
-              <span>AI 辅助配置 (用于 LoRA 一键生成配置)</span>
+              <span>AI 自动配置与批量工具</span>
             </div>
+
+            <div class="sct-subsection">
+              <div class="sct-subsection-title">① AI 接口(「🤖 生成配置」用它)</div>
 
             <div class="sct-setting-col">
               <label for="sct-cfg-ai-endpoint">AI 接口地址 (OpenAI 兼容 /chat/completions)</label>
@@ -8198,14 +8201,10 @@
             <div class="sct-hint">
               仅在点击 LoRA 卡片里的「🤖 生成配置」时调用一次,不会自动联网;任何 OpenAI 兼容接口都可用(DeepSeek / OpenAI / 本地 Ollama 等)。
             </div>
-          </div>
+            </div><!-- /① AI 接口 -->
 
-          <!-- 板块 4.7.5: 一键配置全部 LoRA -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>🚀</span>
-              <span>一键配置全部 LoRA</span>
-            </div>
+            <div class="sct-subsection">
+              <div class="sct-subsection-title">② 一键配置全部 LoRA</div>
 
             <div class="sct-setting-col">
               <div class="sct-batch-opts">
@@ -8225,14 +8224,10 @@
                 <br>先点上面的「🔄 获取模型列表」确保模型名已填好,再开始。
               </div>
             </div>
-          </div>
+            </div><!-- /② 一键配置 -->
 
-          <!-- 板块 4.8: 批量导入 C 站地址对照表 -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>📥</span>
-              <span>批量导入 C 站地址对照表</span>
-            </div>
+            <div class="sct-subsection">
+              <div class="sct-subsection-title">③ C 站地址对照表(回填到每条 LoRA)</div>
 
             <div class="sct-setting-col">
               <label for="sct-civitai-map-text">对照表内容(JSON / CSV / 每行「文件名 => 地址」)</label>
@@ -8252,6 +8247,7 @@
                 ① 「📥 套用」按文件名回填 C 站链接;② 若你在电脑上把 LoRA 文件<b>改了名</b>,把改名映射(旧名 → 新名,或 lora-rename-map.json)粘进来点「🔁」,即可让条目跟着更新。
               </div>
             </div>
+            </div><!-- /③ C 站对照表 -->
           </div>
 
           <!-- 板块 5: 自动配图指令与消息交互 -->
