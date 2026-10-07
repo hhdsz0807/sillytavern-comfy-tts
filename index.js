@@ -91,6 +91,10 @@
     comfyAiAssistModel: 'deepseek-chat',
     comfyAiAssistExtra: '',            // 额外要求(可选):会追加进系统提示词
 
+    // 图片本地保存(手机 IndexedDB):服务器 output 被清理后依然能看,并且能在手机上真删
+    comfyLocalCacheEnabled: true,
+    comfyLocalCacheMaxMB: 800,         // 本地图库容量上限(MB),超出自动删最旧的
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -4975,6 +4979,17 @@
               idxState.currentIdx = Math.max(0, mergedImages.length - newImages.length);
             }
             renderCarouselCard(target, mergedImages, promptText, activeLoras);
+            // ★ 出图后立刻把图片本体存进手机本地:以后服务器 output 被清理也不影响查看与删除
+            cacheImagesToPhone(newImages.map(u => ({
+              url: u,
+              prompt: promptText,
+              loras: (activeLoras || []).map(l => l.name).filter(Boolean),
+            }))).then(async (r) => {
+              if (r.saved > 0) {
+                console.log(`[${DISPLAY_NAME}] 已保存 ${r.saved} 张到手机本地图库`);
+                await ensurePersistentStorage();
+              }
+            }).catch(() => {});
             const historyCount = mergedImages.length - newImages.length;
             showToast(
               `ComfyUI 绘图成功！${activeLoras.length > 0 ? `(已加载 ${activeLoras.length} 个 LoRA)` : ''}${historyCount > 0 ? ` · 轮播保留历史 ${historyCount} 张,可往前翻` : ''}`,
@@ -6551,6 +6566,8 @@
   let gallerySource = 'all';
   let galleryKeyword = '';
   let galleryEscHandler = null;
+  let galleryLocalUrls = new Map();   // 本地图库 key → objectURL
+  let galleryLocalEntries = [];       // 本地图库原始记录
   // 已在界面里隐藏的图(ComfyUI 没有删除文件的接口,只能隐藏)
   // ★ 必须持久化到 localStorage:否则刷新/更新插件后又会全部冒出来(用户已反馈过)
   const GALLERY_HIDDEN_KEY = 'sct_gallery_hidden_v1';
@@ -6670,6 +6687,11 @@
     try {
       if (typeof document !== 'undefined' && document.fullscreenElement) document.exitFullscreen?.();
     } catch (_) {}
+    // 释放本地图的 objectURL,避免内存泄漏
+    galleryLocalUrls.forEach(u => {
+      try { URL.revokeObjectURL(u); } catch (_) {}
+    });
+    galleryLocalUrls = new Map();
     // 一次性清掉所有同类遮罩:避免连点两次叠出多层,旧层关不掉卡在最上面
     document.querySelectorAll('.sct-gallery-overlay').forEach(el => el.remove());
     if (galleryEscHandler) {
@@ -6694,6 +6716,7 @@
         <div class="sct-gallery-tools">
           <select id="sct-gallery-source" class="text_pole">
             <option value="all">全部来源</option>
+            <option value="local">📱 手机本地保存(可删)</option>
             <option value="dom">当前页面上的图(必有效)</option>
             <option value="plugin">插件记录(含其它聊天)</option>
             <option value="chat">当前聊天</option>
@@ -6711,6 +6734,7 @@
           <span class="sct-gallery-count" id="sct-gallery-count"></span>
         </div>
         <div class="sct-gallery-tools sct-gallery-tools-row2">
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-backup">📱 备份当前显示的全部到手机</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-hide-shown">🚫 隐藏当前显示的全部</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-unhide">♻️ 恢复隐藏</button>
           <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-gallery-export">⬇️ 导出清单(给电脑端清理)</button>
@@ -6768,6 +6792,23 @@
     const statusEl = overlay.querySelector('#sct-gallery-status');
     const refreshBtn = overlay.querySelector('#sct-gallery-refresh');
 
+    // 读取手机本地图库(IndexedDB)并建好可直接显示的 objectURL
+    const loadLocalLibrary = async () => {
+      try {
+        galleryLocalEntries = await getAllLocalImages();
+      } catch (_) {
+        galleryLocalEntries = [];
+      }
+      galleryLocalUrls.forEach(u => {
+        try { URL.revokeObjectURL(u); } catch (_) {}
+      });
+      galleryLocalUrls = new Map();
+      galleryLocalEntries.forEach(e => {
+        if (!e || !e.key || !e.blob) return;
+        try { galleryLocalUrls.set(e.key, URL.createObjectURL(e.blob)); } catch (_) {}
+      });
+    };
+
     // 各来源计数 + 图片加载成败统计 + 地址填错警告 —— 一眼看出「为什么看不到图」
     const counts = { plugin: 0, chat: 0, dom: 0, comfy: 0 };
     let imgOk = 0;
@@ -6786,6 +6827,18 @@
       if (!statusEl || !statusEl.isConnected) return;
       const hiddenCountEl = overlay.querySelector('#sct-gallery-hidden-count');
       if (hiddenCountEl) hiddenCountEl.textContent = galleryHiddenKeys.size ? `已隐藏 ${galleryHiddenKeys.size} 张` : '';
+      // 手机本地图库用量(异步补一行,不阻塞)
+      if (statusEl && statusEl.isConnected) {
+        const localCount = galleryLocalEntries.length;
+        const localSize = galleryLocalEntries.reduce((s, e) => s + (e.blob?.size || 0), 0);
+        getLocalStorageEstimate().then(est => {
+          if (!statusEl.isConnected) return;
+          const base = statusEl.dataset.base || '';
+          const quotaTxt = est && est.quota ? `,浏览器可用 ${(est.quota / 1073741824).toFixed(1)}GB` : '';
+          const tip = `手机本地图库 ${localCount} 张 / ${(localSize / 1048576).toFixed(1)}MB${quotaTxt}`;
+          statusEl.textContent = `${base}  |  ${tip}`;
+        }).catch(() => {});
+      }
       const host = getCleanComfyHost();
       const pageHost = (typeof location !== 'undefined' && location.hostname) || '';
       const parts = [];
@@ -6814,7 +6867,9 @@
       } else if (firstCellSize === '0x0' || firstCellSize.endsWith('x0')) {
         parts.push('⚠️ 网格高度被压成 0(布局塌陷)—— 已自动切到列表视图显示');
       }
-      statusEl.textContent = parts.join('  |  ');
+      const baseText = parts.join('  |  ');
+      statusEl.dataset.base = baseText;
+      statusEl.textContent = baseText;
     };
 
     const renderGridInner = () => {
@@ -6833,7 +6888,7 @@
       grid.innerHTML = list.map((it, i) => `
         <div class="sct-gallery-cell" data-key="${escapeHtml(it.key)}" data-idx="${i}">
           <div class="sct-gallery-cell-img">
-            <img loading="lazy" src="${escapeHtml(it.url)}" alt="" />
+            <img loading="lazy" src="${escapeHtml(galleryLocalUrls.get(it.key) || it.url)}" alt="" />
           </div>
           <div class="sct-gallery-cell-ops">
             <button type="button" class="sct-gallery-op" data-act="view" title="大图查看">🔍</button>
@@ -6924,8 +6979,9 @@
             } else if (act === 'lora') {
               openLoraPreviewPicker(item);
             } else if (act === 'del') {
-              deleteGalleryImage(item);
+              await deleteGalleryImage(item);
               renderGrid();
+              renderStatus();
             }
           });
         });
@@ -6946,26 +7002,58 @@
     const loadLocal = () => {
       gallerySource = sourceSel.value;
       loadGalleryHidden();
-      // 分别统计三个同步来源,便于排查「到底哪一处是空的」
-      counts.plugin = collectLocalGalleryItems('plugin').length;
-      counts.chat = collectLocalGalleryItems('chat').length;
-      counts.dom = collectDomGalleryItems().length;
-      galleryItems = collectLocalGalleryItems(gallerySource === 'comfy' ? 'plugin' : gallerySource);
-      if (gallerySource === 'dom' || gallerySource === 'all') {
-        const seen = new Set(galleryItems.map(i => i.key));
-        collectDomGalleryItems().forEach(it => {
-          if (seen.has(it.key)) return;
-          seen.add(it.key);
-          galleryItems.push(it);
-        });
+
+      // 📱 本地图库来源:直接列 IndexedDB 里的图(服务器删了也有)
+      if (gallerySource === 'local') {
+        galleryItems = galleryLocalEntries.map(e => ({
+          key: e.key,
+          url: e.url || '',
+          prompt: e.prompt || '',
+          time: e.savedAt || 0,
+          sources: ['📱 手机本地'],
+          chat: '',
+          localOnly: true,
+        }));
+      } else {
+        counts.plugin = collectLocalGalleryItems('plugin').length;
+        counts.chat = collectLocalGalleryItems('chat').length;
+        counts.dom = collectDomGalleryItems().length;
+        galleryItems = collectLocalGalleryItems(gallerySource === 'comfy' ? 'plugin' : gallerySource);
+        if (gallerySource === 'dom' || gallerySource === 'all') {
+          const seen = new Set(galleryItems.map(i => i.key));
+          collectDomGalleryItems().forEach(it => {
+            if (seen.has(it.key)) return;
+            seen.add(it.key);
+            galleryItems.push(it);
+          });
+        }
+        // 「全部来源」时把手机本地的图也并进来(服务器文件没了也能看到)
+        if (gallerySource === 'all') {
+          const seen = new Set(galleryItems.map(i => i.key));
+          galleryLocalEntries.forEach(e => {
+            if (!e || seen.has(e.key)) return;
+            seen.add(e.key);
+            galleryItems.push({
+              key: e.key,
+              url: e.url || '',
+              prompt: e.prompt || '',
+              time: e.savedAt || 0,
+              sources: ['📱 手机本地'],
+              chat: '',
+              localOnly: true,
+            });
+          });
+        }
+        if (gallerySource === 'comfy') galleryItems = [];
       }
-      if (gallerySource === 'comfy') galleryItems = [];
+
       imgOk = 0;
       imgFail = 0;
-      if (gallerySource === 'plugin') hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开);若为 0,说明这个浏览器里没有生图记录。';
+      if (gallerySource === 'local') hintEl.textContent = '这些图存在手机浏览器本地(IndexedDB):服务器删掉也不影响,点 🗑️ 可以真正删除。';
+      else if (gallerySource === 'plugin') hintEl.textContent = '插件记录保存在浏览器 localStorage(每个聊天/角色分开);若为 0,说明这个浏览器里没有生图记录。';
       else if (gallerySource === 'chat') hintEl.textContent = '当前聊天记录保存在消息 extra 里;若为 0,说明本聊天没有带图记录。';
       else if (gallerySource === 'dom') hintEl.textContent = '「当前页面上的图」直接扫聊天里已渲染的图片,只要有图必然能看到。';
-      else hintEl.textContent = '已显示本地记录;正在读取 ComfyUI 输出历史…';
+      else hintEl.textContent = `已显示本地记录(含手机本地图库 ${galleryLocalEntries.length} 张);正在读取 ComfyUI 输出历史…`;
       renderGrid();
       grid.scrollTop = 0;
       if (typeof overlay.scrollTop === 'number') overlay.scrollTop = 0;
@@ -6973,7 +7061,8 @@
     };
 
     const load = async () => {
-      // ★ 先同步渲染本地记录,再异步补 ComfyUI 历史 —— 任何一边不通都不会卡在「读取中」
+      // ★ 先读手机本地图库(这样服务器图被删了也能正常显示),再同步渲染本地记录
+      await loadLocalLibrary();
       loadLocal();
       if (gallerySource !== 'all' && gallerySource !== 'comfy') return;
       try {
@@ -6993,6 +7082,41 @@
       renderGrid();
       renderStatus();
     };
+
+    // 📱 把当前显示的图备份到手机本地(服务器文件删了也不怕)
+    overlay.querySelector('#sct-gallery-backup')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const originalText = btn.textContent;
+      const kw = galleryKeyword.trim().toLowerCase();
+      const shown = galleryItems
+        .filter(it => !galleryHiddenKeys.has(it.key))
+        .filter(it => !kw || `${it.prompt} ${it.sources.join(' ')} ${it.chat}`.toLowerCase().includes(kw));
+      const need = shown.filter(it => !galleryLocalUrls.has(it.key) && it.url);
+      if (need.length === 0) {
+        showToast('当前显示的图都已在手机本地(或没有可下载的地址)', 'info');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = `⏳ 备份中 0/${need.length}…`;
+      let done = 0;
+      try {
+        // 分批,便于显示进度
+        for (const it of need) {
+          const r = await cacheImagesToPhone([{ url: it.url, prompt: it.prompt }]);
+          done += r.saved;
+          btn.textContent = `⏳ 备份中 ${done}/${need.length}…`;
+        }
+        await loadLocalLibrary();
+        renderGrid();
+        renderStatus();
+        showToast(`已备份 ${done} 张到手机本地(以后服务器删了也能看、能真删)`, done > 0 ? 'success' : 'warning');
+      } catch (err) {
+        showToast(`备份失败:${err.message}`, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
 
     // 🚫 批量:隐藏当前筛选出来的全部图(持久化,刷新/更新插件后不会复活)
     overlay.querySelector('#sct-gallery-hide-shown')?.addEventListener('click', () => {
@@ -7123,10 +7247,26 @@
     }
   }
 
-  /** 从记录里删除某张图(localStorage 任务 + 当前聊天 extra 两处) */
-  function deleteGalleryImage(item) {
+  /** 从记录里删除某张图(localStorage 任务 + 当前聊天 extra + ★ 手机本地 IndexedDB) */
+  async function deleteGalleryImage(item) {
     let removed = 0;
     const key = item.key;
+
+    // ★ 手机本地图库:这里才是"真删"(服务器文件删不掉,手机上的能删)
+    let localDeleted = false;
+    try {
+      if (galleryLocalUrls.has(key) || galleryLocalEntries.some(e => e.key === key)) {
+        await deleteLocalImage(key);
+        const u = galleryLocalUrls.get(key);
+        if (u) {
+          try { URL.revokeObjectURL(u); } catch (_) {}
+          galleryLocalUrls.delete(key);
+        }
+        galleryLocalEntries = galleryLocalEntries.filter(e => e.key !== key);
+        localDeleted = true;
+      }
+    } catch (_) {}
+
     try {
       const all = getPersistentTasks();
       let dirty = false;
@@ -7163,12 +7303,19 @@
       if (dirty && typeof ctx?.saveChatDebounced === 'function') ctx.saveChatDebounced();
     } catch (_) {}
     // ComfyUI 输出历史没有删除接口,只能在界面里隐藏(★ 持久化,刷新/更新插件后不再复活)
-    galleryHiddenKeys.add(key);
-    saveGalleryHidden();
-    if (removed === 0) {
-      showToast('该图来自 ComfyUI 输出历史,服务器上没有删除接口 —— 已在界面里永久隐藏(可点「♻️ 恢复隐藏」找回)', 'info');
+    if (removed > 0 || localDeleted) {
+      // 记录来源也清干净了,不需要再隐藏;但服务器文件仍在,为避免 ComfyUI 历史再把它捞出来,仍加入隐藏列表
+      galleryHiddenKeys.add(key);
+      saveGalleryHidden();
+      const parts = [];
+      if (localDeleted) parts.push('已从手机本地删除(真删)');
+      if (removed > 0) parts.push(`已清理 ${removed} 条记录`);
+      if (!localDeleted && removed === 0) parts.push('已在界面隐藏');
+      showToast(`${parts.join(',')}${localDeleted ? '' : ';ComfyUI 服务器上的文件不会被删'}`, 'success');
     } else {
-      showToast(`已从记录中移除 ${removed} 条,并加入永久隐藏列表(ComfyUI 服务器上的文件不会被删)`, 'success');
+      galleryHiddenKeys.add(key);
+      saveGalleryHidden();
+      showToast('该图来自 ComfyUI 输出历史,服务器上没有删除接口 —— 已在界面里永久隐藏(可点「♻️ 恢复隐藏」找回)', 'info');
     }
   }
 
@@ -7252,6 +7399,168 @@
     };
     searchEl.addEventListener('input', render);
     render();
+  }
+
+  /* ==========================================================================
+     📱 图片本地保存(手机 IndexedDB)
+     为什么要它:ComfyUI 的 output 目录被清理后,画廊里所有图都会变成「加载失败」。
+     把图片本体存进浏览器 IndexedDB 后:①服务器删了也能看 ②能在手机上真正删除
+     ========================================================================== */
+  const LOCAL_IMG_DB = 'sct_comfy_images';
+  const LOCAL_IMG_STORE = 'images';
+  let localImgDbPromise = null;
+
+  function openLocalImageDb() {
+    if (localImgDbPromise) return localImgDbPromise;
+    localImgDbPromise = new Promise((resolve, reject) => {
+      if (typeof indexedDB === 'undefined') {
+        reject(new Error('当前浏览器不支持 IndexedDB'));
+        return;
+      }
+      const req = indexedDB.open(LOCAL_IMG_DB, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(LOCAL_IMG_STORE)) {
+          const store = db.createObjectStore(LOCAL_IMG_STORE, { keyPath: 'key' });
+          store.createIndex('savedAt', 'savedAt');
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('打开本地图片库失败'));
+    });
+    return localImgDbPromise;
+  }
+
+  async function putLocalImages(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) return 0;
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_IMG_STORE, 'readwrite');
+      const store = tx.objectStore(LOCAL_IMG_STORE);
+      let n = 0;
+      entries.forEach(e => {
+        if (!e || !e.key || !e.blob) return;
+        store.put(e);
+        n++;
+      });
+      tx.oncomplete = () => resolve(n);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function getLocalImageEntry(key) {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_IMG_STORE, 'readonly');
+      const req = tx.objectStore(LOCAL_IMG_STORE).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function getAllLocalImages() {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_IMG_STORE, 'readonly');
+      const req = tx.objectStore(LOCAL_IMG_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function deleteLocalImage(key) {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_IMG_STORE, 'readwrite');
+      tx.objectStore(LOCAL_IMG_STORE).delete(key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function clearLocalImages() {
+    const db = await openLocalImageDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(LOCAL_IMG_STORE, 'readwrite');
+      tx.objectStore(LOCAL_IMG_STORE).clear();
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /** 超出容量上限时删掉最旧的本地图(默认 800MB,可在设置里改) */
+  async function trimLocalImages() {
+    const maxMB = parseInt(getSettings().comfyLocalCacheMaxMB, 10) || 800;
+    const all = (await getAllLocalImages()).sort((a, b) => (a.savedAt || 0) - (b.savedAt || 0));
+    let total = all.reduce((s, e) => s + (e.blob?.size || 0), 0);
+    const limit = maxMB * 1024 * 1024;
+    let removed = 0;
+    while (total > limit && all.length > 0) {
+      const oldest = all.shift();
+      total -= (oldest.blob?.size || 0);
+      await deleteLocalImage(oldest.key);
+      removed++;
+    }
+    return removed;
+  }
+
+  /**
+   * 把一批图(URL 形式)抓下来存进手机本地
+   * @param {Array<{url:string,prompt?:string,loras?:Array}>} items
+   */
+  async function cacheImagesToPhone(items) {
+    const s = getSettings();
+    if (!s.comfyLocalCacheEnabled) return { saved: 0, failed: 0, skipped: 0 };
+    const list = (items || []).filter(it => it && it.url);
+    let saved = 0, failed = 0, skipped = 0;
+    const push = [];
+    for (const it of list) {
+      const key = comfyFileKey(normalizeComfyImageUrl(it.url));
+      if (!key) { skipped++; continue; }
+      try {
+        if (await getLocalImageEntry(key)) { skipped++; continue; }
+        const res = await fetch(it.url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        push.push({
+          key,
+          blob,
+          url: normalizeComfyImageUrl(it.url),
+          prompt: it.prompt || '',
+          loras: it.loras || [],
+          savedAt: Date.now(),
+          size: blob.size,
+        });
+        saved++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (push.length > 0) {
+      await putLocalImages(push);
+      await trimLocalImages();
+    }
+    return { saved, failed, skipped };
+  }
+
+  /** 申请持久化存储,避免浏览器在空间紧张时把本地图清掉 */
+  async function ensurePersistentStorage() {
+    try {
+      if (navigator.storage && navigator.storage.persist) {
+        const ok = await navigator.storage.persisted?.();
+        if (!ok) await navigator.storage.persist();
+      }
+    } catch (_) {}
+  }
+
+  async function getLocalStorageEstimate() {
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const est = await navigator.storage.estimate();
+        return { usage: est.usage || 0, quota: est.quota || 0 };
+      }
+    } catch (_) {}
+    return null;
   }
 
   function injectSettingsPanel() {
@@ -7369,6 +7678,17 @@
               <button type="button" class="sct-comfy-btn" id="sct-btn-open-gallery">🖼️ 打开图片管理</button>
               <span class="sct-hint" id="sct-gallery-stat"></span>
             </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-localcache">📱 出图后自动保存到手机本地 <span style="opacity:.6; font-size:11px;">(服务器清理后依然能看、能在手机上真删)</span></label>
+              <input type="checkbox" id="sct-cfg-localcache" ${s.comfyLocalCacheEnabled ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-localcache-max">本地图库容量上限 (MB,超出自动删最旧的)</label>
+              <input type="number" id="sct-cfg-localcache-max" class="text_pole" style="max-width:110px;" min="100" max="8000" step="100" value="${s.comfyLocalCacheMaxMB || 800}" />
+            </div>
+            <div class="sct-hint">图片存在手机浏览器本地(IndexedDB),会申请持久化存储权限;已有图片可在图片管理里点「📱 备份当前显示的全部到手机」一次性补存。</div>
           </div>
 
           <!-- 板块 3: 提示词与画面质量参数 -->
@@ -8028,6 +8348,11 @@
         try {
           const local = collectLocalGalleryItems('all').length;
           if (statEl) statEl.textContent = `插件+聊天记录里共 ${local} 张`;
+          getAllLocalImages().then(list => {
+            if (!statEl || !statEl.isConnected) return;
+            const mb = (list.reduce((s, e) => s + (e.blob?.size || 0), 0) / 1048576).toFixed(1);
+            statEl.textContent = `插件+聊天记录共 ${local} 张 · 手机本地已存 ${list.length} 张 / ${mb}MB`;
+          }).catch(() => {});
         } catch (_) {}
       };
       refreshStat();
@@ -8036,6 +8361,21 @@
         refreshStat();
       });
     }
+
+    // 📱 本地保存设置
+    container.querySelector('#sct-cfg-localcache')?.addEventListener('change', (e) => {
+      saveSettings({ comfyLocalCacheEnabled: e.target.checked });
+      if (e.target.checked) ensurePersistentStorage();
+      showToast(e.target.checked ? '已开启:出图后自动保存到手机本地' : '已关闭自动保存(已有本地图不会被删)', 'info');
+    });
+    container.querySelector('#sct-cfg-localcache-max')?.addEventListener('change', (e) => {
+      const mb = Math.max(100, Math.min(8000, parseInt(e.target.value, 10) || 800));
+      e.target.value = mb;
+      saveSettings({ comfyLocalCacheMaxMB: mb });
+      trimLocalImages().then(n => {
+        if (n > 0) showToast(`已按新上限清理最旧的 ${n} 张本地图`, 'info');
+      });
+    });
 
     container.querySelector('#sct-btn-add-lora').addEventListener('click', () => {
       const curLoras = getSettings().comfyLoras || [];
