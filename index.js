@@ -6629,8 +6629,67 @@
       return { section, title, body, apply, id, label: rawText || `板块 ${i + 1}` };
     }).filter(Boolean);
 
+    // ---------------------------------------------------------------------
+    // 渲染期合并:把源码里分散在不同位置的多个板块合成一个(不动源码顺序,避免搬标记出错)
+    // 被合并进来的板块会变成容器里的子区块 ①②③…,容器标题显示合并后的名字
+    // ---------------------------------------------------------------------
+    const cleanSecLabel = (t) => String(t || '').replace(/^[^\p{L}\p{N}]+/u, '').trim() || '未命名';
+    const MERGE_GROUPS = [
+      {
+        emoji: '🎨',
+        label: '出图设置(连接 · 提示词 · 高清 · 脸部 · 画风 · 配图交互)',
+        keys: [
+          'ComfyUI 服务连接与模型',
+          '固定质量提示词与出图尺寸',
+          '高清二次放大修复设置',
+          '脸部修复',
+          '画风参考',
+          '自动配图指示与消息交互',
+        ],
+      },
+    ];
+    const removedIds = new Set();
+    MERGE_GROUPS.forEach(group => {
+      const found = [];
+      group.keys.forEach(key => {
+        const hit = items.find(x => !removedIds.has(x.id) && !found.includes(x) && x.label.includes(key));
+        if (hit) found.push(hit);
+      });
+      if (found.length < 2) return;
+
+      const container = found[0];
+      const spans = [...container.title.querySelectorAll('span')];
+      if (spans[0]) spans[0].textContent = group.emoji;
+      if (spans[1]) spans[1].textContent = group.label;
+      container.label = `${group.emoji} ${group.label}`;
+
+      const wrapAsSub = (item, order) => {
+        const sub = document.createElement('div');
+        sub.className = 'sct-subsection';
+        const head = document.createElement('div');
+        head.className = 'sct-subsection-title';
+        head.textContent = `${order} ${cleanSecLabel(item.label)}`;
+        sub.appendChild(head);
+        [...item.body.children].forEach(ch => sub.appendChild(ch));
+        return sub;
+      };
+
+      const subBlocks = [wrapAsSub(container, '①')];
+      const orders = ['②', '③', '④', '⑤', '⑥', '⑦', '⑧'];
+      found.slice(1).forEach((item, i) => {
+        subBlocks.push(wrapAsSub(item, orders[i] || `(${i + 2})`));
+        removedIds.add(item.id);
+        item.section.remove();
+      });
+
+      container.body.innerHTML = '';
+      subBlocks.forEach(b => container.body.appendChild(b));
+    });
+    // 合并后只保留“还存在于页面上”的板块(用于工具条与全局展开/收起)
+    const liveItems = items.filter(it => !removedIds.has(it.id));
+
     const applyAll = (collapse) => {
-      items.forEach(it => {
+      liveItems.forEach(it => {
         if (collapse) collapsed.add(it.id);
         else collapsed.delete(it.id);
         it.apply();
@@ -6648,7 +6707,7 @@
         <button type="button" class="sct-section-menu-item" data-act="expand">⬇️ 全部展开</button>
         <button type="button" class="sct-section-menu-item" data-act="collapse">⬆️ 全部收起</button>
         <div class="sct-section-menu-sep"></div>
-        ${items.map((it, i) => `<button type="button" class="sct-section-menu-item" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
+        ${liveItems.map((it, i) => `<button type="button" class="sct-section-menu-item" data-chip="${i}">${escapeHtml(it.label)}</button>`).join('')}
       </div>
     `;
     const menu = toolbar.querySelector('#sct-sec-menu');
@@ -6657,8 +6716,8 @@
 
     const closeMenu = () => { menu.style.display = 'none'; };
     const refreshCurrent = () => {
-      const openOne = items.find(it => !collapsed.has(it.id));
-      const openCount = items.filter(it => !collapsed.has(it.id)).length;
+      const openOne = liveItems.find(it => !collapsed.has(it.id));
+      const openCount = liveItems.filter(it => !collapsed.has(it.id)).length;
       if (currentLabel) {
         currentLabel.textContent = openCount === 0
           ? '全部已收起'
@@ -6688,7 +6747,7 @@
       btn.addEventListener('click', () => {
         const idx = parseInt(btn.getAttribute('data-chip'), 10);
         // 点一个开一个,其余自动收起(手风琴),面板永远清爽
-        items.forEach((it, i) => {
+        liveItems.forEach((it, i) => {
           if (i === idx) collapsed.delete(it.id);
           else collapsed.add(it.id);
           it.apply();
@@ -6696,20 +6755,20 @@
         persist();
         refreshCurrent();
         closeMenu();
-        const target = items[idx];
+        const target = liveItems[idx];
         if (target) target.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
 
     // 标题点击后刷新「当前展开」提示
-    items.forEach(it => {
+    liveItems.forEach(it => {
       it.title.addEventListener('click', () => setTimeout(refreshCurrent, 0));
     });
 
     container.insertBefore(toolbar, container.firstChild);
 
     if (hasStored) {
-      items.forEach(it => it.apply());   // 沿用上次的展开/收起状态
+      liveItems.forEach(it => it.apply());   // 沿用上次的展开/收起状态
     } else {
       applyAll(true);                    // 首次使用:默认全部收起,面板一眼看完
     }
