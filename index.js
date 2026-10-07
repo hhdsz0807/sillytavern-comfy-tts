@@ -2987,16 +2987,33 @@
       '{',
       '  "title": "中文标题(角色中文名,能确定作品就写成「作品名·角色名」;不确定就只写角色名)",',
       '  "keywords": "激活关键词,逗号分隔(英文触发 tag 必须放最前)",',
-      '  "triggerWords": "基础特征注入词,逗号分隔(可空)",',
-      '  "variants": [ { "label": "分组名(用角色中文名)", "keywords": "本组激活关键词", "triggerWords": "本组注入词" } ]',
+      '  "triggerWords": "基础特征注入词 = 角色身份锚点,逗号分隔(可空)",',
+      '  "variants": [ { "label": "分组名(用简短中文,如 女仆装 / 本体默认装 / 八奈见杏菜)", "keywords": "本组激活关键词", "triggerWords": "本组注入词" } ]',
       '}',
-      '规则:',
-      '1) title 是给人看的中文名,必须简洁可读(如「八奈见杏菜」「葬送的芙莉莲·菲伦」);禁止直接照抄英文文件名;',
-      '2) keywords = 「出现就应挂载该 LoRA」的判别词:**英文触发 tag 放最前(保留下划线原样写法)**,随后可附角色中文名与常见写法变体;',
-      '3) 若该 LoRA 含多个角色或多套服装 → 拆成多个 variants,每个角色/服装一组,label 用角色中文名;每组的 keywords 只写该组独有判别词,triggerWords 写该组完整的角色特征注入词;',
-      '4) 不要把 blue hair / school uniform 这类通用外貌词当作唯一判别词(它们可以出现在 triggerWords 里用于注入);',
-      '5) triggerWords 里的 tag 保留下划线写法(如 yakishio_lemon),那是 LoRA 训练口径;',
-      '6) variants 最多 8 组;没有多角色/多服装时 variants 给空数组。',
+      '',
+      '【第一步 · 决定分几组(最重要,必须先做这步)】',
+      '先把这个 LoRA 的「形态触发 tag」数出来,数量 = 组数:',
+      '- 形态触发 tag = 区分不同角色 / 不同服装 / 不同形态的专用 tag,例:deepseek_whale_girl(本体)、deepseek_maid_outfit(女仆装)、yanami_anna(某角色)。',
+      '- 只有 1 个形态触发 tag → **不分** variants 给空数组 [],全部写进基础 triggerWords;',
+      '- 有「本体 + 每套服装」各一个 → **每套衣服一组**;',
+      '- 一个 LoRA 含多个角色 → **每个角色一组**;',
+      '- 只有"单独一条的细节 tag"(如 blue whale emblem on lower apron)时,**绝不为它单独建组**,并入它所属那套服装的组里。',
+      '组数上限 8;判不准时宁少勿多(把共性词放基础,不要重复建组)。',
+      '',
+      '【第二步 · 三个字段怎么分工】',
+      '本插件注入规则是:出图时注入「基础 triggerWords(始终注入)」 + 「被选中那一组的 triggerWords」,不会互相覆盖。因此:',
+      '- 基础 triggerWords = **身份锚点**,所有组共用、永远注入:角色触发 tag、1girl/solo、发色发型、眼睛、耳朵、尾巴等不分服装的特征;',
+      '- 每组 triggerWords = **该组独有的内容**:该组形态触发 tag + 这套服装/形态的全部细节(不要把身份锚点重复写进组里,那会重复堆叠);',
+      '- 每组 keywords = **该组独有的判别词**:英文形态触发 tag 放最前(保留下划线原样写法),后面附中文名/常见写法;',
+      '- 基础 keywords = 「出现就应挂载该 LoRA」的全部判别词:所有角色/服装触发 tag + 各角色中文名;',
+      '- title = 给人看的中文名,必须简洁可读(如「八奈见杏菜」「葬送的芙莉莲·菲伦」),禁止照抄英文文件名。',
+      '',
+      '【通用规则】',
+      '1) 判别词只写有辨识度的词(形态触发 tag、角色名、中文名);**不要把 blue hair / school uniform 这类通用外貌词当作唯一判别词**(它们应出现在 triggerWords 用于注入);',
+      '2) 所有 tag 保留下划线原样写法(如 yakishio_lemon、white_frilled_apron),那是 LoRA 训练口径;',
+      '3) 从作者示例/C站资料里出现的词优先原样采用,不要擅自改写;',
+      '4) keywords 与各组 keywords 之间不要重复;同一判别词只出现一次;',
+      '5) 若用户给了「硬性要求」(角色数量/服装套数),以用户要求为准,即使与你的推断冲突。',
       extra ? `额外要求:${extra}` : '',
       '只输出 JSON。',
     ].filter(Boolean).join('\n');
@@ -3504,6 +3521,38 @@
     });
     if (map.size === 0) throw new Error('对照表是空的');
     return map;
+  }
+
+  /** 预览「发给 AI 的默认提示词」,方便用户确认与按需追加要求 */
+  function showAiPromptPreview() {
+    const msgs = buildAiLoraMessages({ name: '(示例)某角色LoRA.safetensors', aiNote: '', aiHint: '' });
+    const system = msgs.find(m => m.role === 'system')?.content || '';
+    const overlay = document.createElement('div');
+    overlay.className = 'sct-lora-picker-overlay';
+    overlay.innerHTML = `
+      <div class="sct-lora-picker-modal" style="width:min(94vw,780px);">
+        <div class="sct-gallery-head">
+          <span class="sct-gallery-title">🤖 发给 AI 的默认提示词(系统提示)</span>
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-aiprompt-close">✕</button>
+        </div>
+        <textarea class="text_pole sct-textarea-autowrap" rows="18" readonly style="font-size:12px; line-height:1.6;">${escapeHtml(system)}</textarea>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-aiprompt-copy">📋 复制这段提示词</button>
+          <span class="sct-hint">想追加规则就写进上面的「额外要求」框 —— 会拼在这段末尾</span>
+        </div>
+      </div>
+    `;
+    document.documentElement.appendChild(overlay);
+    const close = () => overlay.remove();
+    overlay.querySelector('#sct-aiprompt-close').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+    overlay.querySelector('#sct-aiprompt-copy').addEventListener('click', () => {
+      navigator.clipboard.writeText(system)
+        .then(() => showToast('默认提示词已复制', 'success'))
+        .catch(() => showToast('复制失败,可长按文本框手动复制', 'warning'));
+    });
   }
 
   async function requestAiLoraConfig(entry) {
@@ -8128,6 +8177,7 @@
                 <input type="text" id="sct-cfg-ai-model" class="text_pole" placeholder="留空则调用时自动获取" value="${escapeHtml(s.comfyAiAssistModel || '')}" style="flex:1; min-width:130px;" />
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-fetch-models">🔄 获取模型列表</button>
                 <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-test">🧪 测试 AI 接口</button>
+                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-ai-view-prompt">👁️ 查看默认提示词</button>
                 <select id="sct-ai-model-select" class="text_pole" style="max-width:190px;">
                   <option value="">(点左侧按钮拉取)</option>
                   ${(cachedAiModels || []).map(m => `<option value="${escapeHtml(m)}" ${m === s.comfyAiAssistModel ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
@@ -8937,6 +8987,12 @@
       const input = container.querySelector('#sct-cfg-ai-model');
       if (input) input.value = e.target.value;
       saveSettings({ comfyAiAssistModel: e.target.value });
+    });
+
+    // 👁️ 查看发给 AI 的默认提示词
+    container.querySelector('#sct-ai-view-prompt')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      showAiPromptPreview();
     });
 
     // 🧪 测试 AI 接口:补全地址 → 拉模型列表 → 发一条最小对话请求
