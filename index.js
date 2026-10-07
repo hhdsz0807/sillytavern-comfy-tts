@@ -98,9 +98,11 @@
 
     // 多 LoRA 规则库 (Array of LoRA objects)
     // 结构: [{ id, title, name, strengthModel, strengthClip, keywords, triggerWords, enabled, alwaysOn,
-    //          variants: [{ id, label, keywords, triggerWords }], activeVariantId, civitaiUrl, civitai, aiNote }]
+    //          variants: [{ id, label, keywords, triggerWords }], activeVariantId, civitaiUrl, civitai, aiNote,
+    //          aiHint, aiHintToChat }]
     // title = 中文标题(给人看的角色名), keywords = 英文激活 tag, triggerWords = 注入的角色特征词
     // variants = 激活词分组:同一角色多套激活词(校服/泳装/便服…),出图时选其中一组生效
+    // aiHint = 给 AI 的提醒(如「这 LoRA 有 5 个角色,每人 2 套服装」),aiHintToChat = 是否也注入聊天上下文
     comfyLoras: [
       {
         id: 'default_lora_1',
@@ -112,6 +114,10 @@
         triggerWords: 'nagi, 1girl, solo, silver hair, purple eyes, school uniform',
         variants: [],
         activeVariantId: '',
+        civitaiUrl: '',
+        aiNote: '',
+        aiHint: '',
+        aiHintToChat: false,
         enabled: true,
         alwaysOn: false
       }
@@ -515,18 +521,32 @@
     const s = getSettings();
     const ctx = getSTContext();
     if (!ctx) return;
+    if (typeof ctx.setExtensionPrompt !== 'function') return;
 
-    if (s.autoInjectImageInstruction && s.comfyEnabled) {
-      const text = s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION;
-      if (typeof ctx.setExtensionPrompt === 'function') {
-        // 注入在上下文尾部，确保模型严格遵守输出规范
-        ctx.setExtensionPrompt(MODULE_NAME, `\n${text}\n`, 1, 0, false);
-      }
+    // 用户为某些 LoRA 勾选了「提醒聊天 AI」时,把提醒一起塞进上下文
+    const reminders = s.comfyEnabled ? buildLoraAiReminders() : '';
+    const baseText = (s.autoInjectImageInstruction && s.comfyEnabled) ? (s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION) : '';
+
+    const finalText = `${baseText}${reminders}`.trim();
+    if (finalText) {
+      // 注入在上下文尾部，确保模型严格遵守输出规范
+      ctx.setExtensionPrompt(MODULE_NAME, `\n${finalText}\n`, 1, 0, false);
     } else {
-      if (typeof ctx.setExtensionPrompt === 'function') {
-        ctx.setExtensionPrompt(MODULE_NAME, '', 1, 0, false);
-      }
+      ctx.setExtensionPrompt(MODULE_NAME, '', 1, 0, false);
     }
+  }
+
+  /** 汇总「提醒聊天 AI」的 LoRA 备注(用于注入上下文,让聊天模型写对角色触发 tag) */
+  function buildLoraAiReminders() {
+    const loras = getSettings().comfyLoras || [];
+    const lines = loras
+      .filter(item => item && item.aiHintToChat && String(item.aiHint || '').trim())
+      .map(item => {
+        const label = String(item.title || '').trim() || String(item.name || '').trim() || '(未命名 LoRA)';
+        return `- ${label}:${String(item.aiHint).trim()}`;
+      });
+    if (lines.length === 0) return '';
+    return `\n【角色 LoRA 提醒 · 写生图标签时必须遵守】\n${lines.join('\n')}\n`;
   }
 
   /* ==========================================================================
@@ -2920,6 +2940,7 @@
     ].filter(Boolean).join('\n');
 
     const note = (entry.aiNote || '').trim();
+    const hint = (entry.aiHint || '').trim();
     const civ = entry.civitai || null;
     const civLines = civ
       ? [
@@ -2933,8 +2954,9 @@
       : '';
     const user = [
       `LoRA 文件名:${entry.name || '(未填)'}`,
+      hint ? `★ 用户对该 LoRA 的硬性要求(必须严格遵守,例如角色数量与服装套数):\n${hint}` : '',
       civLines,
-      note ? `作者说明 / 示例提示词:\n${note}` : (civLines ? '' : '(用户未提供作者说明;请依据文件名与你的知识推断角色与特征)'),
+      note ? `作者说明 / 示例提示词:\n${note}` : (civLines || hint ? '' : '(用户未提供作者说明;请依据文件名与你的知识推断角色与特征)'),
     ].filter(Boolean).join('\n');
 
     return [
@@ -3130,21 +3152,42 @@
     return out;
   }
 
-  // 把对照表套用到已有 LoRA 条目(按文件名匹配,C 站链接填进去)
+  // 把对照表套用到已有 LoRA 条目(★ 宽松匹配:全路径→文件名→去扩展名→互为包含,尽量都能配上)
+  // 返回 { applied, unmatched:[] } —— unmatched 就是"没配好、需要单独重配"的那些
   function applyCivitaiMap(map) {
     const loras = getSettings().comfyLoras || [];
     let applied = 0;
+    const unmatched = [];
+
     loras.forEach(item => {
-      const name = String(item.name || '').replace(/\\/g, '/').toLowerCase();
-      if (!name) return;
-      const url = map.get(name) || map.get(name.split('/').pop()) || '';
-      if (url && (item.civitaiUrl || '') !== url) {
-        item.civitaiUrl = url;
-        applied++;
+      const raw = String(item.name || '').trim();
+      if (!raw) return;
+      const norm = raw.replace(/\\/g, '/').toLowerCase();
+      const base = norm.split('/').pop();
+      const noExt = base.replace(/\.safetensors$/i, '');
+
+      let url = map.get(norm) || map.get(base) || map.get(noExt) || '';
+      if (!url) {
+        // 互为包含的宽松匹配(kb 至少 6 字符,避免误配)
+        for (const [k, v] of map.entries()) {
+          const kb = k.split('/').pop();
+          if (kb === base || kb === noExt) { url = v; break; }
+          if (kb.length > 6 && (norm.includes(kb) || kb.includes(base) || noExt.includes(kb.replace(/\.safetensors$/i, '')))) { url = v; break; }
+        }
+      }
+
+      if (url) {
+        if ((item.civitaiUrl || '') !== url) {
+          item.civitaiUrl = url;
+          applied++;
+        }
+      } else if (!(item.civitaiUrl || '').trim()) {
+        unmatched.push(base);
       }
     });
+
     if (applied > 0) saveSettings({ comfyLoras: loras });
-    return applied;
+    return { applied, unmatched };
   }
 
   // 解析「旧文件名 → 新文件名」重命名映射:支持 JSON 对象 {旧:新}、JSON 数组 [{from,to}],或每行「旧 => 新」
@@ -5862,6 +5905,12 @@
               <button type="button" class="sct-comfy-btn sct-btn-xs sct-lora-aigen" data-idx="${idx}">🤖 生成配置(激活词/特征词/分组)</button>
             </div>
             <textarea class="text_pole sct-textarea-autowrap sct-lora-ainote" data-idx="${idx}" rows="3" placeholder="作者说明 / 示例提示词(抓取后会自动填这里,也可手改或直接手粘)">${escapeHtml(item.aiNote || '')}</textarea>
+            <label class="sct-lora-aihint-label" style="font-size:12px; margin-top:2px;">✍️ 给 AI 的提醒 <span style="opacity:.6; font-size:11px;">(生成配置时会当作硬性要求;如「这个 LoRA 有 5 个角色」「每个角色 2 套服装」)</span></label>
+            <textarea class="text_pole sct-textarea-autowrap sct-lora-aihint" data-idx="${idx}" rows="2" placeholder="例如:这个 LoRA 有 5 个角色:杏菜 / 知花 / 柠檬 / 佳树 / 梦子;其中杏菜与柠檬各有 2 套服装(校服 / 泳装)">${escapeHtml(item.aiHint || '')}</textarea>
+            <label class="sct-lora-aihint-chat-label" style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;">
+              <input type="checkbox" class="sct-lora-aihint-tochat" data-idx="${idx}" ${item.aiHintToChat ? 'checked' : ''} />
+              同时<b>提醒聊天里的 AI</b>(让它写对角色触发 tag)
+            </label>
             <div class="sct-hint">
               「🌐 抓取」调 Civitai 公开接口取<b>官方触发词/标签/简介</b>并填入下面的说明;「🤖 生成配置」再让 AI 据此产出激活词、特征词与分组。
               接口在设置面板 → 🤖 AI 辅助配置。
@@ -6126,8 +6175,30 @@
         });
       }
 
-      const civitaiInput = card.querySelector('.sct-lora-civitai');
-      if (civitaiInput) {
+      // ✍️ 给 AI 的提醒:生成配置时作为硬性要求,可勾选同步提醒聊天里的 AI
+      const aiHintInput = card.querySelector('.sct-lora-aihint');
+      if (aiHintInput) {
+        aiHintInput.addEventListener('input', (e) => {
+          loras[idx].aiHint = e.target.value;
+          saveSettings({ comfyLoras: loras });
+        });
+      }
+      const aiHintChatBox = card.querySelector('.sct-lora-aihint-tochat');
+      if (aiHintChatBox) {
+        aiHintChatBox.addEventListener('change', (e) => {
+          loras[idx].aiHintToChat = e.target.checked;
+          saveSettings({ comfyLoras: loras });
+          updateExtensionPrompt();
+          showToast(
+            e.target.checked
+              ? '已开启:这条提醒会写进聊天上下文,让聊天里的 AI 也遵守'
+              : '已关闭:这条提醒只用于「🤖 生成配置」,不影响聊天',
+            'info'
+          );
+        });
+      }
+
+      const civitaiInput = card.querySelector('.sct-lora-civitai');      if (civitaiInput) {
         civitaiInput.addEventListener('input', (e) => {
           loras[idx].civitaiUrl = e.target.value.trim();
           saveSettings({ comfyLoras: loras });
@@ -8451,14 +8522,21 @@
         return;
       }
       const applied = applyCivitaiMap(map);
-      if (state) state.textContent = `解析 ${map.size} 条,套用 ${applied} 条`;
+      const appliedCount = typeof applied === 'number' ? applied : applied.applied;
+      const unmatched = (applied && applied.unmatched) ? applied.unmatched : [];
+      if (state) state.textContent = `解析 ${map.size} 条,套用 ${appliedCount} 条${unmatched.length ? `,未匹配 ${unmatched.length} 条` : ''}`;
       if (typeof loraContainer !== 'undefined' && loraContainer) renderLoraList(loraContainer);
-      showToast(
-        applied > 0
-          ? `已套用 ${applied} 条 C 站地址到对应 LoRA 条目(展开卡片可见)`
-          : `解析到 ${map.size} 条,但没有匹配上任何 LoRA 条目(文件名需与条目里的文件名一致)`,
-        applied > 0 ? 'success' : 'warning'
-      );
+      if (appliedCount > 0) {
+        showToast(
+          `已套用 ${appliedCount} 条 C 站地址到对应 LoRA 条目${unmatched.length ? `;另有 ${unmatched.length} 条没匹配上(需要单独配置):${unmatched.slice(0, 3).join(' / ')}${unmatched.length > 3 ? ' …' : ''}` : ''}`,
+          unmatched.length ? 'warning' : 'success'
+        );
+      } else {
+        showToast(
+          `解析到 ${map.size} 条,但没有匹配上任何 LoRA 条目${unmatched.length ? `(未匹配示例:${unmatched.slice(0, 3).join(' / ')})` : ''}`,
+          'warning'
+        );
+      }
     };
 
     container.querySelector('#sct-civitai-map-apply')?.addEventListener('click', () => {
