@@ -2690,3 +2690,33 @@
   padding-bottom: 7px;
   border-bottom: 1px dashed var(--sct-line);
 }
+/* 卡片图片加载失败的提示层 */
+.sct-comfy-img-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  background: var(--sct-bg);
+  color: var(--sct-ink-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sct-comfy-img-error-url {
+  max-width: 100%;
+  font-family: var(--sct-font-mono);
+  font-size: 10.5px;
+  color: var(--sct-ink-muted);
+  word-break: break-all;
+}
+
+.sct-comfy-img-error-tip {
+  max-width: 92%;
+  font-size: 11px;
+  color: var(--sct-warning);
+}

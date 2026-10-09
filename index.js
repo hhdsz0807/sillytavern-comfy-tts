@@ -4170,6 +4170,8 @@
     const safeIdx = ((state.currentIdx % total) + total) % total;
     state.currentIdx = safeIdx;
     const currentUrl = normalizedImages[safeIdx];
+    // ★ 优先用手机本地副本显示:服务器文件被删 / 隧道换址时,卡片里依然能看到图
+    const currentSrc = localImageUrls.get(comfyFileKey(currentUrl)) || currentUrl;
 
     const loraBadgeHtml = activeLoras && activeLoras.length > 0 
       ? `<span class="sct-lora-badge" title="${escapeHtml(activeLoras.map(l => l.name).join(', '))}">🎭 LoRA: ${escapeHtml(activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', '))}</span>`
@@ -4188,7 +4190,8 @@
           </div>
         </div>
         <div class="sct-comfy-viewport" id="vp_${cardId}">
-          <img src="${currentUrl}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看 · 长按开启局部重绘" />
+          <img src="${escapeHtml(currentSrc)}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看 · 长按开启局部重绘" />
+          <div class="sct-comfy-img-error" style="display:none;"></div>
           ${total > 1 ? `<div class="sct-comfy-counter-badge">${safeIdx + 1} / ${total}</div>` : ''}
         </div>
         <div class="sct-comfy-footer">
@@ -4217,6 +4220,33 @@
 
     const vp = container.querySelector(`#vp_${cardId}`);
     vp.addEventListener('click', (e) => e.stopPropagation());
+
+    // 图片加载失败时给出明确原因与重试按钮(而不是留一片空白)
+    const vpImg = vp.querySelector('img');
+    const errBox = vp.querySelector('.sct-comfy-img-error');
+    if (vpImg && errBox) {
+      vpImg.addEventListener('error', () => {
+        const tried = String(vpImg.getAttribute('src') || '');
+        errBox.style.display = 'flex';
+        errBox.innerHTML = `
+          <div>⚠️ 图片加载失败</div>
+          <div class="sct-comfy-img-error-url" title="${escapeHtml(tried)}">${escapeHtml(tried.slice(0, 110))}</div>
+          <div class="sct-comfy-img-error-tip">多为 ComfyUI 地址不可达 / 隧道换址 / 该文件已被删除。${localImageUrls.size > 0 ? '（若已备份到手机本地,可点重试走本地副本）' : ''}</div>
+          <button type="button" class="sct-comfy-btn sct-btn-xs sct-img-retry">🔄 重试</button>
+        `;
+        errBox.querySelector('.sct-img-retry')?.addEventListener('click', async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          await loadLocalImageUrls();
+          const local = localImageUrls.get(comfyFileKey(currentUrl));
+          vpImg.setAttribute('src', local || `${currentUrl}${currentUrl.includes('?') ? '&' : '?'}r=${Date.now()}`);
+          errBox.style.display = 'none';
+        });
+      });
+      vpImg.addEventListener('load', () => {
+        errBox.style.display = 'none';
+      });
+    }
 
     const imgEl = vp.querySelector('img');
     bindLongPress(imgEl, (e) => {
@@ -5140,6 +5170,10 @@
               if (r.saved > 0) {
                 console.log(`[${DISPLAY_NAME}] 已保存 ${r.saved} 张到手机本地图库`);
                 await ensurePersistentStorage();
+                // 存好本地副本后重渲染一次:卡片改用本地副本显示,服务器之后怎样都不影响
+                await loadLocalImageUrls();
+                const card = getActiveCardContainer(taskKey, container);
+                if (card && card.isConnected) renderCarouselCard(card, mergedImages, promptText, activeLoras);
               }
             }).catch(() => {});
             const historyCount = mergedImages.length - newImages.length;
@@ -7732,6 +7766,22 @@
     return removed;
   }
 
+  /** 本地出图副本的 key → objectURL(卡片展示优先用它,服务器图失效也能看) */
+  const localImageUrls = new Map();
+
+  async function loadLocalImageUrls() {
+    try {
+      const list = await getAllLocalImages();
+      list.forEach(e => {
+        if (!e || !e.key || !e.blob || localImageUrls.has(e.key)) return;
+        try {
+          localImageUrls.set(e.key, URL.createObjectURL(e.blob));
+        } catch (_) {}
+      });
+    } catch (_) {}
+    return localImageUrls.size;
+  }
+
   /**
    * 把一批图(URL 形式)抓下来存进手机本地
    * @param {Array<{url:string,prompt?:string,loras?:Array}>} items
@@ -9694,6 +9744,10 @@
     }, 800);
 
     // 初始加载保护期：在进入页面/刷新页面的前 3.5 秒内，所有历史消息只恢复已生成图像，未生成的仅显示手动触发按钮
+    // 先把手机本地的出图副本读进来(卡片优先生效本地图),读完再重扫一次让历史卡片也用上
+    loadLocalImageUrls().then(n => {
+      if (n > 0) scanAllMessages();
+    });
     setTimeout(() => {
       isInitialLoad = false;
       console.log(`[${DISPLAY_NAME}] 初始历史消息载入完成，已进入实时会话生图监听模式。`);
