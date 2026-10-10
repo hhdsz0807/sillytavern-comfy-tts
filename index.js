@@ -2454,6 +2454,38 @@
   // 严格规则:只有「角色激活关键词」与「分组激活关键词」能触发挂载
   // ---------------------------------------------------------------------------
 
+  /**
+   * 单个激活词是否命中文本
+   * ★ ASCII 词必须按「词边界」匹配,否则短词会命中别的单词里的片段:
+   *     aura  会命中 rest-AURA-nt / AURA-la
+   *     anna  会命中 annabelle
+   *   (中文/日文没有词边界,仍用子串匹配)
+   */
+  function loraTokenHit(token, haystacks) {
+    const tok = String(token || '').trim().toLowerCase();
+    if (!tok) return false;
+    const list = Array.isArray(haystacks) ? haystacks : [String(haystacks || '')];
+    if (/^[\x00-\x7f]+$/.test(tok)) {
+      // 把词内的空格/下划线/连字符统一成"分隔符"再匹配(兼容 yanami_anna ↔ yanami anna)
+      const pattern = tok
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/[\s_-]+/g, '[\\s_-]+');
+      let re;
+      try {
+        re = new RegExp(`(?:^|[^a-z0-9])${pattern}(?![a-z0-9])`, 'i');
+      } catch (_) {
+        return list.some(h => h.includes(tok));
+      }
+      return list.some(h => re.test(h));
+    }
+    return list.some(h => h.includes(tok));
+  }
+
+  /** 把一段配置文本展开成候选写法后,逐个做词边界匹配 */
+  function loraTokenListHit(raw, minLen, haystacks) {
+    return expandLoraTokens(raw, minLen).some(tok => loraTokenHit(tok, haystacks));
+  }
+
   /** 把一个字段展开成多种写法(原样 / 下划线→空格 / 两词名顺序互换) */
   function expandLoraTokens(raw, minLen = 2) {
     const out = new Set();
@@ -2482,7 +2514,7 @@
     const lower = String(text || '').toLowerCase();
     const haystacks = [lower, lower.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
     const hitToken = (list) => {
-      for (const tok of list) if (haystacks.some(h => h.includes(tok))) return tok;
+      for (const tok of list) if (loraTokenHit(tok, haystacks)) return tok;
       return '';
     };
     const rows = [];
@@ -2660,15 +2692,16 @@
 
   // 组关键词命中打分:图片 tag 命中记 2 分,消息正文命中记 1 分
   function scoreLoraVariant(variant, promptText, fullText) {
-    const words = (variant.keywords || '')
-      .split(/[,，\n|]/)
-      .map(k => k.trim().toLowerCase())
-      .filter(k => k.length > 1);
-    if (words.length === 0) return 0;
-    const lowerPrompt = (promptText || '').toLowerCase();
-    const lowerFull = (fullText || '').toLowerCase();
-    if (words.some(k => lowerPrompt.includes(k))) return 2;
-    if (words.some(k => lowerFull.includes(k))) return 1;
+    const p = String(promptText || '').toLowerCase();
+    const f = String(fullText || '').toLowerCase();
+    if (!p && !f) return 0;
+    const pTxt = [p, p.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
+    const fTxt = [f, f.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
+    // 同样走词边界匹配:避免分组里的短词被别的单词片段误命中
+    const tokens = expandLoraTokens(variant.keywords, 2);
+    if (tokens.length === 0) return 0;
+    if (tokens.some(t => loraTokenHit(t, pTxt))) return 2;
+    if (tokens.some(t => loraTokenHit(t, fTxt))) return 1;
     return 0;
   }
 
@@ -2779,12 +2812,12 @@
       const rawText = String(text || '').toLowerCase();
       // 文本侧容错:下划线/连字符视为空格(yanami_anna ≈ yanami anna)
       const haystacks = [rawText, rawText.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
-      const hit = (list) => list.some(tok => haystacks.some(hay => hay.includes(tok)));
+      // (旧的子串匹配已弃用:改走 loraTokenHit 的词边界判定,避免 aura 命中 restaurant)
 
       // ★ 唯一激活依据 = 「角色激活关键词」(entry.keywords)
       //   分组的关键词 **不再独立激活** —— 它只在角色已被激活后用于"选哪一组"
-      //   (否则像 school uniform 这种写在某分组里的通用服装词,会把不相干的角色 LoRA 直接拉起)
-      if (hit(expandLoraTokens(lora.keywords, 2))) return true;
+      //   匹配用「词边界」判定:aura 不会命中 restaurant,anna 不会命中 annabelle
+      if (loraTokenListHit(lora.keywords, 2, haystacks)) return true;
       return false;
     }
 
