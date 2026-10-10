@@ -4281,6 +4281,9 @@
             ${promptText.slice(0, 45)}...
           </div>
         </div>
+        ${container.__sctLastParams ? `<div class="sct-comfy-params-strip" title="本次实际使用的参数(点右侧按钮可看完整工作流)">
+          🧩 ${escapeHtml(String(container.__sctLastParams.checkpoint))} · CFG ${escapeHtml(String(container.__sctLastParams.cfg))} · ${escapeHtml(String(container.__sctLastParams.steps))}步 · ${escapeHtml(String(container.__sctLastParams.sampler))}/${escapeHtml(String(container.__sctLastParams.scheduler))} · VAE ${escapeHtml(String(container.__sctLastParams.vae))}${(container.__sctLastParams.loras || []).length ? ` · LoRA ${escapeHtml(container.__sctLastParams.loras.join(', '))}` : ' · 无 LoRA'}
+        </div>` : ''}
         <div class="sct-comfy-viewport" id="vp_${cardId}">
           <img src="${escapeHtml(currentSrc)}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看 · 长按开启局部重绘" />
           <div class="sct-comfy-img-error" style="display:none;"></div>
@@ -4297,6 +4300,7 @@
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把当前这张图设为画风参考(上传到 ComfyUI 后按设置里的参考模式生效)">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
+            <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
@@ -4304,6 +4308,7 @@
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把这张图设为画风参考">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
+            <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
@@ -4448,6 +4453,54 @@
         e.preventDefault();
         e.stopPropagation();
         deleteCurrentImage(container, promptText, activeLoras);
+      });
+    }
+
+    // 🧩 本次工作流:查看/复制实际使用的参数与完整 JSON(和本地 ComfyUI 对比差异用)
+    const workflowBtn = container.querySelector('.sct-workflow-btn');
+    if (workflowBtn) {
+      workflowBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const p = container.__sctLastParams || {};
+        const wf = container.__sctLastWorkflow || null;
+        const paramsText = Object.entries(p)
+          .filter(([k]) => k !== 'positive' && k !== 'negative')
+          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+          .join('\n');
+        const overlay = document.createElement('div');
+        overlay.className = 'sct-lora-picker-overlay';
+        overlay.innerHTML = `
+          <div class="sct-lora-picker-modal" style="width:min(94vw,820px);">
+            <div class="sct-gallery-head">
+              <span class="sct-gallery-title">🧩 本次出图实际使用的参数与工作流</span>
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-close">✕</button>
+            </div>
+            <pre class="sct-wf-params">${escapeHtml(paramsText || '(无记录:历史图片或刷新后重绘的卡片不会保留工作流)')}</pre>
+            <div class="sct-wf-actions">
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-copy-params">📋 复制参数</button>
+              <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-copy-json">📋 复制完整工作流 JSON</button>
+            </div>
+            <textarea class="text_pole sct-textarea-autowrap" rows="10" readonly style="font-size:11px; font-family:var(--sct-font-mono);">${escapeHtml(wf ? JSON.stringify(wf, null, 2) : '(无工作流记录)')}</textarea>
+            <div class="sct-hint">拿这份 JSON 和你本地 ComfyUI 的工作流逐项对比:重点看 checkpoint、CFG、采样器/调度器、VAE、LoRA 链与正负提示词。</div>
+          </div>
+        `;
+        document.documentElement.appendChild(overlay);
+        const close = () => overlay.remove();
+        overlay.querySelector('#sct-wf-close').addEventListener('click', close);
+        overlay.addEventListener('click', (ev) => {
+          if (ev.target === overlay) close();
+        });
+        overlay.querySelector('#sct-wf-copy-params').addEventListener('click', () => {
+          navigator.clipboard.writeText(paramsText || '')
+            .then(() => showToast('参数已复制', 'success'))
+            .catch(() => showToast('复制失败', 'warning'));
+        });
+        overlay.querySelector('#sct-wf-copy-json').addEventListener('click', () => {
+          navigator.clipboard.writeText(wf ? JSON.stringify(wf, null, 2) : '')
+            .then(() => showToast('工作流 JSON 已复制', 'success'))
+            .catch(() => showToast('复制失败,可长按文本框手动复制', 'warning'));
+        });
       });
     }
 
@@ -5114,6 +5167,26 @@
       comfyVae: (s.comfyVae || '').trim(),
       seed: seed
     });
+
+    // ★ 把「本次实际用的参数与完整工作流」挂到卡片上:与本地 ComfyUI 出图不一致时,一眼比对差异
+    container.__sctLastWorkflow = workflow;
+    container.__sctLastParams = {
+      checkpoint: ckpt || '(未设置 → 用了扫描到的第一个模型)',
+      cfg: cfg,
+      steps: steps,
+      sampler: sampler,
+      scheduler: scheduler,
+      size: `${width}x${height}`,
+      batch: batch,
+      seed: seed,
+      vae: (s.comfyVae || '').trim() || '(模型自带)',
+      hires: hiresEnabled ? `开(${hiresScale}x, denoise ${hiresDenoise})` : '关',
+      faceFix: (faceFix && faceFix.enabled) ? '开' : '关',
+      styleRef: styleRef ? `${styleRef.mode}` : '关',
+      loras: (activeLoras || []).map(l => `${l.name}@${l.strengthModel ?? ''}`),
+      positive: fullPositivePrompt,
+      negative: negativePrompt,
+    };
 
     const clientId = 'st_' + Math.random().toString(36).slice(2, 10);
 

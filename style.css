@@ -2719,4 +2719,36 @@
   max-width: 92%;
   font-size: 11px;
   color: var(--sct-warning);
+}/* 卡片上的「本次参数」条 + 工作流弹窗 */
+.sct-comfy-params-strip {
+  padding: 6px 12px;
+  border-top: 1px dashed var(--sct-line);
+  background: var(--sct-bg);
+  font-family: var(--sct-font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--sct-ink-muted);
+  word-break: break-all;
+}
+
+.sct-wf-params {
+  margin: 0;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--sct-line);
+  border-radius: var(--sct-radius-sm);
+  background: var(--sct-bg);
+  color: var(--sct-ink-soft);
+  font-family: var(--sct-font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.sct-wf-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
