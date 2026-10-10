@@ -2495,19 +2495,25 @@
 
       const kwTokens = expandLoraTokens(item.keywords, 2);
       const variantTokens = loraVariantList(item).flatMap(v => expandLoraTokens(v.keywords, 2));
-      const noKeywords = kwTokens.length === 0 && variantTokens.length === 0;
+      const noKeywords = kwTokens.length === 0;
 
-      // 只认激活词与分组激活词(不再有特征词/文件名兜底)
+      // 只有「角色激活关键词」能挂载;分组关键词只用于选组
       const kwHit = hitToken(kwTokens);
-      const varHit = kwHit ? '' : hitToken(variantTokens);
-      const token = kwHit || varHit;
+      // 分组词命中了、但角色激活词没命中 → 记为 variantOnly,提示用户把它补进基础激活词
+      const variantOnlyHit = kwHit ? '' : hitToken(variantTokens);
+      const token = kwHit;
 
       rows.push({
         idx,
         item,
-        state: token ? 'matched' : (noKeywords ? 'nokeywords' : 'nomatch'),
-        stage: kwHit ? '激活关键词' : (varHit ? '分组激活关键词' : (noKeywords ? '没写激活词 → 不会自动激活(勾常驻才会挂)' : '')),
+        state: token ? 'matched' : (noKeywords ? 'nokeywords' : (variantOnlyHit ? 'variantonly' : 'nomatch')),
+        stage: kwHit
+          ? '角色激活关键词'
+          : (noKeywords
+            ? '没写激活词 → 不会自动激活(勾常驻才会挂)'
+            : (variantOnlyHit ? `只有分组关键词命中「${variantOnlyHit}」—— 分组词不参与激活,若要靠它挂载请写进「角色激活关键词」` : '')),
         token,
+        variantOnlyHit,
         noKeywords,
       });
     });
@@ -2775,12 +2781,10 @@
       const haystacks = [rawText, rawText.replace(/[_-]/g, ' ').replace(/\s+/g, ' ')];
       const hit = (list) => list.some(tok => haystacks.some(hay => hay.includes(tok)));
 
-      // ★ 唯一激活依据 = 角色激活关键词 + 各分组的激活关键词
-      //   - 不使用「角色特征激活词」兜底(那是注入内容,不是判别词;blue hair 之类会把名额抢走)
-      //   - 不使用 LoRA 文件名兜底(文件名只用于挂载,不参与判别)
-      //   没写激活词的条目 = 永远不会被自动激活(只在勾了常驻时才挂),这是刻意的可预测行为
+      // ★ 唯一激活依据 = 「角色激活关键词」(entry.keywords)
+      //   分组的关键词 **不再独立激活** —— 它只在角色已被激活后用于"选哪一组"
+      //   (否则像 school uniform 这种写在某分组里的通用服装词,会把不相干的角色 LoRA 直接拉起)
       if (hit(expandLoraTokens(lora.keywords, 2))) return true;
-      if (hit(loraVariantList(lora).flatMap(variant => expandLoraTokens(variant.keywords, 2)))) return true;
       return false;
     }
 
@@ -7926,7 +7930,7 @@
               <span>🎭</span>
               <span>角色 LoRA 管理与关键词激活</span>
             </div>
-            <div class="sct-hint">激活规则(严格):<b>只有「角色激活关键词」与各分组的「激活关键词」能触发挂载</b> —— 特征激活词只负责注入、绝不参与判定,也不看 LoRA 文件名。所以<b>没写激活词的条目永远不会被自动激活</b>(勾了「常驻生效」才会每张都挂)。为防止特征串台,动态角色 LoRA 每张图最多激活 1 个(按列表顺序,第一个命中的胜出),常驻 LoRA 不受限。</div>
+            <div class="sct-hint">激活规则(严格,分两层):<b>第一层「角色激活关键词」决定挂不挂</b> —— 只有它命中才会挂载 LoRA,没写就永远不会自动激活(勾了「常驻生效」除外);<b>第二层「分组激活关键词」只在已挂载后用来选哪一组</b>,不能独立激活(否则 school uniform 这种通用服装词会把不相干的角色拉起来)。为防串台,动态角色 LoRA 每张图最多激活 1 个(按列表顺序,第一个角色激活词命中的胜出),常驻 LoRA 不受限。</div>
 
             <div class="sct-setting-row">
               <label for="sct-cfg-lora-base-always">分组生效时<b>基础特征词始终注入</b> <span style="opacity:.6; font-size:11px;">(推荐:基础放身份锚点=发色/眼睛/尾巴…,分组放这套衣服;关掉则只注入选中分组)</span></label>
@@ -8653,6 +8657,12 @@
       const missed = diag.rows.filter(r => r.state === 'nomatch');
       const broken = diag.rows.filter(r => r.state === 'disabled' || r.state === 'noname');
       const nokw = diag.rows.filter(r => r.state === 'nokeywords');
+      const variantOnly = diag.rows.filter(r => r.state === 'variantonly');
+      if (variantOnly.length) {
+        lines.push(`<div class="sct-diag-group">🟠 只有分组关键词命中 ${variantOnly.length} 条(分组词不参与激活,所以没挂上)</div>`);
+        variantOnly.slice(0, 6).forEach(r => lines.push(`<div class="sct-diag-line warn">· ${nm(r)} — 命中「<b>${escapeHtml(r.variantOnlyHit)}</b>」;想让它能自动挂载,请把该 tag 补进它的「角色激活关键词」</div>`));
+        if (variantOnly.length > 6) lines.push(`<div class="sct-diag-line warn">… 还有 ${variantOnly.length - 6} 条</div>`);
+      }
       if (nokw.length) {
         lines.push(`<div class="sct-diag-group">🔑 没有激活词的条目 ${nokw.length} 条(不会自动激活)</div>`);
         nokw.slice(0, 6).forEach(r => lines.push(`<div class="sct-diag-line warn">· ${nm(r)} — 需补写激活关键词(英文触发 tag);或点「🚀 一键配置」让 AI 生成</div>`));
