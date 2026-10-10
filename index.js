@@ -31,7 +31,10 @@
   const SCT_BUILD = '1.16.6';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
-  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **单主体与防污染规则（重要）**：**除非 2 个角色发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个角色主体**（如 1girl 或 1boy，搭配 solo）！英文 tag 必须完全聚焦于该单一角色，**绝对严禁在单人图片中混入其他任何角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止单人图误生其他角色的尾巴、发色或配饰）！\n3. **双人接触互动严格受限**：仅当情节中 2 个角色存在**直接身体接触或明确互动动作**时，才允许使用双主体标签（如 1girl, 1boy 或 2girls），并且必须在 tag 中明确写出两者具体的互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n4. **标签格式**：<image>image###sfw/nsfw, 主体数量(无身体接触必须为1人如 1girl, solo; 有接触时最多2人如 1girl, 1boy), 人物名称(无接触仅填当前1人; 有接触填2人), 动作与特征描述(如有2人必须描述具体互动动作), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【双人身体接触互动示例（仅在有明确接触动作时使用）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1boy holding hands with 1girl, 1girl sitting on 1boy lap, hugging each other, romantic garden bench, sunset, warm cinematic lighting###</image>\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
+  // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
+  const IMAGE_INSTRUCTION_VERSION = 2;
+
+  const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **主体必须是女性角色（硬性规则）**：插图主体一律为女性角色（1girl）。**若当前情景中只有男性角色（只有 1boy、没有女性出场）→ 不要生成任何生图标签，直接跳过配图**。\n3. **男性只作为局部肢体出现（重要）**：当情景里同时有男女双方时，**以 1girl 作为唯一的完整主体**，男方**只允许以局部肢体 / 背影 / 无正面脸的形式出现**（如 male hand, hand on 1girl's shoulder, male arm, cropped male body, faceless male, seen from behind），**绝对严禁把 1boy 完整画出来**（不给男性正面五官、不画男性全身）。\n4. **单主体与防污染规则**：**除非男女双方发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个女性角色主体**（1girl, solo）！英文 tag 必须完全聚焦于该角色，**绝对严禁在图中混入其他角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止误生其他角色的尾巴、发色或配饰）！\n5. **人数上限**：仅当情节中双方存在**直接身体接触或明确互动动作**时，才允许在 tag 里出现男方（且男方仅为局部肢体），并且必须明确写出具体互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n6. **标签格式**：<image>image###sfw/nsfw, 1girl, solo(常规单人) 或 1girl, 1boy(仅在有接触时,且男方只是局部肢体), 人物名称(女方必填; 男方写名字或直接省略), 动作与特征描述(有互动必须写明具体动作 + 男方的局部肢体描述), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【男女同场示例（女方是唯一完整主体，男方只露局部肢体）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1girl sitting on bench, male hand holding 1girl's hand, male arm around 1girl's waist, cropped male body, faceless male, romantic garden bench, sunset, warm cinematic lighting###</image>\n【只有男性的情景 → 不出图】：例如正文只有 1boy 独处、或对话对象尚未出场时，**不要插入任何 <image> 标签**。\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -241,6 +244,18 @@
             weight: typeof refStore.comfyStyleRefStrength === 'number' ? refStore.comfyStyleRefStrength : 0.8
           }];
         }
+        // 生图指导文本升级:仅当用户用的还是「旧版默认文本」时自动换成新规则(自己改写过的不动)
+        const instVer = extSettings[MODULE_NAME].imageInstructionVersion || 1;
+        if (instVer < IMAGE_INSTRUCTION_VERSION) {
+          const curInst = String(extSettings[MODULE_NAME].imageInstructionText || '');
+          const isOldDefault = curInst.includes('【单人示例（默认常规，纯净无污染）】')
+            || curInst.includes('双人身体接触互动示例');
+          if (!curInst.trim() || isOldDefault) {
+            extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
+          }
+          extSettings[MODULE_NAME].imageInstructionVersion = IMAGE_INSTRUCTION_VERSION;
+        }
+
         // 兼容迁移：早期版本误把"通用排除关键词"存在负向字段里，这里搬回正向黑名单字段
         if (extSettings[MODULE_NAME].comfyGlobalLoraNegatives) {
           if (!extSettings[MODULE_NAME].comfyGlobalExcludeKeywords) {
@@ -252,12 +267,7 @@
         if (!extSettings[MODULE_NAME].ttsEngine || extSettings[MODULE_NAME].ttsEngine === 'webspeech') {
           extSettings[MODULE_NAME].ttsEngine = 'xiaomi';
         }
-        if (!extSettings[MODULE_NAME].imageInstructionText || 
-            !extSettings[MODULE_NAME].imageInstructionText.includes('就地插入') || 
-            !extSettings[MODULE_NAME].imageInstructionText.includes('防污染') ||
-            !extSettings[MODULE_NAME].imageInstructionText.includes('肢体接触')) {
-          extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
-        }
+        // (旧的"缺关键词就重置文本"迁移已移除:改为上面的版本号迁移,不再覆盖用户自己改写的文本)
       }
       return extSettings[MODULE_NAME];
     }
@@ -9319,10 +9329,10 @@
     });
 
     container.querySelector('#sct-btn-reset-inst')?.addEventListener('click', () => {
-      saveSettings({ imageInstructionText: DEFAULT_IMAGE_INSTRUCTION });
+      saveSettings({ imageInstructionText: DEFAULT_IMAGE_INSTRUCTION, imageInstructionVersion: IMAGE_INSTRUCTION_VERSION });
       const preview = container.querySelector('#sct-inst-preview');
       if (preview) preview.textContent = DEFAULT_IMAGE_INSTRUCTION;
-      showToast('已将自动配图提示词恢复为最新规范！', 'success');
+      showToast('已恢复最新规范(仅女性角色出图;男女同场时男方只露局部肢体)', 'success');
     });
 
     // 探查 ComfyUI 资产
