@@ -100,6 +100,10 @@
     // false       = 只注入选中分组的特征词(旧的"完全替换"行为)
     comfyLoraBaseAlwaysInject: true,
 
+    // 是否允许用「消息正文」兜底做 LoRA 激活判定
+    // false(默认,推荐) = 只按画面提示词(图片 tag)判定 —— 剧情正文里提到某个名字不会误挂角色 LoRA
+    comfyLoraMatchBody: false,
+
     // 通用角色关键词 (常驻注入)：任意 LoRA 被激活时都会带入这组关键词，仅注入一次且自动去重
     comfyGlobalLoraKeywords: '',
     // 通用排除关键词 (正向提示词黑名单)：最终正向提示词中出现这些词就自动剔除掉
@@ -2681,9 +2685,11 @@
     const globalKw = (s.comfyGlobalLoraKeywords || '').trim();
     if (globalKw) parts.push(globalKw);
     const baseAlways = s.comfyLoraBaseAlwaysInject !== false;
+    // 选哪一组也只看画面 tag(与激活判定同规则),除非用户显式开启了正文兜底
+    const variantFullText = s.comfyLoraMatchBody === true ? fullText : '';
     list.forEach(l => {
       if (!l) return;
-      const variant = resolveLoraVariant(l, promptText, fullText);
+      const variant = resolveLoraVariant(l, promptText, variantFullText);
       const baseTw = ((l.triggerWords) || '').trim();
       if (variant) {
         // 基础词 = 身份锚点(发色/眼睛/尾巴…):默认始终注入,保证换装不丢角色
@@ -2793,9 +2799,12 @@
       }
     }
 
-    // 第 2 阶段【正文兜底 · 同样严格单个】：动态未命中时才用聊天消息正文 (fullText) 兜底找 1 个
+    // 第 2 阶段【正文兜底 · 默认关闭】:按用户要求,激活判定只看「画面提示词(图片 tag)」,
+    // 不再拿整条消息正文去兜底 —— 否则剧情正文里随便提到一个名字就会挂上不相干的角色 LoRA
+    // (想在正文里也能激活,就到设置里把「允许用消息正文兜底」打开)
+    const allowBodyFallback = getSettings().comfyLoraMatchBody === true;
     const hasDynamicLora = matchedLoras.some(l => !l.alwaysOn);
-    if (!hasDynamicLora && matchedLoras.length < maxTotalLoras) {
+    if (allowBodyFallback && !hasDynamicLora && matchedLoras.length < maxTotalLoras) {
       for (const item of loras) {
         if (!item.enabled || !item.name || item.alwaysOn) continue;
         if (matchLoraAgainstText(item, lowerFull)) {
@@ -7914,6 +7923,11 @@
               <input type="checkbox" id="sct-cfg-lora-base-always" ${s.comfyLoraBaseAlwaysInject !== false ? 'checked' : ''} />
             </div>
 
+            <div class="sct-setting-row">
+              <label for="sct-cfg-lora-match-body">允许用<b>消息正文</b>兜底激活 <span style="opacity:.6; font-size:11px;">(默认关闭:只按画面提示词/图片 tag 判定,剧情正文提到名字不会误挂角色 LoRA)</span></label>
+              <input type="checkbox" id="sct-cfg-lora-match-body" ${s.comfyLoraMatchBody === true ? 'checked' : ''} />
+            </div>
+
             <div class="sct-lora-search-row">
               <input type="text" id="sct-lora-search" class="text_pole" placeholder="🔍 搜索角色:中文名 / 激活 tag / 文件名 / 分组名" autocomplete="off" />
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-lora-search-clear">✕</button>
@@ -8610,6 +8624,7 @@
       const fileOf = (r) => escapeHtml(r.item.name || '');
       const lines = [];
       lines.push(`<div class="sct-diag-head">分析文本:${escapeHtml(preview)}${text.length > 80 ? '…' : ''}</div>`);
+      lines.push(`<div class="sct-diag-head">判定依据:仅「画面提示词 / 图片 tag」${getSettings().comfyLoraMatchBody === true ? ' + 消息正文兜底(已开启)' : '(正文兜底已关闭)'}</div>`);
       lines.push(`<div class="sct-diag-head">共 ${diag.rows.length} 条配置 · 常驻命中 ${diag.alwaysOn.length} 个 · 动态命中 ${diag.dynamic.length} 个(每图只用第 1 个)</div>`);
       if (diag.alwaysOn.length) {
         lines.push('<div class="sct-diag-group">🟢 常驻生效(每张都挂)</div>');
@@ -8692,6 +8707,17 @@
           ? '已开启:基础特征词始终注入(基础放身份锚点,分组放服装 —— 换装不丢角色)'
           : '已关闭:选中分组时只注入该分组的特征词(需要每组自己写全身)',
         'info'
+      );
+    });
+
+    // 是否允许正文兜底激活
+    container.querySelector('#sct-cfg-lora-match-body')?.addEventListener('change', (e) => {
+      saveSettings({ comfyLoraMatchBody: e.target.checked });
+      showToast(
+        e.target.checked
+          ? '已开启正文兜底:画面 tag 没命中时会再看整条消息正文(可能误挂角色 LoRA)'
+          : '已关闭正文兜底:LoRA 激活只看画面提示词(图片 tag),剧情正文不再影响挂载',
+        e.target.checked ? 'warning' : 'success'
       );
     });
 
