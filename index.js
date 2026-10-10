@@ -4468,6 +4468,18 @@
           .filter(([k]) => k !== 'positive' && k !== 'negative')
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
           .join('\n');
+        const cf = analyzePromptConflicts(p.positive || '');
+        const conflictLines = [];
+        if (cf.colorConflicts.length) {
+          conflictLines.push(`❌ 同物多色(会直接串色/发绿):${cf.colorConflicts.join(' ; ')}`);
+        }
+        if (cf.duplicates.length) {
+          conflictLines.push(`🟠 重复片段:${cf.duplicates.slice(0, 6).join(' ; ')}`);
+        }
+        if (cf.riskySuffix) {
+          conflictLines.push('🟠 提示词里有 photorealistic / 8k 这类写实词:跑动漫模型容易把画面推向照片感并影响配色,建议在「固定质量提示词」里去掉');
+        }
+        if (!conflictLines.length) conflictLines.push('✅ 没发现同物多色/重复片段');
         const overlay = document.createElement('div');
         overlay.className = 'sct-lora-picker-overlay';
         overlay.innerHTML = `
@@ -4477,6 +4489,7 @@
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-close">✕</button>
             </div>
             <pre class="sct-wf-params">${escapeHtml(paramsText || '(无记录:历史图片或刷新后重绘的卡片不会保留工作流)')}</pre>
+            <pre class="sct-wf-params sct-wf-conflict">${conflictLines.map(l => escapeHtml(l)).join('\n')}</pre>
             <div class="sct-wf-actions">
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-copy-params">📋 复制参数</button>
               <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-wf-copy-json">📋 复制完整工作流 JSON</button>
@@ -8006,6 +8019,40 @@
       }
     } catch (_) {}
     return null;
+  }
+
+  /**
+   * 提示词冲突检查:同一件东西写了多个颜色、或同一片段重复多次 —— 会直接导致"串色"
+   * 典型:blue bowtie + yellow bowtie 同时出现 → 蓝黄混合 → 整图偏绿
+   */
+  function analyzePromptConflicts(positive) {
+    const colorWords = ['blue', 'yellow', 'red', 'green', 'white', 'black', 'grey', 'gray', 'brown', 'pink', 'purple', 'orange', 'navy', 'blonde', 'blond', 'silver', 'aqua', 'cyan', 'dark', 'light'];
+    const segs = String(positive || '')
+      .split(/[,，\n]/)
+      .map(s => s.replace(/[()\[\]{}:0-9.]+/g, ' ').trim().toLowerCase())
+      .filter(s => s.length > 1);
+
+    const nounMap = new Map();
+    segs.forEach(seg => {
+      const words = seg.split(/\s+/).filter(Boolean);
+      const colors = words.filter(w => colorWords.includes(w));
+      const nouns = words.filter(w => !colorWords.includes(w));
+      if (colors.length === 0 || nouns.length === 0) return;
+      const noun = nouns.join(' ');
+      if (!nounMap.has(noun)) nounMap.set(noun, new Set());
+      colors.forEach(c => nounMap.get(noun).add(c));
+    });
+    const colorConflicts = [...nounMap.entries()]
+      .filter(([, set]) => set.size > 1)
+      .map(([noun, set]) => `${noun} → ${[...set].join(' / ')}`);
+
+    const count = new Map();
+    segs.forEach(s => count.set(s, (count.get(s) || 0) + 1));
+    const duplicates = [...count.entries()].filter(([s, c]) => c > 1 && s.length > 3).map(([s, c]) => `${s} ×${c}`);
+
+    const riskySuffix = /photorealistic|8k|realistic/i.test(positive || '');
+
+    return { colorConflicts, duplicates, riskySuffix };
   }
 
   function injectSettingsPanel() {

@@ -2751,4 +2751,9 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}/* 工作流弹窗里的冲突检查结果 */
+.sct-wf-conflict {
+  color: var(--sct-warning);
+  border-color: var(--sct-warning);
+  background: var(--sct-warning-soft);
 }
