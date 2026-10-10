@@ -43,6 +43,8 @@
     comfyHost: 'http://127.0.0.1:8188',
     comfyWorkflow: 'txt2img_multilora', // 'txt2img' | 'txt2img_multilora' | 'txt2img_multilora_hires'
     comfyCheckpoint: '',
+    // 外部 VAE:留空 = 用 checkpoint 自带的;留空时若画面整体偏色/发灰,就该在这里指定一个 VAE
+    comfyVae: '',
     comfyAutoDrawTags: true,
     comfyShowMesButton: true,
     
@@ -184,6 +186,7 @@
   let cachedLoras = [];
   let cachedSamplers = [];
   let cachedSchedulers = [];
+  let cachedVaes = [];
   // 脸部修复相关:可选检测模型列表 + FaceDetailer 节点的必填输入规格(各版本不同,运行时读取)
   let cachedFaceDetectors = [];
   let cachedFaceDetailerSpec = null;
@@ -2890,6 +2893,19 @@
     } catch (_) {}
 
     try {
+      // 探查可选 VAE(画面整体偏色/发灰时用来换 VAE)
+      const vaeRes = await fetch(`${host}/object_info/VAELoader`);
+      if (vaeRes.ok) {
+        const d = await vaeRes.json();
+        cachedVaes = d?.VAELoader?.input?.required?.vae_name?.[0] || [];
+      } else {
+        cachedVaes = [];
+      }
+    } catch (_) {
+      cachedVaes = [];
+    }
+
+    try {
       // 探查 Samplers & Schedulers
       const samplerRes = await fetch(`${host}/object_info/KSampler`);
       if (samplerRes.ok) {
@@ -3761,6 +3777,7 @@
       hiresDenoise,
       faceFix,
       styleRef,
+      comfyVae = '',
       seed
     } = params;
 
@@ -3777,6 +3794,15 @@
     let currentModel = ["4", 0];
     let currentClip = ["4", 1];
     let currentVae = ["4", 2];
+
+    // 可选外部 VAE:有些模型没烘焙 VAE,不换 VAE 就会整体偏色/发灰(设为空则用 checkpoint 自带)
+    if (comfyVae) {
+      workflow["310"] = {
+        "class_type": "VAELoader",
+        "inputs": { "vae_name": comfyVae }
+      };
+      currentVae = ["310", 0];
+    }
 
     // 2. 多 LoRA 链式装载器 (Nodes 100, 101, 102...)
     if (activeLoras && activeLoras.length > 0) {
@@ -4027,6 +4053,7 @@
       sampler = 'euler',
       scheduler = 'normal',
       activeLoras = [],
+      comfyVae = '',
       seed = Math.floor(Math.random() * 1000000000)
     } = params;
 
@@ -4043,6 +4070,15 @@
     let currentModel = ["4", 0];
     let currentClip = ["4", 1];
     let currentVae = ["4", 2];
+
+    // 可选外部 VAE:有些模型没烘焙 VAE,不换 VAE 就会整体偏色/发灰(设为空则用 checkpoint 自带)
+    if (comfyVae) {
+      workflow["310"] = {
+        "class_type": "VAELoader",
+        "inputs": { "vae_name": comfyVae }
+      };
+      currentVae = ["310", 0];
+    }
 
     // 2. 多 LoRA 链式装载器 (Nodes 100, 101, 102...)
     if (activeLoras && activeLoras.length > 0) {
@@ -4580,6 +4616,7 @@
         sampler: s.comfySampler || 'euler',
         scheduler: s.comfyScheduler || 'normal',
         activeLoras: activeLoras,
+        comfyVae: (s.comfyVae || '').trim(),
         seed: Math.floor(Math.random() * 1000000000)
       });
 
@@ -5074,6 +5111,7 @@
       hiresDenoise: hiresDenoise,
       faceFix: faceFix,
       styleRef: styleRef,
+      comfyVae: (s.comfyVae || '').trim(),
       seed: seed
     });
 
@@ -7941,7 +7979,7 @@
             </div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-checkpoint">选择 Checkpoint 模型文件</label>
+              <label for="sct-cfg-checkpoint">选择 Checkpoint 模型文件 <span style="opacity:.6; font-size:11px;">(留空会用扫描到的第一个模型,建议显式选择以免和本地工作流不一致)</span></label>
               <div style="display:flex; gap:6px;">
                 <input type="text" id="sct-cfg-checkpoint" class="text_pole" placeholder="留空自动选择首个可用模型" value="${s.comfyCheckpoint || ''}" style="flex:1;" />
                 <select id="sct-ckpt-select" class="text_pole" style="max-width:140px;">
@@ -7949,6 +7987,18 @@
                   ${cachedCheckpoints.map(c => `<option value="${c}" ${c === s.comfyCheckpoint ? 'selected' : ''}>${c}</option>`).join('')}
                 </select>
               </div>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-vae">外部 VAE <span style="opacity:.6; font-size:11px;">(留空 = 用模型自带;★ 若画面整体偏色/发灰/发绿,就是这里的问题)</span></label>
+              <div style="display:flex; gap:6px;">
+                <input type="text" id="sct-cfg-vae" class="text_pole" placeholder="留空 = 模型自带 VAE(如 sdxl_vae.safetensors)" value="${escapeHtml(s.comfyVae || '')}" style="flex:1;" />
+                <select id="sct-vae-select" class="text_pole" style="max-width:160px;">
+                  <option value="">(VAE 列表)</option>
+                  ${(cachedVaes || []).map(v => `<option value="${escapeHtml(v)}" ${v === s.comfyVae ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-hint">同一模型同一 LoRA 却和本地 ComfyUI 出图颜色不一样(尤其整图黄绿/发灰)几乎都是 VAE 不匹配:把你本地工作流里用的那个 VAE 文件名填进来即可。点「📡 测试与扫描」可拉取列表。</div>
             </div>
 
             <div class="sct-test-btn-group">
@@ -8822,6 +8872,15 @@
       }
     });
 
+    // 外部 VAE(画面整体偏色/发灰时换它)
+    container.querySelector('#sct-cfg-vae')?.addEventListener('input', (e) => saveSettings({ comfyVae: e.target.value.trim() }));
+    container.querySelector('#sct-vae-select')?.addEventListener('change', (e) => {
+      if (!e.target.value) return;
+      container.querySelector('#sct-cfg-vae').value = e.target.value;
+      saveSettings({ comfyVae: e.target.value });
+      showToast(`已指定外部 VAE:${e.target.value}(下次出图生效)`, 'success');
+    });
+
     container.querySelector('#sct-cfg-fixed-pos').addEventListener('input', (e) => saveSettings({ comfyFixedPositive: e.target.value }));
     container.querySelector('#sct-cfg-prompt-suffix').addEventListener('input', (e) => saveSettings({ comfyPromptSuffix: e.target.value }));
 
@@ -9405,6 +9464,17 @@
           }
           // 重新刷新 LoRA 列表下拉
           renderLoraList(loraContainer);
+
+          // 刷新外部 VAE 下拉
+          const vaeSel = container.querySelector('#sct-vae-select');
+          if (vaeSel) {
+            const curVae = getSettings().comfyVae || '';
+            vaeSel.innerHTML = '<option value="">(VAE 列表)</option>' +
+              (cachedVaes || []).map(v => `<option value="${escapeHtml(v)}" ${v === curVae ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
+          }
+          if ((cachedVaes || []).length === 0) {
+            showToast('没探查到可选的 VAE 文件;若画面偏色,说明模型自带 VAE 有问题,需在 ComfyUI 的 models/vae 里放一个 VAE', 'warning');
+          }
 
           // 脸部检测模型下拉 + FaceDetailer 可用性
           const detSelect = container.querySelector('#sct-facefix-detector-select');
