@@ -142,7 +142,11 @@
     ],
 
     // 自动配图指令注入
-    autoInjectImageInstruction: true,
+    // ★ 默认关闭:由用户自己用「世界书」挂提示词,插件不往 AI 上下文里塞任何东西
+    //   面板里的「配图指示词模板」仍可一键复制,方便贴进世界书
+    autoInjectImageInstruction: false,
+    // 说明:这一版开始插件默认不注入;老配置由迁移逻辑关掉一次(见 getSettings)
+    imageInstructionInjectVersion: 2,
     imageInstructionText: DEFAULT_IMAGE_INSTRUCTION,
 
     // TTS 语音朗读设置
@@ -257,6 +261,13 @@
             extSettings[MODULE_NAME].imageInstructionText = DEFAULT_IMAGE_INSTRUCTION;
           }
           extSettings[MODULE_NAME].imageInstructionVersion = IMAGE_INSTRUCTION_VERSION;
+        }
+
+        // ★ 关闭「插件往 AI 上下文注入提示词」:改为用户自己挂世界书(只强制关一次,之后用户想开可自行打开)
+        const injectVer = extSettings[MODULE_NAME].imageInstructionInjectVersion || 1;
+        if (injectVer < 2) {
+          extSettings[MODULE_NAME].autoInjectImageInstruction = false;
+          extSettings[MODULE_NAME].imageInstructionInjectVersion = 2;
         }
 
         // 兼容迁移：早期版本误把"通用排除关键词"存在负向字段里，这里搬回正向黑名单字段
@@ -8549,7 +8560,7 @@
             </div>
 
             <div class="sct-setting-row">
-              <label for="sct-cfg-auto-inject-inst">自动向 AI 上下文注入【自动配图指示】</label>
+              <label for="sct-cfg-auto-inject-inst">自动向 AI 上下文注入【自动配图指示】 <span style="opacity:.6; font-size:11px;">(默认关闭 ★ 推荐自己挂世界书;打开时插件会往上下文塞这段提示词)</span></label>
               <input type="checkbox" id="sct-cfg-auto-inject-inst" ${s.autoInjectImageInstruction ? 'checked' : ''} />
             </div>
 
@@ -9550,7 +9561,16 @@
       updateAutoDrawToggle(false);
     });
     container.querySelector('#sct-cfg-mes-draw-btn').addEventListener('change', (e) => saveSettings({ comfyShowMesButton: e.target.checked }));
-    container.querySelector('#sct-cfg-auto-inject-inst').addEventListener('change', (e) => saveSettings({ autoInjectImageInstruction: e.target.checked }));
+    container.querySelector('#sct-cfg-auto-inject-inst').addEventListener('change', (e) => {
+      saveSettings({ autoInjectImageInstruction: e.target.checked });
+      updateExtensionPrompt();
+      showToast(
+        e.target.checked
+          ? '已开启:插件会往 AI 上下文注入【自动配图指示】(若你已用世界书挂同一份提示词,会重复,建议关掉)'
+          : '已关闭:插件不再往 AI 上下文注入任何提示词(用世界书自己挂即可)',
+        e.target.checked ? 'warning' : 'success'
+      );
+    });
 
     container.querySelector('#sct-btn-copy-inst').addEventListener('click', () => {
       const text = getSettings().imageInstructionText || DEFAULT_IMAGE_INSTRUCTION;
