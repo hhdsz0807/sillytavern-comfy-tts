@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.1.0';
+  const SCT_BUILD = '2.1.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4331,6 +4331,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     '4:3 (Standard)', '3:4 (Portrait Standard)', '3:2 (Photo)', '2:3 (Portrait Photo)', '21:9 (Ultrawide)'];
 
   let sctBackendDialogEl = null;
+  let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
 
   function cloneWorkflow(tpl) {
@@ -4959,18 +4960,15 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         </div>
       </div>`;
 
-    container.querySelector('.sct-bk-close')?.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
+    bindBackendTap(container.querySelector('.sct-bk-close'), (e) => {
       const id = container.dataset.sctBkId;
       if (id) removeChatBackendCard(mesIdOf(container), id);
       container.remove();
     });
-    container.querySelector('.sct-bk-again')?.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
+    bindBackendTap(container.querySelector('.sct-bk-again'), () => {
       openBackendDialog('video', container, container.__sctSourceUrl || '');
     });
-    container.querySelector('.sct-bk-params')?.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
+    bindBackendTap(container.querySelector('.sct-bk-params'), () => {
       const p = container.__sctLastParams || {};
       const txt = Object.entries(p).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')
         + '\n\n— 完整工作流 JSON —\n' + JSON.stringify(container.__sctLastWorkflow || {}, null, 1);
@@ -5059,9 +5057,41 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   /* ------------------------------- 编辑 / 视频对话框 ------------------------------- */
 
   function closeBackendDialog() {
+    if (sctBackendDialogEsc) {
+      document.removeEventListener('keydown', sctBackendDialogEsc, true);
+      sctBackendDialogEsc = null;
+    }
     if (sctBackendDialogEl && sctBackendDialogEl.isConnected) sctBackendDialogEl.remove();
     sctBackendDialogEl = null;
   }
+
+  // 手机上页面级 touch 处理会吃掉 click：click + pointerup + touchend 三保险，并防重复触发
+  function bindBackendTap(el, handler) {
+    if (!el) return;
+    let last = 0;
+    const fire = (e) => {
+      const now = Date.now();
+      if (now - last < 350) return;      // 同一个动作只认第一次
+      last = now;
+      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
+      const r = handler(e);
+      if (r && typeof r.catch === 'function') {
+        r.catch((err) => console.warn('[SCT] 对话框动作失败：', err));
+      }
+    };
+    el.addEventListener('click', fire);
+    el.addEventListener('pointerup', fire);
+    el.addEventListener('touchend', fire, { passive: false });
+  }
+
+  // 兜底：任何「关闭」控件被点到都关掉弹窗（即使个别元素没绑上事件也不至于卡死）
+  document.addEventListener('pointerup', (e) => {
+    try {
+      if (sctBackendDialogEl && e.target && e.target.closest && e.target.closest('.sct-bk-quit')) {
+        closeBackendDialog();
+      }
+    } catch (_) {}
+  }, true);
 
   function openBackendDialog(kind, anchor, sourceUrl) {
     closeBackendDialog();
@@ -5074,8 +5104,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
-          <span>${isVideo ? '🎬 MiniMax H3 图生视频（本机出片，慢）' : '✏️ Qwen-Image 2.1 图像编辑（改图）'}</span>
-          <button type="button" class="sct-bk-x" title="关闭">✕</button>
+          <span class="sct-bk-title">${isVideo ? '🎬 MiniMax H3 图生视频' : '✏️ Qwen-Image 2.1 图像编辑'}</span>
+          <button type="button" class="sct-bk-x sct-bk-quit" title="关闭这个窗口">✕ 关闭</button>
         </div>
         <div class="sct-bk-body">
           <div class="sct-bk-srcrow">
@@ -5089,7 +5119,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           </div>
           <div class="sct-setting-col">
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
-            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 10 : 3}">${escapeHtml(isVideo ? (s.comfyVideoPrompt || '') : '')}</textarea>
+            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? (s.comfyVideoPrompt || '') : '')}</textarea>
           </div>
           ${isVideo ? `
           <div class="sct-bk-two">
@@ -5122,6 +5152,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           </div>`}
           <div class="sct-bk-foot">
             <button type="button" class="sct-comfy-btn sct-bk-go">🚀 开始</button>
+            <button type="button" class="sct-comfy-btn sct-bk-quit">✖ 关闭（不生成）</button>
             <span class="sct-bk-hint">${isVideo ? '生成期间别关页面；关了就等它跑完，文件会落在 ComfyUI 的 output/video/SCT_H3' : '编辑器会让它按指令改图，原图不动'}</span>
           </div>
         </div>
@@ -5135,14 +5166,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (pv) pv.style.display = 'none';
     }
 
-    overlay.querySelector('.sct-bk-x')?.addEventListener('click', (e) => { e.preventDefault(); closeBackendDialog(); });
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeBackendDialog(); });
+    // 关闭：顶栏「✕ 关闭」/ 底部「✖ 关闭」/ 点暗色背景 / 按 Esc —— 四条路都能关
+    overlay.querySelectorAll('.sct-bk-quit').forEach((btn) => bindBackendTap(btn, () => closeBackendDialog()));
+    const onBackdrop = (e) => { if (e.target === overlay) closeBackendDialog(); };
+    overlay.addEventListener('click', onBackdrop);
+    overlay.addEventListener('pointerdown', onBackdrop);
+    sctBackendDialogEsc = (e) => { if (e.key === 'Escape') closeBackendDialog(); };
+    document.addEventListener('keydown', sctBackendDialogEsc, true);
 
     const fileInput = overlay.querySelector('.sct-bk-file');
-    overlay.querySelector('.sct-bk-pick')?.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      fileInput?.click();
-    });
+    bindBackendTap(overlay.querySelector('.sct-bk-pick'), () => fileInput?.click());
     fileInput?.addEventListener('change', () => {
       const f = fileInput.files && fileInput.files[0];
       if (!f) return;
@@ -5153,8 +5186,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (tag) tag.textContent = `源图：相册选图 ${f.name}`;
     });
 
-    overlay.querySelector('.sct-bk-go')?.addEventListener('click', async (e) => {
-      e.preventDefault(); e.stopPropagation();
+    bindBackendTap(overlay.querySelector('.sct-bk-go'), async () => {
       const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
       if (!text) { showToast(isVideo ? '先写视频提示词（六段式）' : '先写编辑指令', 'warning'); return; }
       if (!sctBackendDialogSource) { showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning'); return; }

@@ -2765,28 +2765,60 @@
 .sct-bk-two > * { flex: 1 1 160px; min-width: 150px; }
 
 .sct-bk-overlay {
-  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  /* ★ 手机适配：显式四边（不用 inset，老 WebView 不认）+ 整层可滚动，
+     否则弹窗比屏幕高时顶栏会被挤到屏幕外、根本无法关闭 */
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--sct-overlay, rgba(31, 30, 36, 0.7));
   -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-  z-index: 2147483550 !important; padding: 12px;
+  z-index: 2147483550 !important;
+  padding: 10px;
+  box-sizing: border-box;
+  padding-top: max(10px, env(safe-area-inset-top));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
 }
 .sct-bk-modal {
-  width: min(680px, 96vw); max-height: 88vh; overflow: auto;
+  width: 100%; max-width: 680px;
+  max-height: calc(100vh - 20px);
+  max-height: calc(100dvh - 20px);
+  margin: auto;                 /* ★ 够高时居中；超高时顶部对齐并可滚，绝不会把顶栏顶出去 */
+  display: flex; flex-direction: column;
+  overflow: hidden;
   background: var(--sct-bg, #37353E); color: var(--sct-ink, #D3DAD9);
   border: 1px solid var(--sct-line-strong, #686774); border-radius: var(--sct-radius-win, 16px);
   box-shadow: var(--sct-shadow);
 }
 .sct-bk-head {
+  flex: 0 0 auto;
+  position: sticky; top: 0; z-index: 2;   /* ★ 吸顶：滚到哪儿都能看到「✕ 关闭」 */
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 12px 14px; font-weight: 600; border-bottom: 1px solid var(--sct-line, #53525D);
+  padding: 10px 12px; font-weight: 600; font-size: 13.5px;
+  background: var(--sct-surface, #44444E);
+  border-bottom: 1px solid var(--sct-line, #53525D);
   color: var(--sct-ink, #D3DAD9);
+  border-radius: var(--sct-radius-win, 16px) var(--sct-radius-win, 16px) 0 0;
 }
+.sct-bk-title { flex: 1 1 auto; min-width: 0; }
 .sct-bk-x {
-  background: transparent; border: 0; color: inherit; font-size: 16px; cursor: pointer;
-  padding: 2px 8px; border-radius: var(--sct-radius-sm, 8px);
+  flex: 0 0 auto; min-height: 40px; min-width: 82px;
+  padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer;
+  color: var(--sct-accent, #76ABAE);
+  background: var(--sct-accent-soft, #76ABAE26);
+  border: 1px solid var(--sct-accent, #76ABAE);
+  border-radius: var(--sct-radius-pill, 999px);
 }
-.sct-bk-x:hover { background: var(--sct-accent-soft, #76ABAE26); }
-.sct-bk-body { padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.sct-bk-x:active { transform: scale(0.97); }
+.sct-bk-body {
+  flex: 1 1 auto; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding: 12px 14px 16px; display: flex; flex-direction: column; gap: 10px;
+}
+@supports not (height: 100dvh) {
+  .sct-bk-modal { max-height: calc(100vh - 20px); }
+}
 .sct-bk-srcrow { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 .sct-bk-preview {
   width: 132px; max-height: 170px; object-fit: contain; border-radius: var(--sct-radius-sm, 8px);
