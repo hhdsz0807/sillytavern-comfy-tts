@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '1.16.6';
+  const SCT_BUILD = '2.1.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -99,6 +99,47 @@
     // 图片本地保存(手机 IndexedDB):服务器 output 被清理后依然能看,并且能在手机上真删
     comfyLocalCacheEnabled: true,
     comfyLocalCacheMaxMB: 800,         // 本地图库容量上限(MB),超出自动删最旧的
+
+    // ★ 多后端(2026-10)：三类任务分别走本机哪套 ComfyUI 工作流
+    // 文生图：'sdxl' = 插件内置的 SDXL 工作流(原行为) | 'moss' = 本机 MOSS-Image 文生图(写中文准)
+    comfyTxt2ImgBackend: 'sdxl',
+    // MOSS-Image 文生图参数（模型目录是加载器读的目录，不是单文件）
+    comfyMossModelDir: 'D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/MOSS-Image-SFT',
+    comfyMossDtype: 'fp8_e4m3fn',
+    comfyMossSteps: 20,
+    comfyMossWidth: 1024,              // 必须是 16 的整数倍
+    comfyMossHeight: 1024,
+    comfyMossNegative: 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact',
+    // 图像编辑(卡片上的 ✏️ 按钮)：本机 Qwen-Image 2.1 编辑工作流
+    // ★ 实测：cfg=1.0 时模型几乎不改图（像素差≈1，头发颜色不变）；cfg≈4 才会真的按指令改
+    comfyEditSteps: 30,
+    comfyEditCfg: 4.0,
+    comfyEditMegapixels: 1.0,
+    // 图生视频(卡片上的 🎬 按钮)：本机 MiniMax H3 二采工作流
+    comfyVideoSeconds: 6,              // 6 秒正好是单块上限，最划算；15 秒要 20 分钟以上
+    comfyVideoAspect: '16:9 (Widescreen)',
+    comfyVideoMegapixels: 0.2,
+    comfyVideoPrompt: `subject_definitions:
+<Picture 1> is the reference character sheet; it fixes her face, hair, eye colour and body proportions.
+<Subject 1> is the girl in <Picture 1>, drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills, simple two-tone shading, big expressive anime eyes; no 3D rendering, no CGI shading, no realistic skin texture anywhere.
+<Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
+
+summary:
+[reference generation] The target video is a single unbroken flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>. She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
+<Picture 1> (identity anchor): fully_preserved - its views guide proportions, features and costume.
+<Subject 2> (appears in [Shot 1]): fully_preserved - the scenery stays consistent.
+
+detailed_description:
+The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. ONE single unbroken continuous shot: no camera cut, no angle change, no new action, no scene change. [Shot 1] Medium shot of <Subject 1>: only micro-motion happens - slow breathing, one soft blink, hair and hem swaying faintly, gentle light flickering. Hand assignment: both hands rest still and never move. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
+
+overall_soundscape:
+A quiet room tone with faint ambience, strictly action-synced to the few visible motions.
+
+non_diegetic_music:
+A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note.`,
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -4263,6 +4304,355 @@
 
   const cardStateMap = new Map();
 
+  /* ==========================================================================
+     🧩 多后端对接：图像编辑(Qwen-Image 2.1) / 文生图(MOSS-Image) / 图生视频(MiniMax H3)
+     --------------------------------------------------------------------------
+     · 三份工作流都是「API 格式的固定图」，从本机 ComfyUI 真实跑通的提交里导出；
+       运行时只改写 提示词 / 源图 / 种子 / 步数 / 尺寸 几个字段，绝不在浏览器里重拼节点。
+     · 源图先 POST /upload/image 传进 ComfyUI 的 input 目录，再把文件名塞进 LoadImage。
+     · 视频很慢（6 秒≈7 分钟，15 秒可能 20 分钟以上）：单独给 1 小时超时与进度提示，
+       结果卡写进酒馆消息 extra，刷新 / 切聊天后照样能找回来。
+     ========================================================================== */
+
+  const SCT_WF_MOSS = {"1":{"class_type":"MOSSImageHFLoader","inputs":{"model_path":"D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/MOSS-Image-SFT","text_device":"default","weight_dtype":"fp8_e4m3fn"}},"13":{"class_type":"SkipLayerGuidanceDiTSimple","inputs":{"double_layers":"","end_percent":1.0,"model":["15",0],"single_layers":"22","start_percent":0.0}},"15":{"class_type":"ModelSamplingSD3","inputs":{"model":["1",0],"shift":5.0}},"16":{"class_type":"KSampler","inputs":{"cfg":3.0,"denoise":1.0,"latent_image":["6",0],"model":["13",0],"negative":["5",0],"positive":["4",0],"sampler_name":"euler","scheduler":"sgm_uniform","seed":42,"steps":50}},"17":{"class_type":"VAEDecode","inputs":{"samples":["16",0],"vae":["1",2]}},"18":{"class_type":"SaveImage","inputs":{"filename_prefix":"MOSS_SFT","images":["17",0]}},"4":{"class_type":"CLIPTextEncode","inputs":{"clip":["1",1],"text":""}},"5":{"class_type":"CLIPTextEncode","inputs":{"clip":["1",1],"text":""}},"6":{"class_type":"EmptyFlux2LatentImage","inputs":{"batch_size":1,"height":1024,"width":1024}}};
+
+  const SCT_WF_QWEN = {"13":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"9:16 (Portrait Widescreen)","megapixels":1.5,"multiple":32}},"475":{"class_type":"LoadImage","inputs":{"image":""}},"476":{"class_type":"UNETLoader","inputs":{"unet_name":"Qwen\\qwen_image_2.1_int8_convrot.safetensors","weight_dtype":"default"}},"477":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_8b_int8_convrot.safetensors","device":"default","type":"qwen_image"}},"478":{"class_type":"VAELoader","inputs":{"vae_name":"qwen_image_2.1_vae_bf16.safetensors"}},"479":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":["13",1],"width":["13",0]}},"480":{"class_type":"VAEDecode","inputs":{"samples":["481",0],"vae":["478",0]}},"481":{"class_type":"KSampler","inputs":{"cfg":1.0,"denoise":1.0,"latent_image":["482",0],"model":["483",0],"negative":["497",1],"positive":["497",0],"sampler_name":"euler","scheduler":"simple","seed":["502",0],"steps":30}},"482":{"class_type":"ComfySwitchNode","inputs":{"on_false":["497",2],"on_true":["479",0],"switch":false}},"483":{"class_type":"QwenImage21Cache","inputs":{"device":"auto","dtype":"default","model":["476",0]}},"487":{"class_type":"SaveImage","inputs":{"filename_prefix":"QW21-%date:yyyyMMddhhmmss%","images":["480",0]}},"497":{"class_type":"TextEncodeQwenImage21","inputs":{"clip":["477",0],"images.image_1":["532",0],"negative_prompt":"","prompt":["571",0],"resolution":0,"vae":["478",0]}},"502":{"class_type":"Seed (rgthree)","inputs":{"seed":-1}},"532":{"class_type":"ImageScaleToTotalPixels","inputs":{"image":["475",0],"megapixels":1.5,"resolution_steps":32,"upscale_method":"lanczos"}},"571":{"class_type":"PrimitiveStringMultiline","inputs":{"value":""}}};
+
+  const SCT_WF_MM = {"10":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},"106":{"class_type":"LTXVConcatAVLatent","inputs":{"audio_latent":["90",1],"video_latent":["118",0]}},"107":{"class_type":"VAEDecode","inputs":{"samples":["113",0],"vae":["26",0]}},"11":{"class_type":"RandomNoise","inputs":{"noise_seed":["12",0]}},"110":{"class_type":"ConditioningZeroOut","inputs":{"conditioning":["6",0]}},"113":{"class_type":"MMH3UltimateUpscale","inputs":{"cfg":1.0,"conditioning":["6",0],"latent":["106",0],"model":["129",0],"negative":["110",0],"noise":["11",0],"sampler":["10",0],"sigmas":["117",1],"temporal_split_param":["98",0]}},"114":{"class_type":"VHS_VideoCombine","inputs":{"audio":["83",0],"filename_prefix":"video/自改二采/二采/minimax_二采_","format":"video/h264-mp4","frame_rate":24.0,"images":["107",0],"loop_count":0,"pingpong":false,"save_output":true}},"117":{"class_type":"SplitSigmas","inputs":{"sigmas":["119",0],"step":["150",0]}},"118":{"class_type":"MinimaxH3LatentUpscaler3D","inputs":{"align":32,"device":"cuda","enable_temporal_chunking":true,"force_unload":true,"latent":["90",0],"mode":"scale by multiplier","mode.scale":["151",0],"model_name":"minimax_h3_latent_upscaler_3d_fp16.safetensors","precision":"fp16"}},"119":{"class_type":"BasicScheduler","inputs":{"denoise":1.0,"model":["129",0],"scheduler":"simple","steps":["149",1]}},"12":{"class_type":"Seed (rgthree)","inputs":{"seed":412998550581804}},"125":{"class_type":"ModelAttentionBackend","inputs":{"attention":"comfy kitchen attention","model":["22",0]}},"129":{"class_type":"ModelPreviewOverrideKJ","inputs":{"jpeg_quality":80,"max_resolution":480,"model":["156",0],"preview_fps":8,"preview_frames":999,"suppress_default_preview":true,"tiny_vae":"taeh3.safetensors","vae":"taeh3.safetensors"}},"14":{"class_type":"BasicGuider","inputs":{"conditioning":["6",0],"model":["129",0]}},"148":{"class_type":"INTConstant","inputs":{"value":4}},"149":{"class_type":"ComfyMathExpression","inputs":{"expression":"a + b","values.a":["150",0],"values.b":["148",0]}},"150":{"class_type":"INTConstant","inputs":{"value":8}},"151":{"class_type":"FloatConstant","inputs":{"value":2.0}},"156":{"class_type":"MiniMaxH3SigmaShift","inputs":{"model":["21",0],"shift_audio":3.0,"shift_video":12.0}},"17":{"class_type":"PrimitiveFloat","inputs":{"value":3.0}},"18":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_int8_convrot.safetensors","device":"default","type":"minimax"}},"19":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},"20":{"class_type":"UNETLoader","inputs":{"unet_name":"h3\\DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors","weight_dtype":"default"}},"21":{"class_type":"LoraLoaderModelOnly","inputs":{"lora_name":"minimax h3\\加速\\TaoMate-H3-3step.safetensors","model":["125",0],"strength_model":1.0}},"22":{"class_type":"MiniMaxH3MemoryEfficientSageAttentionPatch","inputs":{"model":["20",0]}},"24":{"class_type":"LoadImage","inputs":{"image":""}},"26":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},"40":{"class_type":"ComfyMathExpression","inputs":{"expression":"max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17","values.a":["17",0],"values.b":["8",1]}},"6":{"class_type":"MiniMaxH3ReferenceToVideo","inputs":{"audio_vae":["19",0],"clip":["18",0],"height":["8",1],"length":["40",1],"prompt":"","ref_image_size":"match","ref_images.ref_image_0":["24",0],"vae":["26",0],"width":["8",0]}},"7":{"class_type":"SamplerCustomAdvanced","inputs":{"guider":["14",0],"latent_image":["6",1],"noise":["11",0],"sampler":["10",0],"sigmas":["117",0]}},"8":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"16:9 (Widescreen)","megapixels":0.2,"multiple":32}},"83":{"class_type":"VAEDecodeAudio","inputs":{"samples":["113",0],"vae":["19",0]}},"90":{"class_type":"LTXVSeparateAVLatent","inputs":{"av_latent":["7",1]}},"98":{"class_type":"MMH3TemporalSplitParams","inputs":{"anchor_strength":0.99,"chunk_length":153,"temporal_overlap":17}}};
+
+  // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
+  const SCT_WF_PATCH = {
+    moss: { loader: '1', positive: '4', negative: '5', latent: '6', sampler: '16', save: '18' },
+    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487' },
+    video: { image: '24', prompt: '6', seed: '12', seconds: '17', size: '8', save: '114' }
+  };
+
+  const SCT_VIDEO_ASPECTS = ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)', '1:1 (Square)',
+    '4:3 (Standard)', '3:4 (Portrait Standard)', '3:2 (Photo)', '2:3 (Portrait Photo)', '21:9 (Ultrawide)'];
+
+  let sctBackendDialogEl = null;
+  let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
+
+  function cloneWorkflow(tpl) {
+    return JSON.parse(JSON.stringify(tpl));
+  }
+
+  function mesIdOf(el) {
+    return el?.closest?.('.mes')?.getAttribute('mesid') || el?.dataset?.sctMesId || '';
+  }
+
+  // 把任意图片源(URL / Blob / File)统一成 Blob，供上传 ComfyUI 用
+  async function toImageBlob(source) {
+    if (!source) throw new Error('没有可用的源图');
+    if (source instanceof Blob) return source;
+    const url = String(source);
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 0) return blob;
+      }
+    } catch (_) { /* 跨域或离线时退回 canvas 重绘 */ }
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const cv = document.createElement('canvas');
+          cv.width = img.naturalWidth || img.width;
+          cv.height = img.naturalHeight || img.height;
+          cv.getContext('2d').drawImage(img, 0, 0);
+          cv.toBlob((b) => (b ? resolve(b) : reject(new Error('源图转 Blob 失败'))), 'image/png');
+        } catch (err) {
+          reject(new Error('源图无法读取（跨域/已被删除）：' + err.message));
+        }
+      };
+      img.onerror = () => reject(new Error('源图加载失败（文件可能已被删除）'));
+      img.src = url;
+    });
+  }
+
+  // 上传源图到 ComfyUI 的 input 目录，返回可直接喂给 LoadImage 的文件名
+  async function prepareComfySourceImage(source) {
+    const host = getCleanComfyHost();
+    const blob = await toImageBlob(source);
+    const isJpg = String(blob.type || '').includes('jpeg');
+    const name = `sct_src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${isJpg ? 'jpg' : 'png'}`;
+    return await uploadComfyInputImage(host, blob, name, '');
+  }
+
+  // 从 /history 任务里收集输出（图片走 images，视频走 gifs/videos）
+  function collectComfyApiOutputs(task, host) {
+    const images = [], videos = [];
+    const outputs = (task && task.outputs) || {};
+    Object.keys(outputs).forEach((nid) => {
+      const out = outputs[nid] || {};
+      Object.keys(out).forEach((key) => {
+        const arr = out[key];
+        if (!Array.isArray(arr)) return;
+        arr.forEach((item) => {
+          if (!item || !item.filename) return;
+          const url = `${host}/view?filename=${encodeURIComponent(item.filename)}` +
+            `&subfolder=${encodeURIComponent(item.subfolder || '')}` +
+            `&type=${encodeURIComponent(item.type || 'output')}`;
+          const fn = String(item.filename).toLowerCase();
+          if (/\.(mp4|webm|mkv|mov|gif)$/.test(fn) || key === 'gifs' || key === 'videos') videos.push(url);
+          else images.push(url);
+        });
+      });
+    });
+    return { images, videos };
+  }
+
+  // 提交 API 工作流 + 轮询结果（图片与视频共用；options: {video, timeoutMs, onProgress}）
+  async function submitComfyApiPrompt(promptObj, options = {}) {
+    const host = getCleanComfyHost();
+    const wantsVideo = !!options.video;
+    const timeoutMs = options.timeoutMs || (wantsVideo ? 60 * 60 * 1000 : 15 * 60 * 1000);
+    const clientId = 'sct_bk_' + Math.random().toString(36).slice(2, 10);
+    const t0 = Date.now();
+    const since = () => {
+      const sec = Math.round((Date.now() - t0) / 1000);
+      return sec < 90 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+    };
+
+    let ws = null;
+    try {
+      ws = new WebSocket(host.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`);
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (!options.onProgress) return;
+          if (msg.type === 'progress' && msg.data) {
+            const { value, max } = msg.data;
+            const pct = max ? Math.round((value / max) * 100) : 0;
+            options.onProgress(`⏳ 采样中 ${value}/${max} 步 (${pct}%) · 已用 ${since()}`);
+          } else if (msg.type === 'executing' && msg.data && msg.data.node) {
+            options.onProgress(`⚙️ 正在执行节点 ${msg.data.node}… · 已用 ${since()}`);
+          }
+        } catch (_) {}
+      };
+    } catch (_) {}
+
+    let promptId = '';
+    try {
+      const res = await fetch(`${host}/prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: promptObj, client_id: clientId })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.prompt_id) {
+        const detail = data?.error?.message
+          || (data?.node_errors ? JSON.stringify(data.node_errors).slice(0, 400) : '')
+          || `HTTP ${res.status}`;
+        throw new Error('提交失败：' + detail);
+      }
+      promptId = data.prompt_id;
+    } catch (e) {
+      if (ws) { try { ws.close(); } catch (_) {} }
+      throw e;
+    }
+
+    if (options.onProgress) options.onProgress(wantsVideo ? '🎬 任务已入队，本机出片要几分钟，别关页面…' : '🎨 任务已入队，正在出图…');
+    const pollMs = wantsVideo ? 5000 : 2500;
+    while (Date.now() - t0 < timeoutMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      let task = null;
+      try {
+        const h = await fetch(`${host}/history/${promptId}`);
+        if (!h.ok) continue;
+        const hd = await h.json();
+        task = hd[promptId];
+      } catch (_) { continue; }
+      if (!task) continue;
+      const statusStr = task.status?.status_str;
+      if (statusStr === 'error') {
+        const err = task.status?.messages?.find((m) => m[0] === 'execution_error')?.[1]?.exception_message;
+        if (ws) { try { ws.close(); } catch (_) {} }
+        throw new Error('ComfyUI 执行报错：' + (err || '详见 ComfyUI 控制台'));
+      }
+      const found = collectComfyApiOutputs(task, host);
+      if (found.images.length > 0 || found.videos.length > 0) {
+        if (ws) { try { ws.close(); } catch (_) {} }
+        return found;
+      }
+      if (options.onProgress && wantsVideo) {
+        options.onProgress(`🎬 还在跑（已用 ${since()}）· 6 秒片约 7 分钟，15 秒要 20 分钟以上`);
+      }
+    }
+    if (ws) { try { ws.close(); } catch (_) {} }
+    throw new Error(`等待超时（${Math.round(timeoutMs / 60000)} 分钟）`);
+  }
+
+  /* ---------------------------- 三个后端的提交入口 ---------------------------- */
+
+  // 文生图：MOSS-Image（本机 27GB 模型，写中文最准；不参与 LoRA 链）
+  async function triggerComfyMossDraw(promptText, container, taskKey = null) {
+    const s = getSettings();
+    const host = getCleanComfyHost();
+    const wf = cloneWorkflow(SCT_WF_MOSS);
+    const P = SCT_WF_PATCH.moss;
+    wf[P.loader].inputs.model_path = (s.comfyMossModelDir || '').trim();
+    wf[P.loader].inputs.weight_dtype = s.comfyMossDtype || 'fp8_e4m3fn';
+    wf[P.positive].inputs.text = String(promptText || '');
+    wf[P.negative].inputs.text = s.comfyMossNegative || '';
+    const w = Math.max(256, Math.round((parseInt(s.comfyMossWidth, 10) || 1024) / 16) * 16);
+    const h = Math.max(256, Math.round((parseInt(s.comfyMossHeight, 10) || 1024) / 16) * 16);
+    wf[P.latent].inputs.width = w;
+    wf[P.latent].inputs.height = h;
+    wf[P.sampler].inputs.steps = Math.min(80, Math.max(4, parseInt(s.comfyMossSteps, 10) || 20));
+    wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
+    wf[P.save].inputs.filename_prefix = 'SCT_MOSS';
+
+    container.__sctLastParams = {
+      checkpoint: `MOSS-Image（${String(s.comfyMossModelDir || '').split('/').pop()}）`,
+      cfg: wf[P.sampler].inputs.cfg, steps: wf[P.sampler].inputs.steps,
+      sampler: wf[P.sampler].inputs.sampler_name, scheduler: wf[P.sampler].inputs.scheduler,
+      size: `${w}x${h}`, batch: 1, seed: wf[P.sampler].inputs.seed,
+      vae: '(模型内置)', hires: '关', faceFix: '关', styleRef: '关',
+      loras: ['（MOSS 后端不挂 LoRA）'],
+      positive: wf[P.positive].inputs.text, negative: wf[P.negative].inputs.text
+    };
+    container.__sctLastWorkflow = wf;
+
+    renderLoadingCard(container, promptText, '🟢 正在用 MOSS-Image 出图（本机大模型，首次加载较慢）…', taskKey);
+    try {
+      const out = await submitComfyApiPrompt(wf, {
+        onProgress: (t) => renderLoadingCard(container, promptText, t, taskKey)
+      });
+      const merged = capCarouselImages(dedupeComfyImages([...(collectExistingImages(container, taskKey) || []), ...out.images]));
+      renderCarouselCard(container, merged, promptText, []);
+      const mesId = mesIdOf(container);
+      if (mesId) saveChatMessageExtraImages(mesId, container.dataset.sctSlotIdx || '0', merged, promptText, []);
+      cacheImagesToPhone(out.images.map((u) => ({ url: u, prompt: promptText, loras: [] })))
+        .then(async (r) => {
+          if (r.saved > 0) { await ensurePersistentStorage(); await loadLocalImageUrls(); }
+        }).catch(() => {});
+      showToast(`MOSS-Image 出图成功！（${w}x${h}）`, 'success');
+      return true;
+    } catch (e) {
+      renderErrorCard(container, promptText, e.message, [], taskKey);
+      return false;
+    }
+  }
+
+  // 图像编辑：Qwen-Image 2.1（源图 + 中文指令 → 改图）
+  async function triggerComfyQwenEdit(source, instruction, container, taskKey = null) {
+    const s = getSettings();
+    renderLoadingCard(container, instruction, '📤 正在把源图上传到 ComfyUI…', taskKey);
+    let uploaded = '';
+    try {
+      uploaded = await prepareComfySourceImage(source);
+    } catch (e) {
+      renderErrorCard(container, instruction, '源图上传失败：' + e.message, [], taskKey);
+      return false;
+    }
+    const wf = cloneWorkflow(SCT_WF_QWEN);
+    const P = SCT_WF_PATCH.qwen;
+    wf[P.image].inputs.image = uploaded;
+    wf[P.prompt].inputs.value = String(instruction || '');
+    wf[P.sampler].inputs.steps = Math.min(60, Math.max(4, parseInt(s.comfyEditSteps, 10) || 30));
+    wf[P.sampler].inputs.cfg = Math.min(8, Math.max(1, parseFloat(s.comfyEditCfg) || 4.0));
+    wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
+    wf[P.scale].inputs.megapixels = Math.min(16, Math.max(0.1, parseFloat(s.comfyEditMegapixels) || 1.0));
+    wf[P.save].inputs.filename_prefix = 'SCT_EDIT/QW21';
+
+    container.__sctLastParams = {
+      checkpoint: 'Qwen-Image 2.1 int8（编辑工作流）', cfg: wf[P.sampler].inputs.cfg,
+      steps: wf[P.sampler].inputs.steps, sampler: wf[P.sampler].inputs.sampler_name,
+      scheduler: wf[P.sampler].inputs.scheduler, size: `${wf[P.scale].inputs.megapixels} MP`,
+      batch: 1, seed: wf[P.sampler].inputs.seed, vae: 'qwen_image_2.1_vae_bf16',
+      hires: '关', faceFix: '关', styleRef: '关', loras: ['（编辑后端不挂 LoRA）'],
+      positive: String(instruction || ''), negative: wf['497']?.inputs?.negative_prompt || ''
+    };
+    container.__sctLastWorkflow = wf;
+
+    renderLoadingCard(container, instruction, '✏️ Qwen-Image 2.1 正在按指令改图…', taskKey);
+    try {
+      const out = await submitComfyApiPrompt(wf, {
+        timeoutMs: 30 * 60 * 1000,
+        onProgress: (t) => renderLoadingCard(container, instruction, t, taskKey)
+      });
+      renderCarouselCard(container, out.images, '✏️ ' + instruction, []);
+      const rec = {
+        id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        kind: 'edit', urls: out.images, prompt: '✏️ ' + instruction, at: Date.now()
+      };
+      saveChatBackendCard(container, rec);
+      cacheImagesToPhone(out.images.map((u) => ({ url: u, prompt: '✏️ ' + instruction, loras: [] })))
+        .then(async (r) => {
+          if (r.saved > 0) { await ensurePersistentStorage(); await loadLocalImageUrls(); }
+        }).catch(() => {});
+      showToast('图像编辑完成！', 'success');
+      return true;
+    } catch (e) {
+      renderErrorCard(container, instruction, e.message, [], taskKey);
+      return false;
+    }
+  }
+
+  // 图生视频：MiniMax H3（源图 + 六段式提示词 → 带音频短视频）
+  async function triggerComfyH3Video(source, videoPrompt, container, opts = {}) {
+    const s = getSettings();
+    const seconds = Math.min(15, Math.max(1, parseFloat(opts.seconds) || parseFloat(s.comfyVideoSeconds) || 6));
+    const frames = (() => {
+      let f = Math.max(5, Math.round(seconds * 24));
+      f = f + (5 - (f % 17)) % 17;
+      return f;
+    })();
+    const blocks = frames <= 153 ? 1 : Math.ceil((frames - 153) / 136) + 1;
+    const hint = `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 二采 ${blocks} 组`;
+
+    renderLoadingCard(container, videoPrompt, '📤 正在把源图上传到 ComfyUI…', null);
+    let uploaded = '';
+    try {
+      uploaded = await prepareComfySourceImage(source);
+    } catch (e) {
+      renderErrorCard(container, videoPrompt, '源图上传失败：' + e.message);
+      return false;
+    }
+
+    const wf = cloneWorkflow(SCT_WF_MM);
+    const P = SCT_WF_PATCH.video;
+    wf[P.image].inputs.image = uploaded;
+    wf[P.prompt].inputs.prompt = String(videoPrompt || '');
+    wf[P.seed].inputs.seed = Math.floor(Math.random() * 1125899906842624);
+    wf[P.seconds].inputs.value = seconds;
+    wf[P.size].inputs.aspect_ratio = opts.aspect || s.comfyVideoAspect || '16:9 (Widescreen)';
+    wf[P.size].inputs.megapixels = Math.min(1, Math.max(0.1, parseFloat(s.comfyVideoMegapixels) || 0.2));
+    wf[P.save].inputs.filename_prefix = 'video/SCT_H3/minimax_';
+
+    container.__sctLastParams = {
+      checkpoint: 'MiniMax H3 int8（二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
+      steps: '一采 8 + 二采 4', sampler: 'res_multistep', scheduler: 'simple',
+      size: `${wf[P.size].inputs.aspect_ratio} / ${wf[P.size].inputs.megapixels} MP`,
+      batch: 1, seed: wf[P.seed].inputs.seed, vae: 'minimax_h3_video_vae_fp16 + audio_vae_fp32',
+      hires: `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: ['TaoMate-H3-3step（加速，链内固定）'],
+      positive: String(videoPrompt || ''), negative: '—'
+    };
+    container.__sctLastWorkflow = wf;
+
+    renderLoadingCard(container, videoPrompt, `${hint} · 正在装载模型…`, null);
+    try {
+      const out = await submitComfyApiPrompt(wf, {
+        video: true, timeoutMs: 60 * 60 * 1000,
+        onProgress: (t) => renderLoadingCard(container, videoPrompt, `${hint}\n${t}`, null)
+      });
+      renderBackendVideoCard(container, out.videos, videoPrompt);
+      const rec = {
+        id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        kind: 'video', urls: out.videos, prompt: videoPrompt, at: Date.now()
+      };
+      saveChatBackendCard(container, rec);
+      showToast('视频生成完成！点播放或「⬇️ 保存到手机」', 'success');
+      return true;
+    } catch (e) {
+      renderErrorCard(container, videoPrompt, e.message);
+      return false;
+    }
+  }
+
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
     // 按文件名去重兜底：即使上游重复塞入同一张图(哪怕时间戳不同)，也绝不会出现"同一张图连翻好几页"
@@ -4320,12 +4710,16 @@
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
+            <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
+            <button type="button" class="sct-comfy-btn sct-bk-video-btn" title="用当前这张图做源图，本机 MiniMax H3 出带音频短视频（6 秒约 7 分钟）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">点击放大</span>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
+            <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
+            <button type="button" class="sct-comfy-btn sct-bk-video-btn" title="用当前这张图做源图，本机 MiniMax H3 出带音频短视频（6 秒约 7 分钟）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
@@ -4443,6 +4837,18 @@
       });
     }
 
+    // ✏️ 编辑 / 🎬 视频：拿当前显示的这张当源图，交给本机 Qwen-Image / MiniMax H3
+    container.querySelector('.sct-bk-edit-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openBackendDialog('edit', container, currentSrc);
+    });
+    container.querySelector('.sct-bk-video-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openBackendDialog('video', container, currentSrc);
+    });
+
     // 只删当前这一张
     const delImgBtn = container.querySelector('.sct-del-img-btn');
     if (delImgBtn) {
@@ -4527,6 +4933,251 @@
   }
 
   // 提交并调度 ComfyUI 局部重绘任务 (Inpainting)
+  /* ---------------------------- 多后端结果卡与持久化 ---------------------------- */
+
+  // 视频卡：<video> 直接播放 + 一键下载到手机
+  function renderBackendVideoCard(container, urls, promptText) {
+    if (!urls || !urls.length) return;
+    container.__sctVideoUrls = urls.slice();
+    const one = (u, i) => `
+      <video class="sct-bk-video" controls playsinline preload="metadata" src="${escapeHtml(u)}"></video>
+      <div class="sct-bk-video-bar">
+        <a class="sct-comfy-btn" href="${escapeHtml(u)}" download="sct_h3_${i + 1}.mp4" target="_blank" rel="noopener">⬇️ 保存到手机</a>
+        <span class="sct-bk-hint">播放卡住就先下载再看 · 文件也留在 ComfyUI 的 output 里</span>
+      </div>`;
+    container.innerHTML = `
+      <div class="sct-comfy-card sct-bk-card">
+        <div class="sct-comfy-card-header">
+          <div class="sct-title"><span>🎬</span><span>MiniMax H3 图生视频</span></div>
+          <div class="sct-prompt-preview" title="${encodeURIComponent(String(promptText || ''))}">${escapeHtml(String(promptText || '').slice(0, 40))}…</div>
+        </div>
+        <div class="sct-bk-videos">${urls.map(one).join('')}</div>
+        <div class="sct-comfy-footer">
+          <button type="button" class="sct-comfy-btn sct-bk-again">🎬 再做一条</button>
+          <button type="button" class="sct-comfy-btn sct-bk-params">🧩 本次工作流</button>
+          <button type="button" class="sct-comfy-btn sct-btn-danger sct-bk-close">✕ 关掉这张卡</button>
+        </div>
+      </div>`;
+
+    container.querySelector('.sct-bk-close')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const id = container.dataset.sctBkId;
+      if (id) removeChatBackendCard(mesIdOf(container), id);
+      container.remove();
+    });
+    container.querySelector('.sct-bk-again')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      openBackendDialog('video', container, container.__sctSourceUrl || '');
+    });
+    container.querySelector('.sct-bk-params')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const p = container.__sctLastParams || {};
+      const txt = Object.entries(p).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')
+        + '\n\n— 完整工作流 JSON —\n' + JSON.stringify(container.__sctLastWorkflow || {}, null, 1);
+      const w = window.open('', '_blank');
+      if (w) { w.document.write(`<pre style="white-space:pre-wrap;font-size:12px;">${escapeHtml(txt)}</pre>`); }
+      else showToast('弹窗被拦了，先允许弹窗再看工作流', 'warning');
+    });
+  }
+
+  // 编辑/视频卡挂在原图卡片后面，同样隔离事件
+  function createBackendCardContainer(anchor, kind) {
+    const el = document.createElement('div');
+    el.className = 'sct-comfy-card-container sct-bk-card-container';
+    el.dataset.sctBackendKind = kind;
+    el.dataset.sctMesId = String(mesIdOf(anchor) || '');
+    el.setAttribute('aria-hidden', 'true');
+    el.setAttribute('translate', 'no');
+    ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
+      .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
+    (anchor.parentElement || anchor).insertBefore(el, anchor.nextSibling);
+    return el;
+  }
+
+  // 这些卡片存进酒馆消息 extra，刷新 / 切聊天后能还原（视频尤其重要：一条要跑 7 分钟）
+  function getChatBackendCards(mesId) {
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return [];
+      const arr = ctx.chat[numId].extra?.sct_backend_cards;
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) { return []; }
+  }
+
+  function saveChatBackendCard(container, rec) {
+    try {
+      const mesId = mesIdOf(container);
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return;
+      const node = ctx.chat[numId];
+      if (!node.extra) node.extra = {};
+      const arr = Array.isArray(node.extra.sct_backend_cards) ? node.extra.sct_backend_cards.slice() : [];
+      const idx = arr.findIndex((x) => x && x.id === rec.id);
+      if (idx >= 0) arr[idx] = rec; else arr.push(rec);
+      node.extra.sct_backend_cards = arr.slice(-12);
+      if (container) container.dataset.sctBkId = rec.id;
+      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
+    } catch (_) {}
+  }
+
+  function removeChatBackendCard(mesId, id) {
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId] || !id) return;
+      const node = ctx.chat[numId];
+      if (!Array.isArray(node.extra?.sct_backend_cards)) return;
+      node.extra.sct_backend_cards = node.extra.sct_backend_cards.filter((x) => x && x.id !== id);
+      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
+    } catch (_) {}
+  }
+
+  // 扫描消息时还原这些卡片
+  function renderBackendCardsForMessage(textEl, mesId) {
+    const cards = getChatBackendCards(mesId);
+    if (!cards.length) return;
+    cards.forEach((rec) => {
+      if (!rec || !rec.urls || !rec.urls.length || !rec.id) return;
+      if (textEl.querySelector(`.sct-bk-card-container[data-sct-bk-id="${rec.id}"]`)) return;
+      const el = document.createElement('div');
+      el.className = 'sct-comfy-card-container sct-bk-card-container';
+      el.dataset.sctBkId = rec.id;
+      el.dataset.sctBackendKind = rec.kind || 'edit';
+      el.dataset.sctMesId = String(mesId);
+      el.setAttribute('aria-hidden', 'true');
+      el.setAttribute('translate', 'no');
+      ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
+        .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
+      textEl.appendChild(el);
+      if (rec.kind === 'video') renderBackendVideoCard(el, rec.urls, rec.prompt || '');
+      else renderCarouselCard(el, rec.urls, rec.prompt || '', []);
+    });
+  }
+
+  /* ------------------------------- 编辑 / 视频对话框 ------------------------------- */
+
+  function closeBackendDialog() {
+    if (sctBackendDialogEl && sctBackendDialogEl.isConnected) sctBackendDialogEl.remove();
+    sctBackendDialogEl = null;
+  }
+
+  function openBackendDialog(kind, anchor, sourceUrl) {
+    closeBackendDialog();
+    const s = getSettings();
+    const isVideo = kind === 'video';
+    sctBackendDialogSource = sourceUrl || null;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'sct-bk-overlay';
+    overlay.innerHTML = `
+      <div class="sct-bk-modal">
+        <div class="sct-bk-head">
+          <span>${isVideo ? '🎬 MiniMax H3 图生视频（本机出片，慢）' : '✏️ Qwen-Image 2.1 图像编辑（改图）'}</span>
+          <button type="button" class="sct-bk-x" title="关闭">✕</button>
+        </div>
+        <div class="sct-bk-body">
+          <div class="sct-bk-srcrow">
+            <img class="sct-bk-preview" src="${escapeHtml(sctBackendDialogSource || '')}" alt="源图" />
+            <div class="sct-bk-srcside">
+              <div class="sct-bk-srctag">源图：${sctBackendDialogSource ? '当前卡片显示的这张' : '还没选'}</div>
+              <button type="button" class="sct-comfy-btn sct-bk-pick">📁 从手机相册选一张</button>
+              <input type="file" accept="image/*" class="sct-bk-file" style="display:none;" />
+              <div class="sct-bk-hint">源图会先上传到本机 ComfyUI 的 input 目录</div>
+            </div>
+          </div>
+          <div class="sct-setting-col">
+            <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
+            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 10 : 3}">${escapeHtml(isVideo ? (s.comfyVideoPrompt || '') : '')}</textarea>
+          </div>
+          ${isVideo ? `
+          <div class="sct-bk-two">
+            <div class="sct-setting-col">
+              <label>时长（6 秒≈7 分钟 · 15 秒要 20 分钟以上）</label>
+              <select class="text_pole sct-bk-seconds">
+                ${[3, 5, 6, 10, 15].map((v) => `<option value="${v}" ${v === (parseInt(s.comfyVideoSeconds, 10) || 6) ? 'selected' : ''}>${v} 秒</option>`).join('')}
+              </select>
+            </div>
+            <div class="sct-setting-col">
+              <label>画面比例</label>
+              <select class="text_pole sct-bk-aspect">
+                ${SCT_VIDEO_ASPECTS.map((v) => `<option value="${escapeHtml(v)}" ${v === (s.comfyVideoAspect || '16:9 (Widescreen)') ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+              </select>
+            </div>
+          </div>` : `
+          <div class="sct-bk-two">
+            <div class="sct-setting-col">
+              <label>重绘步数（20~30 步够用，越高越慢）</label>
+              <input type="number" class="text_pole sct-bk-steps" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
+            </div>
+            <div class="sct-setting-col">
+              <label>CFG（★ 1.0 几乎不改图，3.5~5 才会真的按指令改）</label>
+              <input type="number" class="text_pole sct-bk-cfg" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
+            </div>
+            <div class="sct-setting-col">
+              <label>输出像素（1.0 MP ≈ 1024×1024）</label>
+              <input type="number" class="text_pole sct-bk-mp" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
+            </div>
+          </div>`}
+          <div class="sct-bk-foot">
+            <button type="button" class="sct-comfy-btn sct-bk-go">🚀 开始</button>
+            <span class="sct-bk-hint">${isVideo ? '生成期间别关页面；关了就等它跑完，文件会落在 ComfyUI 的 output/video/SCT_H3' : '编辑器会让它按指令改图，原图不动'}</span>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    sctBackendDialogEl = overlay;
+
+    // 没源图时先别显示破图占位
+    if (!sctBackendDialogSource) {
+      const pv = overlay.querySelector('.sct-bk-preview');
+      if (pv) pv.style.display = 'none';
+    }
+
+    overlay.querySelector('.sct-bk-x')?.addEventListener('click', (e) => { e.preventDefault(); closeBackendDialog(); });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeBackendDialog(); });
+
+    const fileInput = overlay.querySelector('.sct-bk-file');
+    overlay.querySelector('.sct-bk-pick')?.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      fileInput?.click();
+    });
+    fileInput?.addEventListener('change', () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      sctBackendDialogSource = f;
+      const img = overlay.querySelector('.sct-bk-preview');
+      if (img) { img.style.display = ''; img.src = URL.createObjectURL(f); }
+      const tag = overlay.querySelector('.sct-bk-srctag');
+      if (tag) tag.textContent = `源图：相册选图 ${f.name}`;
+    });
+
+    overlay.querySelector('.sct-bk-go')?.addEventListener('click', async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
+      if (!text) { showToast(isVideo ? '先写视频提示词（六段式）' : '先写编辑指令', 'warning'); return; }
+      if (!sctBackendDialogSource) { showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning'); return; }
+      const source = sctBackendDialogSource;
+      const seconds = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value) || parseFloat(s.comfyVideoSeconds) || 6;
+      const aspect = overlay.querySelector('.sct-bk-aspect')?.value || s.comfyVideoAspect || '16:9 (Widescreen)';
+      const steps = parseInt(overlay.querySelector('.sct-bk-steps')?.value, 10);
+      const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
+      const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
+      if (isVideo) saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoPrompt: text.slice(0, 20000) });
+      else saveSettings({
+        comfyEditSteps: Number.isFinite(steps) ? steps : s.comfyEditSteps,
+        comfyEditCfg: Number.isFinite(cfg) ? cfg : s.comfyEditCfg,
+        comfyEditMegapixels: Number.isFinite(mp) ? mp : s.comfyEditMegapixels
+      });
+      closeBackendDialog();
+      const cardEl = createBackendCardContainer(anchor, kind);
+      cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
+      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect });
+      else await triggerComfyQwenEdit(source, text, cardEl);
+    });
+  }
+
   async function triggerComfyInpaint(params) {
     const {
       imageUrl,
@@ -4976,6 +5627,15 @@
     if (!s.comfyEnabled) {
       showToast('ComfyUI 绘图功能未开启', 'warning');
       return;
+    }
+
+    // ★ 文生图后端可选：MOSS-Image（本机大模型，写中文最准，不参与 LoRA 链）
+    if (String(s.comfyTxt2ImgBackend || 'sdxl') === 'moss') {
+      if (taskKey) {
+        container.dataset.sctTaskKey = taskKey;
+        sctDrawingTasks.set(taskKey, { status: 'running', images: [], prompt: promptText, container: container });
+      }
+      return triggerComfyMossDraw(promptText, container, taskKey);
     }
 
     // 记下本轮之前已有的图:「重新生成」时它们会留在轮播里(可翻回去对比),而不是被新图顶掉
@@ -5564,6 +6224,9 @@
         btnBar.appendChild(drawBtn);
       }
     }
+
+    // 🧩 还原「✏️ 编辑 / 🎬 视频」的结果卡（刷新 / 切聊天后照样找得回来）
+    renderBackendCardsForMessage(textEl, mesId);
   }
 
   function scanAllMessages() {
@@ -8385,6 +9048,97 @@
             </div>
           </div>
 
+          <!-- 板块 7: 多后端(图像编辑 / MOSS 文生图 / H3 图生视频) -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🧩</span>
+              <span>多后端(编辑 · MOSS 文生图 · H3 视频)</span>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-t2i-backend">文生图后端（卡片里的 🎨 生图走哪套工作流）</label>
+              <select id="sct-cfg-t2i-backend" class="text_pole">
+                <option value="sdxl" ${(s.comfyTxt2ImgBackend || 'sdxl') === 'sdxl' ? 'selected' : ''}>SDXL 内置工作流（原行为 · 支持 LoRA 链与高清放大）</option>
+                <option value="moss" ${s.comfyTxt2ImgBackend === 'moss' ? 'selected' : ''}>MOSS-Image 本机工作流（写中文最准 · 不挂 LoRA）</option>
+              </select>
+              <div class="sct-hint">选 MOSS 后所有 🎨 生图都改走本机 MOSS-Image（<code>models/moss_image</code> 里的模型目录），LoRA 链、高清放大、外部 VAE 都不参与。</div>
+            </div>
+
+            <div id="sct-wrap-moss" style="${s.comfyTxt2ImgBackend === 'moss' ? '' : 'display:none;'}">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-moss-dir">MOSS 模型目录（加载器读的是<b>目录</b>，不是单个文件）</label>
+                <input type="text" id="sct-cfg-moss-dir" class="text_pole" value="${escapeHtml(s.comfyMossModelDir || '')}" />
+                <div class="sct-hint">SFT 版排版更整齐（推荐）；Base 版适合自己训 LoRA。两个目录都在 <code>D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/</code> 下。</div>
+              </div>
+              <div class="sct-bk-two">
+                <div class="sct-setting-col">
+                  <label for="sct-cfg-moss-dtype">精度</label>
+                  <select id="sct-cfg-moss-dtype" class="text_pole">
+                    ${['fp8_e4m3fn', 'bf16', 'fp32', 'fp8_e4m3fn_fast', 'fp8_e5m2', 'default'].map(v => `<option value="${v}" ${(s.comfyMossDtype || 'fp8_e4m3fn') === v ? 'selected' : ''}>${v}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="sct-setting-col">
+                  <label for="sct-cfg-moss-steps">步数（官方推荐 50，快试构图 20）</label>
+                  <input type="number" id="sct-cfg-moss-steps" class="text_pole" min="4" max="80" value="${parseInt(s.comfyMossSteps, 10) || 20}" />
+                </div>
+              </div>
+              <div class="sct-bk-two">
+                <div class="sct-setting-col">
+                  <label for="sct-cfg-moss-w">宽（16 的整数倍）</label>
+                  <input type="number" id="sct-cfg-moss-w" class="text_pole" min="256" max="2048" step="16" value="${parseInt(s.comfyMossWidth, 10) || 1024}" />
+                </div>
+                <div class="sct-setting-col">
+                  <label for="sct-cfg-moss-h">高（16 的整数倍）</label>
+                  <input type="number" id="sct-cfg-moss-h" class="text_pole" min="256" max="2048" step="16" value="${parseInt(s.comfyMossHeight, 10) || 1024}" />
+                </div>
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-moss-neg">MOSS 负向提示词</label>
+                <input type="text" id="sct-cfg-moss-neg" class="text_pole" value="${escapeHtml(s.comfyMossNegative || '')}" />
+              </div>
+            </div>
+
+            <div class="sct-bk-two">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-steps">图像编辑步数（卡片底栏「✏️ 编辑」）</label>
+                <input type="number" id="sct-cfg-edit-steps" class="text_pole" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-cfg">编辑 CFG（★ 关键：1.0 几乎不改图，3.5~5 才真的改）</label>
+                <input type="number" id="sct-cfg-edit-cfg" class="text_pole" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-mp">编辑输出像素（1.0 MP ≈ 1024×1024）</label>
+                <input type="number" id="sct-cfg-edit-mp" class="text_pole" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
+              </div>
+            </div>
+            <div class="sct-hint">编辑走本机 Qwen-Image 2.1 编辑工作流：点卡片底栏「✏️ 编辑」→ 源图默认就是卡片当前这张（也能从手机相册选）→ 写中文指令（例：把头发改成亮粉色，其他别动）→ 源图先上传到 ComfyUI 的 input 目录再改图。<br><b>★ 实测</b>：本机这份工作流存档里 CFG=1.0，出图几乎和源图一模一样（像素差≈1、发色不变）；把 CFG 提到 4.0 才会真的按指令改（像素差≈5.6、头发明显变粉）。所以默认给了 4.0。</div>
+
+            <div class="sct-bk-two">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-seconds">图生视频默认时长（卡片底栏「🎬 视频」）</label>
+                <select id="sct-cfg-video-seconds" class="text_pole">
+                  ${[3, 5, 6, 10, 15].map(v => `<option value="${v}" ${(parseInt(s.comfyVideoSeconds, 10) || 6) === v ? 'selected' : ''}>${v} 秒</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-aspect">视频画面比例</label>
+                <select id="sct-cfg-video-aspect" class="text_pole">
+                  ${SCT_VIDEO_ASPECTS.map(v => `<option value="${escapeHtml(v)}" ${(s.comfyVideoAspect || '16:9 (Widescreen)') === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-mp">视频像素（0.2 MP 最省，一采 608×352 → 二采翻倍）</label>
+                <input type="number" id="sct-cfg-video-mp" class="text_pole" min="0.1" max="1" step="0.1" value="${parseFloat(s.comfyVideoMegapixels) || 0.2}" />
+              </div>
+            </div>
+            <div class="sct-setting-col">
+              <label for="sct-cfg-video-prompt">视频提示词默认模板（六段式 · 每次点 🎬 都会预填这份，可当场改）</label>
+              <textarea id="sct-cfg-video-prompt" class="text_pole" rows="8">${escapeHtml(s.comfyVideoPrompt || '')}</textarea>
+              <div class="sct-hint">本机 MiniMax H3 二采：输出固定 24fps + AAC 双声道。6 秒正好卡在单块上限（约 7 分钟）；15 秒要跑 20 分钟以上。源图会先上传到 ComfyUI 的 input 目录。</div>
+            </div>
+          </div>
+
           <!-- 板块 6: 纯净 TTS 语音朗读 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title">
@@ -8815,6 +9569,34 @@
     });
     container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
     container.querySelector('#sct-cfg-workflow').addEventListener('change', (e) => saveSettings({ comfyWorkflow: e.target.value }));
+
+    // ---- 🧩 多后端（MOSS 文生图 / Qwen 编辑 / H3 视频）----
+    const t2iBackendSel = container.querySelector('#sct-cfg-t2i-backend');
+    const mossWrapEl = container.querySelector('#sct-wrap-moss');
+    const syncMossWrap = () => {
+      if (mossWrapEl) mossWrapEl.style.display = (t2iBackendSel && t2iBackendSel.value === 'moss') ? '' : 'none';
+    };
+    t2iBackendSel?.addEventListener('change', (e) => {
+      saveSettings({ comfyTxt2ImgBackend: e.target.value });
+      syncMossWrap();
+      showToast(e.target.value === 'moss'
+        ? '文生图已切到 MOSS-Image（本机大模型，写中文准；不挂 LoRA）'
+        : '文生图已切回 SDXL 内置工作流', 'info');
+    });
+    syncMossWrap();
+    container.querySelector('#sct-cfg-moss-dir')?.addEventListener('change', (e) => saveSettings({ comfyMossModelDir: String(e.target.value || '').trim() }));
+    container.querySelector('#sct-cfg-moss-dtype')?.addEventListener('change', (e) => saveSettings({ comfyMossDtype: e.target.value }));
+    container.querySelector('#sct-cfg-moss-steps')?.addEventListener('change', (e) => saveSettings({ comfyMossSteps: parseInt(e.target.value, 10) || 20 }));
+    container.querySelector('#sct-cfg-moss-w')?.addEventListener('change', (e) => saveSettings({ comfyMossWidth: parseInt(e.target.value, 10) || 1024 }));
+    container.querySelector('#sct-cfg-moss-h')?.addEventListener('change', (e) => saveSettings({ comfyMossHeight: parseInt(e.target.value, 10) || 1024 }));
+    container.querySelector('#sct-cfg-moss-neg')?.addEventListener('change', (e) => saveSettings({ comfyMossNegative: e.target.value }));
+    container.querySelector('#sct-cfg-edit-steps')?.addEventListener('change', (e) => saveSettings({ comfyEditSteps: parseInt(e.target.value, 10) || 30 }));
+    container.querySelector('#sct-cfg-edit-cfg')?.addEventListener('change', (e) => saveSettings({ comfyEditCfg: parseFloat(e.target.value) || 4.0 }));
+    container.querySelector('#sct-cfg-edit-mp')?.addEventListener('change', (e) => saveSettings({ comfyEditMegapixels: parseFloat(e.target.value) || 1.0 }));
+    container.querySelector('#sct-cfg-video-seconds')?.addEventListener('change', (e) => saveSettings({ comfyVideoSeconds: parseFloat(e.target.value) || 6 }));
+    container.querySelector('#sct-cfg-video-aspect')?.addEventListener('change', (e) => saveSettings({ comfyVideoAspect: e.target.value }));
+    container.querySelector('#sct-cfg-video-mp')?.addEventListener('change', (e) => saveSettings({ comfyVideoMegapixels: parseFloat(e.target.value) || 0.2 }));
+    container.querySelector('#sct-cfg-video-prompt')?.addEventListener('change', (e) => saveSettings({ comfyVideoPrompt: e.target.value }));
     container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
     
     const ckptSelect = container.querySelector('#sct-ckpt-select');
