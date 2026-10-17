@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.1.2';
+  const SCT_BUILD = '2.1.3';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5169,11 +5169,15 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     sctBackendDialogEl = overlay;
     if (canUseDialog) {
       try {
-        overlay.showModal();                        // 进顶层
+        overlay.showModal();                        // 进顶层(top layer)
       } catch (err) {
         console.warn('[SCT] showModal 失败，退回普通浮层：', err);
         overlay.classList.add('sct-bk-fallback');
+        showToast('本机浏览器不支持顶层弹窗，已切换兜底模式（可能被主题盖住，请用底部「✖ 关闭」）', 'warning');
       }
+    } else {
+      overlay.classList.add('sct-bk-fallback');
+      showToast('本机浏览器太旧（没有 dialog 顶层弹窗），已用兜底模式；关不掉的请点底部「✖ 关闭」', 'warning');
     }
     // 浏览器自己关掉（按 Esc / 表单 method=dialog）时同步清状态，别留残留节点
     overlay.addEventListener('close', () => {
