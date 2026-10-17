@@ -263,6 +263,13 @@
           extSettings[MODULE_NAME].imageInstructionVersion = IMAGE_INSTRUCTION_VERSION;
         }
 
+        // ★ 局部重绘 / 画风参考 / 脸部修复 已从插件移除:强制关闭其工作流节点(老配置一次性归零)
+        const removedFeatureVer = extSettings[MODULE_NAME].removedFeatureVersion || 1;
+        if (removedFeatureVer < 2) {
+          extSettings[MODULE_NAME].comfyFaceFixEnabled = false;
+          extSettings[MODULE_NAME].comfyStyleRefMode = 'off';
+          extSettings[MODULE_NAME].removedFeatureVersion = 2;
+        }
         // ★ 关闭「插件往 AI 上下文注入提示词」:改为用户自己挂世界书(只强制关一次,之后用户想开可自行打开)
         const injectVer = extSettings[MODULE_NAME].imageInstructionInjectVersion || 1;
         if (injectVer < 2) {
@@ -602,7 +609,6 @@
         <button type="button" class="sct-lightbox-close-btn" title="关闭 (Esc)">✕</button>
         <img id="sct-lightbox-img" src="" alt="ComfyUI Preview" />
         <div class="sct-lightbox-toolbar">
-          <button type="button" class="sct-comfy-btn" id="sct-lightbox-inpaint">🖌️ 局部重绘</button>
           <button type="button" class="sct-comfy-btn" id="sct-lightbox-open-raw">🔗 查看原图</button>
           <button type="button" class="sct-comfy-btn" id="sct-lightbox-download">💾 保存图片</button>
         </div>
@@ -621,15 +627,8 @@
       }
     });
 
-    overlay.querySelector('#sct-lightbox-inpaint').addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const ctx = currentLightboxContext;
-      closeLightbox();
-      if (ctx) {
-        openInpaintModal(ctx);
-      }
-    });
+    // 局部重绘功能已移除(灯箱内的入口一并删除)
+
 
     overlay.querySelector('#sct-lightbox-open-raw').addEventListener('click', () => {
       const src = overlay.querySelector('#sct-lightbox-img').src;
@@ -4318,17 +4317,13 @@
               ${normalizedImages.map((_, i) => `<span class="sct-comfy-dot ${i === safeIdx ? 'active' : ''}" data-idx="${i}"></span>`).join('')}
             </div>
             <button type="button" class="sct-comfy-btn sct-next-btn">下一张 ▶</button>
-            <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
-            <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把当前这张图设为画风参考(上传到 ComfyUI 后按设置里的参考模式生效)">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
-            <span style="font-size: 11px; opacity: 0.5;">长按重绘 · 点击放大</span>
-            <button type="button" class="sct-comfy-btn sct-inpaint-btn" title="涂抹重绘当前画面 (或长按图片)">🖌️ 局部重绘</button>
+            <span style="font-size: 11px; opacity: 0.5;">点击放大</span>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
-            <button type="button" class="sct-comfy-btn sct-style-ref-btn" title="把这张图设为画风参考">🖼️ 用作画风参考</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
@@ -4368,16 +4363,8 @@
     }
 
     const imgEl = vp.querySelector('img');
-    bindLongPress(imgEl, (e) => {
-      e?.preventDefault?.();
-      e?.stopPropagation?.();
-      openInpaintModal({
-        imageUrl: currentUrl,
-        promptText: promptText,
-        activeLoras: activeLoras,
-        container: container
-      });
-    }, (e) => {
+    // 局部重绘功能已移除:长按不再进入重绘,统一走放大查看
+    bindLongPress(imgEl, null, (e) => {
       e?.preventDefault?.();
       e?.stopPropagation?.();
       openLightbox(currentUrl, promptText, activeLoras, container);
@@ -4442,19 +4429,7 @@
       });
     });
 
-    const inpaintBtn = container.querySelector('.sct-inpaint-btn');
-    if (inpaintBtn) {
-      inpaintBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        openInpaintModal({
-          imageUrl: currentUrl,
-          promptText: promptText,
-          activeLoras: activeLoras,
-          container: container
-        });
-      });
-    }
+    // 局部重绘功能已移除(入口按钮与长按手势均已删除)
 
     const retryBtn = container.querySelector('.sct-retry-btn');
     if (retryBtn) {
@@ -4549,42 +4524,6 @@
       });
     }
 
-    // 把当前这张图设为画风参考:取图 → 上传到 ComfyUI input → 记下文件名
-    const styleRefBtn = container.querySelector('.sct-style-ref-btn');
-    if (styleRefBtn) {
-      styleRefBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        try {
-          const settingsNow = getSettings();
-          const refsNow = Array.isArray(settingsNow.comfyStyleRefImages) ? settingsNow.comfyStyleRefImages.slice() : [];
-          if (refsNow.length >= 4) {
-            showToast('参考图最多 4 张：请先到设置面板删掉一张再加', 'warning');
-            return;
-          }
-          showToast('正在把当前图上传为画风参考…', 'info');
-          const imgRes = await fetch(currentUrl);
-          if (!imgRes.ok) throw new Error(`读取图片失败 (${imgRes.status})`);
-          const blob = await imgRes.blob();
-          const name = await uploadComfyInputImage(getCleanComfyHost(), blob, `styleref_${Date.now()}.png`);
-          refsNow.push({
-            id: `ref_${Date.now()}`,
-            filename: name,
-            weight: parseFloat(settingsNow.comfyStyleRefStrength) || 0.8
-          });
-          saveSettings({ comfyStyleRefImages: refsNow, comfyStyleRefImage: refsNow[0].filename });
-          const mode = settingsNow.comfyStyleRefMode || 'off';
-          showToast(
-            mode === 'off'
-              ? `已加入参考图(第 ${refsNow.length} 张)——还需到设置面板选择参考模式(IP-Adapter 或原生 unCLIP)才会生效`
-              : `已加入参考图(第 ${refsNow.length} 张),当前模式:${mode === 'ipadapter' ? 'IP-Adapter' : '原生 unCLIP'}`,
-            'success'
-          );
-        } catch (err) {
-          showToast(`设为画风参考失败: ${err.message}`, 'error');
-        }
-      });
-    }
   }
 
   // 提交并调度 ComfyUI 局部重绘任务 (Inpainting)
@@ -6873,13 +6812,11 @@
     const MERGE_GROUPS = [
       {
         emoji: '🎨',
-        label: '出图设置(连接 · 提示词 · 高清 · 脸部 · 画风 · 配图交互)',
+        label: '出图设置(连接 · 提示词 · 高清 · 配图交互)',
         keys: [
           'ComfyUI 服务连接与模型',
           '固定质量提示词与出图尺寸',
           '高清二次放大修复设置',
-          '脸部修复',
-          '画风参考',
           '自动配图指示与消息交互',
         ],
       },
@@ -8318,132 +8255,6 @@
             </div>
           </div>
 
-          <!-- 板块 4.5: 脸部修复 (FaceDetailer · Impact-Pack) -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>😊</span>
-              <span>脸部修复 (FaceDetailer)</span>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-facefix-enable">启用脸部修复(出图后单独重采样脸部区域再贴回)</label>
-              <input type="checkbox" id="sct-cfg-facefix-enable" ${s.comfyFaceFixEnabled ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-facefix-detector">脸部检测模型 (Ultralytics 模型名)</label>
-              <div style="display:flex; gap:6px;">
-                <input type="text" id="sct-cfg-facefix-detector" class="text_pole" placeholder="如 bbox/face_yolov8m.pt" value="${escapeHtml(s.comfyFaceFixDetector || '')}" style="flex:1;" />
-                <select id="sct-facefix-detector-select" class="text_pole" style="max-width:170px;">
-                  <option value="">(检测模型列表)</option>
-                  ${(cachedFaceDetectors || []).map(d => `<option value="${escapeHtml(d)}" ${d === s.comfyFaceFixDetector ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-hint">需 ComfyUI-Impact-Pack；模型放在 <code>ComfyUI/models/ultralytics/bbox/</code> 下，点上方「测试 ComfyUI 连接与扫描全部模型」可拉取列表。</div>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-facefix-denoise">脸部重绘幅度: <span id="sct-facefix-denoise-val">${s.comfyFaceFixDenoise || 0.5}</span></label>
-              <input type="range" id="sct-cfg-facefix-denoise" min="0.2" max="0.9" step="0.05" value="${s.comfyFaceFixDenoise || 0.5}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-facefix-guide">脸部引导尺寸 (px): <span id="sct-facefix-guide-val">${s.comfyFaceFixGuideSize || 512}</span></label>
-              <input type="range" id="sct-cfg-facefix-guide" min="256" max="1024" step="64" value="${s.comfyFaceFixGuideSize || 512}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-facefix-threshold">检测阈值: <span id="sct-facefix-threshold-val">${s.comfyFaceFixBboxThreshold || 0.5}</span></label>
-              <input type="range" id="sct-cfg-facefix-threshold" min="0.1" max="0.9" step="0.05" value="${s.comfyFaceFixBboxThreshold || 0.5}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-facefix-feather">边缘羽化 (px): <span id="sct-facefix-feather-val">${s.comfyFaceFixFeather || 5}</span></label>
-              <input type="range" id="sct-cfg-facefix-feather" min="0" max="32" step="1" value="${s.comfyFaceFixFeather || 5}" />
-            </div>
-          </div>
-
-          <!-- 板块 4.6: 画风参考 (参考图) -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>🖼️</span>
-              <span>画风参考 (参考图)</span>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-styleref-mode">参考模式</label>
-              <select id="sct-cfg-styleref-mode" class="text_pole" style="max-width:280px;">
-                <option value="off" ${(s.comfyStyleRefMode || 'off') === 'off' ? 'selected' : ''}>关闭</option>
-                <option value="ipadapter" ${s.comfyStyleRefMode === 'ipadapter' ? 'selected' : ''}>IP-Adapter(推荐 · 需 IPAdapter_plus)</option>
-                <option value="native" ${s.comfyStyleRefMode === 'native' ? 'selected' : ''}>原生 unCLIP(免插件 · 需 CLIP Vision)</option>
-              </select>
-            </div>
-
-            <div class="sct-setting-col">
-              <label>参考图 (最多 4 张 · 可分别设权重)</label>
-              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-pick">📁 添加参考图</button>
-                <button type="button" class="sct-comfy-btn sct-btn-xs" id="sct-styleref-clear">🗑️ 全部清除</button>
-                <span class="sct-hint" id="sct-styleref-state"></span>
-                <!-- 原生 file 控件会被酒馆主题隐藏,故藏起来由上面的按钮代点 -->
-                <input type="file" id="sct-styleref-file" accept="image/*" style="display:none;" />
-              </div>
-              <div class="sct-hint">
-                每张单独调权重,例如「一张定画风(0.8) + 一张定服装(0.5)」;也可以在任意已生成的图上点「🖼️ 用作画风参考」直接加入。
-              </div>
-              <div id="sct-styleref-list" class="sct-styleref-list"></div>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-styleref-strength">参考强度: <span id="sct-styleref-strength-val">${s.comfyStyleRefStrength ?? 0.8}</span></label>
-              <input type="range" id="sct-cfg-styleref-strength" min="0.1" max="1.5" step="0.05" value="${s.comfyStyleRefStrength ?? 0.8}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-styleref-start">作用起始步 (0~1): <span id="sct-styleref-start-val">${s.comfyStyleRefStart ?? 0}</span></label>
-              <input type="range" id="sct-cfg-styleref-start" min="0" max="1" step="0.05" value="${s.comfyStyleRefStart ?? 0}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-styleref-end">作用结束步 (0~1): <span id="sct-styleref-end-val">${s.comfyStyleRefEnd ?? 1}</span></label>
-              <input type="range" id="sct-cfg-styleref-end" min="0" max="1" step="0.05" value="${s.comfyStyleRefEnd ?? 1}" />
-            </div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-styleref-preset">IP-Adapter 预设 (仅 IP-Adapter 模式)</label>
-              <div style="display:flex; gap:6px;">
-                <input type="text" id="sct-cfg-styleref-preset" class="text_pole" placeholder="如 PLUS (high strength)" value="${escapeHtml(s.comfyStyleRefPreset || '')}" style="flex:1;" />
-                <select id="sct-styleref-preset-select" class="text_pole" style="max-width:170px;">
-                  <option value="">(预设列表)</option>
-                  ${(cachedIpAdapterPresets || []).map(p => `<option value="${escapeHtml(p)}" ${p === s.comfyStyleRefPreset ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-hint">装了 ComfyUI_IPAdapter_plus 后点「📡 测试并扫描」可拉取预设列表与 IPAdapter 模型。</div>
-            </div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-styleref-weighttype">参考权重类型 (仅 IP-Adapter 模式)</label>
-              <select id="sct-cfg-styleref-weighttype" class="text_pole">
-                <option value="" ${!s.comfyStyleRefWeightType ? 'selected' : ''}>(用节点默认 · linear 均衡)</option>
-                ${(cachedIpAdapterWeightTypes || []).map(w => `<option value="${escapeHtml(w)}" ${w === s.comfyStyleRefWeightType ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('')}
-              </select>
-              <div class="sct-hint">想更"只借画风"选 <code>style transfer</code>;想更接近参考图构图选 <code>composition</code>。</div>
-            </div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-styleref-clipvision">CLIP Vision 模型 (仅原生模式)</label>
-              <div style="display:flex; gap:6px;">
-                <input type="text" id="sct-cfg-styleref-clipvision" class="text_pole" placeholder="如 CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors" value="${escapeHtml(s.comfyStyleRefClipVision || '')}" style="flex:1;" />
-                <select id="sct-styleref-clipvision-select" class="text_pole" style="max-width:170px;">
-                  <option value="">(Vision 列表)</option>
-                  ${(cachedClipVisionModels || []).map(v => `<option value="${escapeHtml(v)}" ${v === s.comfyStyleRefClipVision ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-hint">模型放在 <code>ComfyUI/models/clip_vision/</code>；原生模式用它把参考图编码成视觉条件(unCLIP)。</div>
-            </div>
-          </div>
-
-          <!-- 板块 4.7: AI 自动配置与批量工具(接口 / 一键配置 / 对照表 合并为一个板块) -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🤖</span>
@@ -9062,197 +8873,6 @@
       saveSettings({ comfyHiresDenoise: parseFloat(e.target.value) });
     });
 
-    // 脸部修复 (FaceDetailer)
-    container.querySelector('#sct-cfg-facefix-enable').addEventListener('change', async (e) => {
-      saveSettings({ comfyFaceFixEnabled: e.target.checked });
-      if (!e.target.checked) return;
-      // 开启时顺手探一下节点是否可用,免得出图才发现没装 Impact-Pack
-      const host = getCleanComfyHost();
-      cachedFaceDetailerSpec = await fetchFaceDetailerSpec(host);
-      if (!cachedFaceDetailerSpec) {
-        showToast('未检测到 FaceDetailer 节点：需要 ComfyUI-Impact-Pack（含 Ultralytics 检测模型）', 'warning');
-      } else {
-        showToast('已检测到 FaceDetailer 节点，脸部修复可用', 'success');
-      }
-    });
-
-    container.querySelector('#sct-cfg-facefix-detector').addEventListener('input', (e) => saveSettings({ comfyFaceFixDetector: e.target.value.trim() }));
-
-    const faceDetectorSelect = container.querySelector('#sct-facefix-detector-select');
-    if (faceDetectorSelect) {
-      faceDetectorSelect.addEventListener('change', (e) => {
-        if (!e.target.value) return;
-        container.querySelector('#sct-cfg-facefix-detector').value = e.target.value;
-        saveSettings({ comfyFaceFixDetector: e.target.value });
-      });
-    }
-
-    const faceFixSliders = [
-      ['#sct-cfg-facefix-denoise', '#sct-facefix-denoise-val', 'comfyFaceFixDenoise', parseFloat, v => v],
-      ['#sct-cfg-facefix-guide', '#sct-facefix-guide-val', 'comfyFaceFixGuideSize', v => parseInt(v, 10), v => `${v}`],
-      ['#sct-cfg-facefix-threshold', '#sct-facefix-threshold-val', 'comfyFaceFixBboxThreshold', parseFloat, v => v],
-      ['#sct-cfg-facefix-feather', '#sct-facefix-feather-val', 'comfyFaceFixFeather', v => parseInt(v, 10), v => `${v}`],
-    ];
-    faceFixSliders.forEach(([inputSel, valSel, key, parse, format]) => {
-      const input = container.querySelector(inputSel);
-      const label = container.querySelector(valSel);
-      if (!input) return;
-      input.addEventListener('input', (e) => {
-        const value = parse(e.target.value);
-        if (label) label.textContent = format(value);
-        saveSettings({ [key]: value });
-      });
-    });
-
-    // 画风参考 (参考图)
-    container.querySelector('#sct-cfg-styleref-mode').addEventListener('change', (e) => {
-      saveSettings({ comfyStyleRefMode: e.target.value });
-    });
-
-    // 参考图列表:缩略图 + 每张权重滑块 + 单张删除(最多 4 张)
-    const STYLE_REF_MAX = 4;
-    const readStyleRefs = () => (Array.isArray(getSettings().comfyStyleRefImages) ? getSettings().comfyStyleRefImages.slice() : []);
-    const writeStyleRefs = (refs) => saveSettings({
-      comfyStyleRefImages: refs,
-      comfyStyleRefImage: refs[0]?.filename || ''
-    });
-
-    const renderStyleRefList = () => {
-      const listEl = container.querySelector('#sct-styleref-list');
-      const stateEl = container.querySelector('#sct-styleref-state');
-      if (!listEl) return;
-      const refs = readStyleRefs();
-      if (stateEl) stateEl.textContent = refs.length ? `已设 ${refs.length}/${STYLE_REF_MAX} 张` : '未设置参考图';
-      if (refs.length === 0) {
-        listEl.innerHTML = '<div class="sct-hint">还没有参考图 —— 点「📁 添加参考图」或从生成图上一键加入</div>';
-        return;
-      }
-      const host = getCleanComfyHost();
-      listEl.innerHTML = refs.map((ref, i) => `
-        <div class="sct-styleref-item" data-ref-index="${i}">
-          <img src="${host}/view?filename=${encodeURIComponent(ref.filename)}&type=input" alt="参考图 ${i + 1}" />
-          <div class="sct-styleref-meta">
-            <div class="sct-styleref-name" title="${escapeHtml(ref.filename)}">#${i + 1} ${escapeHtml(ref.filename)}</div>
-            <div class="sct-styleref-row">
-              <span class="sct-hint">权重 <b class="sct-styleref-w">${Number(ref.weight ?? 0.8).toFixed(2)}</b></span>
-              <input type="range" class="sct-styleref-weight" data-ref-index="${i}" min="0.1" max="1.5" step="0.05" value="${Number(ref.weight ?? 0.8)}" />
-              <button type="button" class="sct-lora-del-btn sct-styleref-del" data-ref-index="${i}" title="删除这张参考图">✕</button>
-            </div>
-          </div>
-        </div>
-      `).join('');
-
-      listEl.querySelectorAll('.sct-styleref-weight').forEach(input => {
-        input.addEventListener('input', (e) => {
-          const idx = parseInt(e.target.getAttribute('data-ref-index'), 10);
-          const refsNow = readStyleRefs();
-          if (!refsNow[idx]) return;
-          refsNow[idx].weight = parseFloat(e.target.value);
-          const wEl = e.target.closest('.sct-styleref-item')?.querySelector('.sct-styleref-w');
-          if (wEl) wEl.textContent = refsNow[idx].weight.toFixed(2);
-          writeStyleRefs(refsNow);
-        });
-      });
-
-      listEl.querySelectorAll('.sct-styleref-del').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const idx = parseInt(btn.getAttribute('data-ref-index'), 10);
-          const refsNow = readStyleRefs();
-          refsNow.splice(idx, 1);
-          writeStyleRefs(refsNow);
-          renderStyleRefList();
-          showToast('已删除这张参考图', 'info');
-        });
-      });
-    };
-    renderStyleRefList();
-
-    const styleRefFile = container.querySelector('#sct-styleref-file');
-    const styleRefPick = container.querySelector('#sct-styleref-pick');
-    if (styleRefPick && styleRefFile) {
-      styleRefPick.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (readStyleRefs().length >= STYLE_REF_MAX) {
-          showToast(`参考图最多 ${STYLE_REF_MAX} 张,先删掉一张再加`, 'warning');
-          return;
-        }
-        styleRefFile.click(); // 原生 file 控件被主题隐藏,只能由按钮代点
-      });
-    }
-    if (styleRefFile) {
-      styleRefFile.addEventListener('change', async (e) => {
-        const file = e.target.files && e.target.files[0];
-        if (!file) return;
-        const state = container.querySelector('#sct-styleref-state');
-        if (state) state.textContent = '⏳ 正在上传参考图…';
-        try {
-          const name = await uploadComfyInputImage(getCleanComfyHost(), file, `styleref_${Date.now()}_${file.name.replace(/[^\w.\-]/g, '_')}`);
-          const refsNow = readStyleRefs();
-          refsNow.push({ id: `ref_${Date.now()}`, filename: name, weight: parseFloat(getSettings().comfyStyleRefStrength) || 0.8 });
-          writeStyleRefs(refsNow.slice(0, STYLE_REF_MAX));
-          renderStyleRefList();
-          showToast('参考图已上传并加入列表', 'success');
-        } catch (err) {
-          if (state) state.textContent = '上传失败';
-          showToast(`参考图上传失败: ${err.message}`, 'error');
-        } finally {
-          e.target.value = '';
-        }
-      });
-    }
-
-    container.querySelector('#sct-styleref-clear').addEventListener('click', () => {
-      writeStyleRefs([]);
-      const fileInput = container.querySelector('#sct-styleref-file');
-      if (fileInput) fileInput.value = '';
-      renderStyleRefList();
-      showToast('已清除全部参考图', 'info');
-    });
-
-    container.querySelector('#sct-cfg-styleref-preset').addEventListener('input', (e) => saveSettings({ comfyStyleRefPreset: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-styleref-clipvision').addEventListener('input', (e) => saveSettings({ comfyStyleRefClipVision: e.target.value.trim() }));
-
-    const weightTypeSelect = container.querySelector('#sct-cfg-styleref-weighttype');
-    if (weightTypeSelect) {
-      weightTypeSelect.addEventListener('change', (e) => saveSettings({ comfyStyleRefWeightType: e.target.value }));
-    }
-
-    const presetSelect = container.querySelector('#sct-styleref-preset-select');
-    if (presetSelect) {
-      presetSelect.addEventListener('change', (e) => {
-        if (!e.target.value) return;
-        container.querySelector('#sct-cfg-styleref-preset').value = e.target.value;
-        saveSettings({ comfyStyleRefPreset: e.target.value });
-      });
-    }
-
-    const visionSelect = container.querySelector('#sct-styleref-clipvision-select');
-    if (visionSelect) {
-      visionSelect.addEventListener('change', (e) => {
-        if (!e.target.value) return;
-        container.querySelector('#sct-cfg-styleref-clipvision').value = e.target.value;
-        saveSettings({ comfyStyleRefClipVision: e.target.value });
-      });
-    }
-
-    const styleRefSliders = [
-      ['#sct-cfg-styleref-strength', '#sct-styleref-strength-val', 'comfyStyleRefStrength', parseFloat],
-      ['#sct-cfg-styleref-start', '#sct-styleref-start-val', 'comfyStyleRefStart', parseFloat],
-      ['#sct-cfg-styleref-end', '#sct-styleref-end-val', 'comfyStyleRefEnd', parseFloat],
-    ];
-    styleRefSliders.forEach(([inputSel, valSel, key, parse]) => {
-      const input = container.querySelector(inputSel);
-      const label = container.querySelector(valSel);
-      if (!input) return;
-      input.addEventListener('input', (e) => {
-        const value = parse(e.target.value);
-        if (label) label.textContent = String(value);
-        saveSettings({ [key]: value });
-      });
-    });
 
     // AI 辅助配置
     container.querySelector('#sct-cfg-ai-endpoint')?.addEventListener('input', (e) => saveSettings({ comfyAiAssistEndpoint: e.target.value.trim() }));
@@ -9627,52 +9247,6 @@
             showToast('没探查到可选的 VAE 文件;若画面偏色,说明模型自带 VAE 有问题,需在 ComfyUI 的 models/vae 里放一个 VAE', 'warning');
           }
 
-          // 脸部检测模型下拉 + FaceDetailer 可用性
-          const detSelect = container.querySelector('#sct-facefix-detector-select');
-          if (detSelect) {
-            const currentFaceDetector = getSettings().comfyFaceFixDetector || '';
-            detSelect.innerHTML = '<option value="">(检测模型列表)</option>' +
-              cachedFaceDetectors.map(d => `<option value="${escapeHtml(d)}" ${d === currentFaceDetector ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('');
-            if (!currentFaceDetector && cachedFaceDetectors.length > 0) {
-              container.querySelector('#sct-cfg-facefix-detector').value = cachedFaceDetectors[0];
-              saveSettings({ comfyFaceFixDetector: cachedFaceDetectors[0] });
-            }
-          }
-          if (cachedFaceDetectors.length === 0) {
-            showToast('未探查到脸部检测模型：脸部修复需要 Ultralytics 模型(放 models/ultralytics/bbox/)', 'warning');
-          }
-          if (!cachedFaceDetailerSpec) {
-            showToast('未检测到 FaceDetailer 节点：脸部修复需安装 ComfyUI-Impact-Pack', 'warning');
-          }
-
-          // 画风参考:预设与 CLIP Vision 下拉
-          const presetSel = container.querySelector('#sct-styleref-preset-select');
-          if (presetSel) {
-            const currentPreset = getSettings().comfyStyleRefPreset || '';
-            presetSel.innerHTML = '<option value="">(预设列表)</option>' +
-              cachedIpAdapterPresets.map(p => `<option value="${escapeHtml(p)}" ${p === currentPreset ? 'selected' : ''}>${escapeHtml(p)}</option>`).join('');
-          }
-          const visionSel = container.querySelector('#sct-styleref-clipvision-select');
-          if (visionSel) {
-            const currentVision = getSettings().comfyStyleRefClipVision || '';
-            visionSel.innerHTML = '<option value="">(Vision 列表)</option>' +
-              cachedClipVisionModels.map(v => `<option value="${escapeHtml(v)}" ${v === currentVision ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('');
-            if (!currentVision && cachedClipVisionModels.length > 0) {
-              container.querySelector('#sct-cfg-styleref-clipvision').value = cachedClipVisionModels[0];
-              saveSettings({ comfyStyleRefClipVision: cachedClipVisionModels[0] });
-            }
-          }
-
-          // 参考权重类型候选(来自 IPAdapter 节点自身)
-          const weightTypeSel = container.querySelector('#sct-cfg-styleref-weighttype');
-          if (weightTypeSel) {
-            const currentWeightType = getSettings().comfyStyleRefWeightType || '';
-            weightTypeSel.innerHTML = '<option value="">(用节点默认 · linear 均衡)</option>' +
-              cachedIpAdapterWeightTypes.map(w => `<option value="${escapeHtml(w)}" ${w === currentWeightType ? 'selected' : ''}>${escapeHtml(w)}</option>`).join('');
-          }
-          if (cachedIpAdapterPresets.length === 0) {
-            showToast('未检测到 IP-Adapter 节点/预设：画风参考若要最佳效果需安装 ComfyUI_IPAdapter_plus', 'warning');
-          }
         } else {
           showToast(`已连通 ComfyUI (${host})，服务就绪！`, 'success');
         }
