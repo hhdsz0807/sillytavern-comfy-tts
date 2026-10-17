@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.1.1';
+  const SCT_BUILD = '2.1.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5061,8 +5061,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       document.removeEventListener('keydown', sctBackendDialogEsc, true);
       sctBackendDialogEsc = null;
     }
-    if (sctBackendDialogEl && sctBackendDialogEl.isConnected) sctBackendDialogEl.remove();
+    const el = sctBackendDialogEl;
     sctBackendDialogEl = null;
+    if (!el) return;
+    try { if (typeof el.close === 'function' && el.open) el.close(); } catch (_) {}
+    if (el.isConnected) el.remove();
   }
 
   // 手机上页面级 touch 处理会吃掉 click：click + pointerup + touchend 三保险，并防重复触发
@@ -5099,8 +5102,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const isVideo = kind === 'video';
     sctBackendDialogSource = sourceUrl || null;
 
-    const overlay = document.createElement('div');
-    overlay.className = 'sct-bk-overlay';
+    // ★ 用原生 <dialog> + showModal()：弹窗被放进浏览器的「顶层(top layer)」，
+    //   无论酒馆 UI / 主题 / 其它插件用什么 z-index 都不可能盖住它。
+    //   （上一版是普通 div + z-index，被酒馆页面盖住了 —— 比数字的笨办法不可靠）
+    const canUseDialog = typeof window.HTMLDialogElement !== 'undefined'
+      && typeof document.createElement('dialog').showModal === 'function';
+    const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
+    overlay.className = canUseDialog ? 'sct-bk-dialog' : 'sct-bk-dialog sct-bk-fallback';
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -5159,6 +5167,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       </div>`;
     document.body.appendChild(overlay);
     sctBackendDialogEl = overlay;
+    if (canUseDialog) {
+      try {
+        overlay.showModal();                        // 进顶层
+      } catch (err) {
+        console.warn('[SCT] showModal 失败，退回普通浮层：', err);
+        overlay.classList.add('sct-bk-fallback');
+      }
+    }
+    // 浏览器自己关掉（按 Esc / 表单 method=dialog）时同步清状态，别留残留节点
+    overlay.addEventListener('close', () => {
+      if (sctBackendDialogEl === overlay) {
+        sctBackendDialogEl = null;
+        if (overlay.isConnected) overlay.remove();
+      }
+    });
 
     // 没源图时先别显示破图占位
     if (!sctBackendDialogSource) {

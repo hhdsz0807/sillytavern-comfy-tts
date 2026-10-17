@@ -2764,22 +2764,39 @@
 .sct-bk-two { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
 .sct-bk-two > * { flex: 1 1 160px; min-width: 150px; }
 
-.sct-bk-overlay {
-  /* ★ 手机适配：显式四边（不用 inset，老 WebView 不认）+ 整层可滚动，
-     否则弹窗比屏幕高时顶栏会被挤到屏幕外、根本无法关闭 */
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  width: 100%; height: 100%;
-  display: flex; align-items: center; justify-content: center;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  background: var(--sct-overlay, rgba(31, 30, 36, 0.7));
-  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
-  z-index: 2147483550 !important;
-  padding: 10px;
+/* ★ 顶层弹窗：用原生 <dialog>.showModal() → 进浏览器「顶层(top layer)」，
+   无论酒馆 UI / 主题 / 其它插件把 z-index 定多高，都不可能盖住它。
+   （上一版是普通 div + z-index:2147483550，被酒馆页面盖住了 —— 比数字的办法不可靠） */
+.sct-bk-dialog {
+  position: fixed !important;
+  top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+  width: 100% !important; height: 100% !important;
+  max-width: none !important; max-height: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
   box-sizing: border-box;
-  padding-top: max(10px, env(safe-area-inset-top));
-  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  display: none;                                   /* <dialog> 未打开时的默认可见性 */
+  z-index: 2147483647 !important;                  /* 仅在兜底路径下起作用 */
+  padding: 10px !important;
+  padding-top: max(10px, env(safe-area-inset-top)) !important;
+  padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
+}
+.sct-bk-dialog[open] {
+  display: flex; align-items: center; justify-content: center;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* 兜底：不支持 <dialog> 或 showModal 被拦时，退化成普通全屏浮层（z-index 已顶到最大值） */
+.sct-bk-dialog.sct-bk-fallback {
+  display: flex !important; align-items: center; justify-content: center;
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--sct-overlay, rgba(31, 30, 36, 0.72)) !important;
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+/* 顶层模式下的暗色背景走 ::backdrop */
+.sct-bk-dialog::backdrop {
+  background: var(--sct-overlay, rgba(31, 30, 36, 0.72));
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
 }
 .sct-bk-modal {
   width: 100%; max-width: 680px;
