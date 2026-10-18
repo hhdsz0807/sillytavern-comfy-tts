@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.9.0';
+  const SCT_BUILD = '2.10.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -41,23 +41,40 @@
   //    交给主模型的好处：它已经知道剧情与画面，不用另接一个 AI 接口，也不会跑偏
   //    （代价：每次回复会长一些、多花 token，所以给了开关与精简/完整两档）
   // ---------------------------------------------------------------------------
-  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 镜头怎么处理】第一帧的构图、人物长相、服装、场景必须与参考图 <Picture 1> 一致（不许换人、换景、换画风）；但**镜头不用全程静止**：可以跟着动作推/拉/摇/跟，也可以在同一个场景里换景别。禁止的是"无理由跳到另一个地方 / 换一套打光 / 突然换成另一个机位再切回来"。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
+  // 标签格式（这段永远固定：插件靠它认出视频提示词）
+  const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
+  const VIDEO_INSTRUCTION_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 镜头怎么处理】第一帧的构图、人物长相、服装、场景必须与参考图 <Picture 1> 一致（不许换人、换景、换画风）；但**镜头不用全程静止**：可以跟着动作推/拉/摇/跟，也可以在同一个场景里换景别。禁止的是"无理由跳到另一个地方 / 换一套打光 / 突然换成另一个机位再切回来"。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
   const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]（3~6 秒片就一镜到底，不写时间戳）：写清这个镜头里人物做什么、镜头怎么动（例如 slight push-in / gentle follow），动作不要塞太多；有台词就按上面的规则把台词写进这一镜。\n`;
   const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；10~15 秒建议 2~3 个镜头，按正文顺序推进动作，每个镜头都写清机位/运镜（推拉摇跟、景别切换都行）与 Hand assignment。\n`;
   const VIDEO_INSTRUCTION_SHOT_FREE = `5. detailed_description 先写一句全片风格声明，然后**按正文自由发挥**：可以设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），把正文里的动作、情绪和台词都演出来；镜头切换要跟着剧情走，不要无理由乱切；仍然是同一个角色、同一个场景设定、同一套画风。\n`;
   const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；**角色说的话要在这一段的音轨里有交代**（声音特质、语气、是否听清）；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。\n`;
 
-  function buildVideoInstruction(mode) {
+  function defaultVideoRules(mode) {
     const m = String(mode || 'compact');
     const shot = m === 'free' ? VIDEO_INSTRUCTION_SHOT_FREE
       : (m === 'full' ? VIDEO_INSTRUCTION_SHOT_MULTI : VIDEO_INSTRUCTION_SHOT_SINGLE);
     const len = m === 'free' ? '控制在 700 个英文单词以内（自由发挥版，允许 3~5 镜与运镜）'
       : (m === 'full' ? '控制在 900 个英文单词以内（完整版，允许多镜头与转场）' : '控制在 350 个英文单词以内（精简版）');
-    return `\n\n${VIDEO_INSTRUCTION_HEAD}${shot}${VIDEO_INSTRUCTION_TAIL}【长度与语言】整段${len}；只写英文，不要解释、不要 markdown 围栏。`;
+    return `${VIDEO_INSTRUCTION_HEAD}${shot}${VIDEO_INSTRUCTION_TAIL}【长度与语言】整段${len}；只写英文，不要解释、不要 markdown 围栏。`;
   }
 
-  /** 给「看图重写」用的同一套镜头/台词规则（按模式取） */
+  function buildVideoInstruction(mode, settingsLike) {
+    // ★ 用户自定义的分镜/写作规则：填了就整段替换内置规则（标签格式仍固定）
+    let override = '';
+    try {
+      const src = settingsLike || getSettings();
+      override = String(src?.comfyVideoInstructionText || '').trim();
+    } catch (_) {}
+    return `\n\n${VIDEO_TAG_INTRO}${override
+      ? `【分镜 / 写作规则（用户自定义，以此为准）】\n${override.slice(0, 6000)}`
+      : defaultVideoRules(mode)}`;
+  }
+
+  /** 给「看图重写」用的同一套镜头/台词规则（按模式取；用户自定义优先） */
   function videoShotRulesForRewrite(mode) {
+    let override = '';
+    try { override = String(getSettings()?.comfyVideoInstructionText || '').trim(); } catch (_) {}
+    if (override) return `【分镜 / 写作规则（用户自定义，以此为准）】\n${override.slice(0, 6000)}`;
     const m = String(mode || 'compact');
     if (m === 'free') {
       return '镜头：可以按剧情自由设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），切换要跟着剧情走；但始终是同一个角色、同一个场景设定、同一套 2D 赛璐璐画风。'
@@ -75,7 +92,7 @@
   function composedInstructionText(s) {
     const base = String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
     if (!s || !s.comfyAutoVideoPrompt) return base;
-    return `${base}${buildVideoInstruction(s.comfyVideoPromptMode)}`;
+    return `${base}${buildVideoInstruction(s.comfyVideoPromptMode, s)}`;
   }
 
   // 默认配置
@@ -185,7 +202,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     // ★ 让聊天主模型在写生图标签时，顺手把视频六段式也写出来（<video>…</video>）
     //   代价：每次回复会变长、多花 token；关掉就只能用上面的默认模板或手写
     comfyAutoVideoPrompt: true,
-    comfyVideoPromptMode: 'compact',   // 'compact' 精简版(单镜头微动, ≤350 词) | 'full' 完整版(可多镜头, ≤900 词)
+    comfyVideoPromptMode: 'compact',   // 'compact' 精简版 | 'full' 完整版 | 'free' 自由发挥
+    // 📐 分镜/写作规则（可自己换）：留空 = 用内置规则；填了就整段替换内置的那套（标签格式仍固定）
+    comfyVideoInstructionText: '',
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
     // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
@@ -10122,6 +10141,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <div class="sct-hint">开启后：模型每插入一个 <code>&lt;image&gt;</code> 标签，就在后面补一个 <code>&lt;video&gt;…&lt;/video&gt;</code>（第 N 个视频标签配第 N 个图标签，正文里会显示成一枚「🎬 视频提示词已就绪」小徽章）。<br>点图片卡片上的「🎬 视频」，弹窗会**自动填进模型写好的那份**；想临时换就当场改，改完会记成新的默认。</div>
 
             <div class="sct-setting-col">
+              <label for="sct-cfg-video-inst">📐 分镜 / 写作规则（可自己换；留空 = 用内置那套）</label>
+              <textarea id="sct-cfg-video-inst" class="text_pole" rows="6" placeholder="留空 = 用内置规则（六段式 + 首帧与参考图一致 + 允许运镜 + 台词原样演）。填了就整段替换内置规则；<video>…</video> 标签格式由插件固定，别动。">${escapeHtml(s.comfyVideoInstructionText || '')}</textarea>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
+                <button type="button" class="sct-comfy-btn" id="sct-btn-fill-video-inst">↩️ 填入内置规则（当模板改）</button>
+                <button type="button" class="sct-comfy-btn" id="sct-btn-clear-video-inst">🧹 清空（回到内置）</button>
+              </div>
+              <div class="sct-hint">想换成你自己的分镜写法（比如"分镜表/镜头编号/时长"那套）就填在这里，模型会照它写；内置的三档（精简/完整/自由发挥）只在留空时生效。</div>
+            </div>
+
+            <div class="sct-setting-col">
               <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
               <div class="sct-code-box" id="sct-inst-preview">${escapeHtml(composedInstructionText(s))}</div>
               <div style="margin-top:4px; display:flex; gap:6px;">
@@ -11124,6 +11153,28 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         : (m === 'full'
           ? '视频提示词换成「完整版」：2~3 镜、允许运镜（10~15 秒）'
           : '视频提示词换成「精简版」：1 镜 + 轻微运镜（3~6 秒）'), 'info');
+    });
+
+    // 📐 分镜/写作规则自定义
+    container.querySelector('#sct-cfg-video-inst')?.addEventListener('change', (e) => {
+      saveSettings({ comfyVideoInstructionText: String(e.target.value || '') });
+      refreshInstPreview();
+    });
+    container.querySelector('#sct-btn-fill-video-inst')?.addEventListener('click', () => {
+      const box = container.querySelector('#sct-cfg-video-inst');
+      if (!box) return;
+      const rules = defaultVideoRules(getSettings().comfyVideoPromptMode).trim();
+      box.value = rules;
+      saveSettings({ comfyVideoInstructionText: rules });
+      refreshInstPreview();
+      showToast('已把内置规则填进框里，直接在上面改就行', 'info');
+    });
+    container.querySelector('#sct-btn-clear-video-inst')?.addEventListener('click', () => {
+      const box = container.querySelector('#sct-cfg-video-inst');
+      if (box) box.value = '';
+      saveSettings({ comfyVideoInstructionText: '' });
+      refreshInstPreview();
+      showToast('已清空：回到内置规则（跟着「详略」档位自动切换）', 'info');
     });
 
     // 探查 ComfyUI 资产
