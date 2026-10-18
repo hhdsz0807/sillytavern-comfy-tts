@@ -2854,3 +2854,20 @@
 .sct-bk-video-bar { display: flex; align-items: center; gap: 8px; padding: 0 2px 6px; flex-wrap: wrap; }
 .sct-comfy-btn.sct-bk-edit-btn { border-color: var(--sct-accent, #76ABAE); color: var(--sct-accent, #76ABAE); }
 .sct-comfy-btn.sct-bk-video-btn { border-color: var(--sct-warning, #D9B358); color: var(--sct-warning, #D9B358); }
+
+/* 🎬 聊天主模型顺带写好的视频提示词：正文里显示成一枚小徽章 */
+.sct-video-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 4px;
+  padding: 2px 9px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--sct-accent, #76ABAE);
+  background: var(--sct-accent-soft, #76ABAE26);
+  border: 1px solid var(--sct-accent, #76ABAE);
+  border-radius: var(--sct-radius-pill, 999px);
+  vertical-align: middle;
+  user-select: none;
+}

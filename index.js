@@ -28,13 +28,36 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.1.4';
+  const SCT_BUILD = '2.2.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
-  const IMAGE_INSTRUCTION_VERSION = 2;
+  const IMAGE_INSTRUCTION_VERSION = 3;
 
   const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **主体必须是女性角色（硬性规则）**：插图主体一律为女性角色（1girl）。**若当前情景中只有男性角色（只有 1boy、没有女性出场）→ 不要生成任何生图标签，直接跳过配图**。\n3. **男性只作为局部肢体出现（重要）**：当情景里同时有男女双方时，**以 1girl 作为唯一的完整主体**，男方**只允许以局部肢体 / 背影 / 无正面脸的形式出现**（如 male hand, hand on 1girl's shoulder, male arm, cropped male body, faceless male, seen from behind），**绝对严禁把 1boy 完整画出来**（不给男性正面五官、不画男性全身）。\n4. **单主体与防污染规则**：**除非男女双方发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个女性角色主体**（1girl, solo）！英文 tag 必须完全聚焦于该角色，**绝对严禁在图中混入其他角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止误生其他角色的尾巴、发色或配饰）！\n5. **人数上限**：仅当情节中双方存在**直接身体接触或明确互动动作**时，才允许在 tag 里出现男方（且男方仅为局部肢体），并且必须明确写出具体互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n6. **标签格式**：<image>image###sfw/nsfw, 1girl, solo(常规单人) 或 1girl, 1boy(仅在有接触时,且男方只是局部肢体), 人物名称(女方必填; 男方写名字或直接省略), 动作与特征描述(有互动必须写明具体动作 + 男方的局部肢体描述), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【男女同场示例（女方是唯一完整主体，男方只露局部肢体）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1girl sitting on bench, male hand holding 1girl's hand, male arm around 1girl's waist, cropped male body, faceless male, romantic garden bench, sunset, warm cinematic lighting###</image>\n【只有男性的情景 → 不出图】：例如正文只有 1boy 独处、或对话对象尚未出场时，**不要插入任何 <image> 标签**。\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
+
+  // ---------------------------------------------------------------------------
+  // 🎬 视频提示词：让「聊天主模型」在写正文与生图标签时，顺手把六段式也一起写出来
+  //    交给主模型的好处：它已经知道剧情与画面，不用另接一个 AI 接口，也不会跑偏
+  //    （代价：每次回复会长一些、多花 token，所以给了开关与精简/完整两档）
+  // ---------------------------------------------------------------------------
+  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【写法硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚（固定脸型、发色、眼睛、身材比例），再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，同时写死手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
+  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后**只写一个 [Shot 1]，不写时间戳、不转场**：动作只写微动（呼吸起伏、一次眨眼、头发与衣角轻飘、光影闪动），并写死 ONE single unbroken continuous shot / NO camera cut / NO angle change / NO scene change。\n`;
+  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；每个镜头都要写 Hand assignment（右手做什么、左手做什么、全程不换手），镜头与动作数量要和视频时长匹配（6 秒最多 2 个动作）。\n`;
+  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n`;
+
+  function buildVideoInstruction(mode) {
+    const compact = mode !== 'full';
+    return `\n\n${VIDEO_INSTRUCTION_HEAD}${compact ? VIDEO_INSTRUCTION_SHOT_SINGLE : VIDEO_INSTRUCTION_SHOT_MULTI}${VIDEO_INSTRUCTION_TAIL}`
+      + `【长度与语言】整段${compact ? '控制在 350 个英文单词以内（精简版）' : '控制在 900 个英文单词以内（完整版，允许多镜头与转场）'}；只写英文，不要解释、不要 markdown 围栏。`;
+  }
+
+  /** 最终注入 AI 上下文的自动配图规范 = 生图规范 +（可选）视频规范 */
+  function composedInstructionText(s) {
+    const base = String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
+    if (!s || !s.comfyAutoVideoPrompt) return base;
+    return `${base}${buildVideoInstruction(s.comfyVideoPromptMode)}`;
+  }
 
   // 默认配置
   const DEFAULT_SETTINGS = {
@@ -140,6 +163,10 @@ A quiet room tone with faint ambience, strictly action-synced to the few visible
 
 non_diegetic_music:
 A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note.`,
+    // ★ 让聊天主模型在写生图标签时，顺手把视频六段式也写出来（<video>…</video>）
+    //   代价：每次回复会变长、多花 token；关掉就只能用上面的默认模板或手写
+    comfyAutoVideoPrompt: true,
+    comfyVideoPromptMode: 'compact',   // 'compact' 精简版(单镜头微动, ≤350 词) | 'full' 完整版(可多镜头, ≤900 词)
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -538,6 +565,30 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return null;
   }
 
+  // 🎬 视频提示词：聊天主模型在生图标签后面顺带写的那份六段式，按槽位存进消息 extra
+  function getChatMessageVideoPrompt(mesId, slotIdx) {
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return '';
+      const slot = ctx.chat[numId].extra?.sct_images?.[slotIdx];
+      return (slot && typeof slot.videoPrompt === 'string') ? slot.videoPrompt : '';
+    } catch (_) { return ''; }
+  }
+
+  function saveChatMessageVideoPrompt(mesId, slotIdx, videoPrompt) {
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return;
+      if (!ctx.chat[numId].extra) ctx.chat[numId].extra = {};
+      if (!ctx.chat[numId].extra.sct_images) ctx.chat[numId].extra.sct_images = {};
+      if (!ctx.chat[numId].extra.sct_images[slotIdx]) ctx.chat[numId].extra.sct_images[slotIdx] = {};
+      ctx.chat[numId].extra.sct_images[slotIdx].videoPrompt = String(videoPrompt || '');
+      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
+    } catch (_) {}
+  }
+
   // 保存生图结果到酒馆消息上下文 extra 并保存聊天记录
   function saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras = [], lastRepaintUrl = '') {
     try {
@@ -556,6 +607,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         prompt: promptText,
         activeLoras: activeLoras,
         lastRepaintUrl: lastRepaintUrl || '',
+        // ★ 保留聊天模型顺带写好的视频提示词，别被这次覆盖清掉
+        videoPrompt: String(ctx.chat[numId].extra.sct_images[slotIdx]?.videoPrompt || ''),
         savedAt: Date.now()
       };
       if (typeof ctx.saveChatDebounced === 'function') {
@@ -632,7 +685,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     // 用户为某些 LoRA 勾选了「提醒聊天 AI」时,把提醒一起塞进上下文
     const reminders = s.comfyEnabled ? buildLoraAiReminders() : '';
-    const baseText = (s.autoInjectImageInstruction && s.comfyEnabled) ? (s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION) : '';
+    const baseText = (s.autoInjectImageInstruction && s.comfyEnabled) ? composedInstructionText(s) : '';
 
     const finalText = `${baseText}${reminders}`.trim();
     if (finalText) {
@@ -2488,6 +2541,28 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
      ========================================================================== */
 
   // 解析并提取生图标签内容（兼容纯文本 image###...###、带标签 <image>image###...###</image> 及常规格式）
+  /**
+   * 把正文里的「视频提示词标签」摘出来（聊天主模型在生图标签后面顺带写的那份六段式）
+   * 兼容：<video>…</video>、&lt;video&gt;…&lt;/video&gt;、video###…###（外层可有 pre/code 包裹）
+   * 返回：按出现顺序排列的提示词数组；正文里把这些标签换成一枚「🎬 视频提示词」小徽章
+   */
+  function extractVideoPrompts(textEl) {
+    const out = [];
+    try {
+      let html = textEl.innerHTML || '';
+      if (!/(<video[\s>]|&lt;video|<\/video>|video###)/i.test(html)) return out;
+      const re = /(?:<pre>\s*)?(?:<code>)?\s*(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
+      html = html.replace(re, (full, a, b, c) => {
+        const text = String(a || b || c || '').trim();
+        if (!text) return '';
+        out.push(text);
+        return '<span class="sct-video-chip" title="聊天模型已经写好视频提示词：点卡片上的「🎬 视频」会自动填进弹窗">🎬 视频提示词已就绪</span>';
+      });
+      if (out.length > 0) textEl.innerHTML = html;
+    } catch (_) {}
+    return out;
+  }
+
   function parseImageTagContent(rawContent) {
     let s = (rawContent || '').trim();
     // 反转义 HTML 实体字符
@@ -5133,6 +5208,23 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       && typeof document.createElement('dialog').showModal === 'function';
     const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
     overlay.className = canUseDialog ? 'sct-bk-dialog' : 'sct-bk-dialog sct-bk-fallback';
+
+    // 🎬 视频提示词预填优先级：聊天模型写好的（本条消息这个槽位） > 设置里的默认模板
+    let videoPrefill = '';
+    let videoPrefillFromAi = false;
+    let videoSourceLabel = '设置里的默认模板';
+    if (isVideo) {
+      const slotIdx = String(anchor?.dataset?.sctSlotIdx ?? '0');
+      const aiVp = String(anchor?.__sctVideoPrompt || '').trim()
+        || getChatMessageVideoPrompt(mesIdOf(anchor), slotIdx);
+      if (aiVp) {
+        videoPrefill = aiVp;
+        videoPrefillFromAi = true;
+        videoSourceLabel = '聊天主模型写好的（可以直接改，也能换成默认模板）';
+      } else {
+        videoPrefill = String(s.comfyVideoPrompt || '');
+      }
+    }
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -5151,7 +5243,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           </div>
           <div class="sct-setting-col">
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
-            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? (s.comfyVideoPrompt || '') : '')}</textarea>
+            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
+            ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+              <button type="button" class="sct-comfy-btn sct-bk-use-default">↩️ 换成设置里的默认模板</button>
+              <span class="sct-bk-hint">当前来源：${escapeHtml(videoSourceLabel)}</span>
+            </div>` : ''}
           </div>
           ${isVideo ? `
           <div class="sct-bk-two">
@@ -5237,6 +5333,15 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (tag) tag.textContent = `源图：相册选图 ${f.name}`;
     });
 
+    bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
+      const ta = overlay.querySelector('.sct-bk-text');
+      if (ta) {
+        ta.value = String(getSettings().comfyVideoPrompt || '');
+        const srcEl = overlay.querySelector('.sct-bk-hint');
+        if (srcEl) srcEl.textContent = '当前来源：设置里的默认模板';
+      }
+    });
+
     bindBackendTap(overlay.querySelector('.sct-bk-go'), async () => {
       const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
       if (!text) { showToast(isVideo ? '先写视频提示词（六段式）' : '先写编辑指令', 'warning'); return; }
@@ -5247,8 +5352,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const steps = parseInt(overlay.querySelector('.sct-bk-steps')?.value, 10);
       const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
       const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
-      if (isVideo) saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoPrompt: text.slice(0, 20000) });
-      else saveSettings({
+      if (isVideo) {
+        saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect });
+        // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；
+        // 聊天模型针对本幕写的那份是场景专属的，不该覆盖全局默认
+        if (!videoPrefillFromAi && text !== String(videoPrefill || '').trim()) {
+          saveSettings({ comfyVideoPrompt: text.slice(0, 20000) });
+        }
+      } else saveSettings({
         comfyEditSteps: Number.isFinite(steps) ? steps : s.comfyEditSteps,
         comfyEditCfg: Number.isFinite(cfg) ? cfg : s.comfyEditCfg,
         comfyEditMegapixels: Number.isFinite(mp) ? mp : s.comfyEditMegapixels
@@ -6121,6 +6232,10 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return genId;
     })();
 
+    // 0. 先把「视频提示词标签」摘出来（聊天主模型在生图标签后面顺带写的六段式），
+    //    正文里换成一枚小徽章；这样后面那套图片标签处理逻辑完全不受影响
+    const videoPrompts = extractVideoPrompts(textEl);
+
     // 1. 扫描并替换生图标签 (同时完全兼容纯文本 image###...###、带标签 <image>...</image>、Markdown 代码包裹等多种形态)
     const textHtml = textEl.innerHTML;
     if (textHtml.includes('image###') || textHtml.includes('<image') || textHtml.includes('&lt;image') || textHtml.includes('img_prompt')) {
@@ -6174,6 +6289,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           cardContainer.dataset.sctTaskKey = taskKey;
           cardContainer.dataset.sctMesId = String(mesId);
           cardContainer.dataset.sctSlotIdx = String(idx);
+          // 🎬 聊天模型顺带写好的视频提示词（第 N 个视频标签配第 N 个图标签）
+          const vpFromAi = videoPrompts[idx] || '';
+          cardContainer.__sctVideoPrompt = vpFromAi || getChatMessageVideoPrompt(mesId, idx) || '';
+          if (vpFromAi && vpFromAi !== getChatMessageVideoPrompt(mesId, idx)) {
+            saveChatMessageVideoPrompt(mesId, idx, vpFromAi);
+          }
           cardContainer.setAttribute('aria-hidden', 'true');
           cardContainer.setAttribute('translate', 'no');
 
@@ -9140,9 +9261,23 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <input type="checkbox" id="sct-cfg-auto-inject-inst" ${s.autoInjectImageInstruction ? 'checked' : ''} />
             </div>
 
+            <div class="sct-setting-row">
+              <label for="sct-cfg-auto-video-prompt">🎬 让聊天模型在写生图标签时，顺手写视频提示词 <span style="opacity:.6; font-size:11px;">(会在生图标签后追加 &lt;video&gt;六段式&lt;/video&gt;；会明显加长每条回复、多花 token)</span></label>
+              <input type="checkbox" id="sct-cfg-auto-video-prompt" ${s.comfyAutoVideoPrompt ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-video-prompt-mode">视频提示词详略</label>
+              <select id="sct-cfg-video-prompt-mode" class="text_pole" style="max-width:260px;">
+                <option value="compact" ${(s.comfyVideoPromptMode || 'compact') !== 'full' ? 'selected' : ''}>精简版：单镜头微动（≤350 词 · 推荐）</option>
+                <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：允许多镜头与转场（≤900 词）</option>
+              </select>
+            </div>
+            <div class="sct-hint">开启后：模型每插入一个 <code>&lt;image&gt;</code> 标签，就在后面补一个 <code>&lt;video&gt;…&lt;/video&gt;</code>（第 N 个视频标签配第 N 个图标签，正文里会显示成一枚「🎬 视频提示词已就绪」小徽章）。<br>点图片卡片上的「🎬 视频」，弹窗会**自动填进模型写好的那份**；想临时换就当场改，改完会记成新的默认。</div>
+
             <div class="sct-setting-col">
               <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
-              <div class="sct-code-box" id="sct-inst-preview">${escapeHtml(s.imageInstructionText || DEFAULT_IMAGE_INSTRUCTION)}</div>
+              <div class="sct-code-box" id="sct-inst-preview">${escapeHtml(composedInstructionText(s))}</div>
               <div style="margin-top:4px; display:flex; gap:6px;">
                 <button type="button" class="sct-comfy-btn" id="sct-btn-copy-inst">📋 复制自动配图提示词</button>
                 <button type="button" class="sct-comfy-btn" id="sct-btn-reset-inst" style="opacity:0.85;">🔄 恢复最新默认规范</button>
@@ -10107,7 +10242,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     });
 
     container.querySelector('#sct-btn-copy-inst').addEventListener('click', () => {
-      const text = getSettings().imageInstructionText || DEFAULT_IMAGE_INSTRUCTION;
+      const text = composedInstructionText(getSettings());
       navigator.clipboard.writeText(text).then(() => {
         showToast('已复制自动配图提示词到剪贴板！', 'success');
       }).catch(() => {
@@ -10118,8 +10253,28 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     container.querySelector('#sct-btn-reset-inst')?.addEventListener('click', () => {
       saveSettings({ imageInstructionText: DEFAULT_IMAGE_INSTRUCTION, imageInstructionVersion: IMAGE_INSTRUCTION_VERSION });
       const preview = container.querySelector('#sct-inst-preview');
-      if (preview) preview.textContent = DEFAULT_IMAGE_INSTRUCTION;
+      if (preview) preview.textContent = composedInstructionText(getSettings());
       showToast('已恢复最新规范(仅女性角色出图;男女同场时男方只露局部肢体)', 'success');
+    });
+
+    // 🎬 让聊天主模型顺手写视频提示词（会加长回复、多花 token）
+    const refreshInstPreview = () => {
+      const preview = container.querySelector('#sct-inst-preview');
+      if (preview) preview.textContent = composedInstructionText(getSettings());
+    };
+    container.querySelector('#sct-cfg-auto-video-prompt')?.addEventListener('change', (e) => {
+      saveSettings({ comfyAutoVideoPrompt: e.target.checked });
+      refreshInstPreview();
+      showToast(e.target.checked
+        ? '已开启：聊天模型会在生图标签后顺带写 <video> 六段式（回复会变长）'
+        : '已关闭：不再让聊天模型写视频提示词（🎬 弹窗改回用设置里的默认模板）', 'info');
+    });
+    container.querySelector('#sct-cfg-video-prompt-mode')?.addEventListener('change', (e) => {
+      saveSettings({ comfyVideoPromptMode: e.target.value });
+      refreshInstPreview();
+      showToast(e.target.value === 'full'
+        ? '视频提示词换成「完整版」：允许多镜头与转场（更长、更贵）'
+        : '视频提示词换成「精简版」：单镜头微动、最稳最省', 'info');
     });
 
     // 探查 ComfyUI 资产
