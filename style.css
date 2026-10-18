@@ -2902,6 +2902,20 @@
 }
 .sct-bk-check input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; }
 
+/* 🔁 编辑弹窗的一键指令预设 */
+.sct-bk-fillrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.sct-bk-fillrow .sct-comfy-btn {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
 /* 🎭 每句台词的「谁说的」选择 */
 .sct-bk-lines {
   display: flex;

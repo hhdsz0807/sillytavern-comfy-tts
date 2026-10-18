@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.14.0';
+  const SCT_BUILD = '2.14.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5551,6 +5551,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return { her, him };
   }
 
+  // ✏️ 编辑弹窗的一键指令预设（省得每次手打）
+  const SCT_EDIT_PRESETS = {
+    swap: '把图一里的人完整替换成图二里的人：脸型、五官、发色发型、瞳色、眉形、肤色、身材、服装、配饰全部严格按图二来。\n图一里那个人的姿势、动作、神态、表情、视线方向、手部位置、构图、镜头角度、光影和背景全部保持与图一完全一致，一个字都不要改。\n只替换人物本身，不要改动场景；不要把图一和图二的脸混在一起，画面里只能有一个人，不能出现第二个人。\n重点：图一的脸和图一的五官特征必须完全消失。',
+    outfit: '只把图二那个人身上的衣服（外套 / 内搭 / 裙子 / 鞋 / 配饰）穿到图一的人身上，衣服的款式、颜色、材质、花纹严格按图二来。\n图一的人的脸、发型、瞳色、身材、姿势、动作、神态、构图、镜头角度、光影、背景全部保持与图一完全一致。\n不要让图二的脸或第二个角色出现在画面里，只取它的服装。',
+    duo: '把图一里的人和图二里的人放进同一个画面：两个人抱在一起（自然的拥抱姿势，身体贴合、手部结构正确）。\n两个人的长相分别严格保持各自参考图的样子，不要互换身份、不要把两张脸混在一起。\n场景、光线、画风统一成图一那样的 2D 日系赛璐璐风格，构图自然，两个人的身体比例正确。\n画面里只有这两个人，不要出现第三个人，不要分屏。',
+    style: '保持画面里的人物、长相、姿势、构图和背景完全不变，只调整画风与光线：改成\n（在这里写你要的风格，例：暖色黄昏逆光、胶片颗粒感、更精致的光影、厚涂质感）。\n人物的身份和五官不要改变，不要换人。'
+  };
+
   // 抓这张图「上方那段」正文：作为【这一幕的正文】显式塞进重写要求里。
   // 位置判定：上一张卡片之后 → 这张卡片之前（不跨图片，也不退回整条消息）
   function extractSceneText(anchor) {
@@ -6139,6 +6147,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
             <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图 + <b>这条消息的正文</b> + 当前角色卡与对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
+            ${isVideo ? '' : `<div class="sct-bk-fillrow">
+              <span class="sct-bk-hint">一键填指令：</span>
+              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="swap">🔁 角色替换（图二的人→放进图一）</button>
+              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="outfit">👕 换装（穿图二的衣服）</button>
+              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="duo">👥 双人合片（拥抱）</button>
+              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="style">🎨 只改画风/光线</button>
+              <span class="sct-bk-hint">（先选好「第二张参考图」再点；填完还能继续手改）</span>
+            </div>`}
             ${isVideo ? `<div class="sct-setting-col" style="margin-top:4px;">
               <label>🧠 看图重写走哪个接口</label>
               <select class="text_pole sct-bk-rewrite-mode">
@@ -6282,6 +6298,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
     bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
+
+    // 🔁 一键填编辑指令（角色替换 / 换装 / 双人合片 / 只改画风）
+    overlay.querySelectorAll('.sct-bk-fill').forEach((btn) => {
+      bindBackendTap(btn, () => {
+        const key = String(btn.dataset.preset || '');
+        const text = SCT_EDIT_PRESETS[key];
+        if (!text) return;
+        const ta = overlay.querySelector('.sct-bk-text');
+        if (ta) { ta.value = text; ta.focus(); }
+        const needRef2 = key === 'swap' || key === 'outfit' || key === 'duo';
+        showToast(needRef2 && !sctBackendDialogRef2
+          ? '指令已填好 —— 记得在上面选「➕ 第二张参考图」（图二）再开始'
+          : '指令已填好，可以继续手改', 'info');
+      });
+    });
 
     // ➕ 第二张参考图：从聊天里别的图选，或从相册选
     const ref2Sel = overlay.querySelector('.sct-bk-ref2');
