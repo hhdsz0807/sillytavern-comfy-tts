@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.4.2';
+  const SCT_BUILD = '2.4.3';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5390,6 +5390,30 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return SIX_SECTION_KEYS.map((k) => `${k}:\n${parts[k] || ''}`).join('\n\n');
   }
 
+  // 抓「这条消息」的正文：作为【这一幕的正文】显式塞进重写要求里，
+  // 免得聊天太长、上下文被截断时模型看不到图片前面的剧情
+  function extractSceneText(anchor) {
+    try {
+      const mes = anchor?.closest?.('.mes');
+      const box = mes?.querySelector?.('.mes_text');
+      if (!box) return '';
+      let t = String(box.innerText || box.textContent || '');
+      t = t
+        .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
+        .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
+        .replace(/video###[\s\S]*?###/gi, ' ')
+        .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
+        .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
+        .replace(/image###[\s\S]*?###/gi, ' ')
+        .replace(/🎬\s*视频提示词已就绪/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/[ \t]{2,}/g, ' ')
+        .trim();
+      return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
+    } catch (_) { return ''; }
+  }
+
   async function rewriteVideoPromptByMainModel(dialog) {
     const ctx = getSTContext();
     const ta = dialog.querySelector('.sct-bk-text');
@@ -5414,6 +5438,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const noteEl = dialog.querySelector('.sct-bk-director');
     const directorNote = String(noteEl?.value || '').trim();
     if (directorNote) saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
+    const sceneText = extractSceneText(dialog.__sctAnchor);
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
     try {
@@ -5428,6 +5453,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         '4) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
         '5) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
         '6) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。',
+        sceneText
+          ? `\n【这一幕的正文（酒馆里这条消息的文字，用来说明剧情与动作；画面细节仍以图为准）】\n${sceneText}`
+          : '',
         directorNote
           ? `\n【用户想要的效果（中文指导，必须尽量满足）】\n${directorNote}\n（注意：指导里如果要求在画面里做动作，就把动作写进 [Shot 1] 的画面内部微动里；但"镜头不许动、不许重新取景"这条永远优先，冲突时以镜头不动为准。）`
           : '',
@@ -5516,6 +5544,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       && typeof document.createElement('dialog').showModal === 'function';
     const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
     overlay.className = canUseDialog ? 'sct-bk-dialog' : 'sct-bk-dialog sct-bk-fallback';
+    overlay.__sctAnchor = anchor;      // 「看图重写」要抓这条消息的正文
 
     // 🎬 视频提示词预填优先级：聊天模型写好的（本条消息这个槽位） > 设置里的默认模板
     let videoPrefill = '';
@@ -5553,7 +5582,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           <div class="sct-setting-col">
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
             ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
-            <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图和当前对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
+            <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图 + <b>这条消息的正文</b> + 当前角色卡与对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
               <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
