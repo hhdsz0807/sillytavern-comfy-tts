@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.17.2';
+  const SCT_BUILD = '2.17.3';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -213,7 +213,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyH3SwapLoraStrength: 1.0,
     comfyH3DmadLora: '',                                             // 加速 LoRA（留空 = 用内置的 TaoMate-H3-3step）
     comfyH3DmadLoraStrength: 1.0,
-    comfyH3SwapPrompt: 'body_swap: 将参考视频里的角色用 <Picture 1> 的角色进行替换，保留参考视频的动作、表演节奏、镜头运动、构图与背景；人物身份、脸型、五官、发色、瞳色、体型、服装严格按 <Picture 1>；不要参考视频中人物的长相、五官与身材。',
+    comfyH3SwapPrompt: 'body_swap: 用 <Picture 1> 的角色替换参考视频里的角色。角色外观：脸型、五官、发色、瞳色、体型、服装全部严格按 <Picture 1>；不要参考视频中人物的长相、五官与身材。',
     // 🎨 换人后的画风（实测：画风上限由参考图决定，提示词只是微调；长句写实描述会反向变平涂）
     comfyH3SwapStyle: 'video',      // 'video' 跟参考视频 | 'realistic' 写实实拍 | 'anime' 纯平涂2D | 'custom'
     comfyH3SwapStyleCustom: '',
