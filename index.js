@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.4.3';
+  const SCT_BUILD = '2.5.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -171,6 +171,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyVideoDirectorNote: '',
     // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
     comfyVideoOnePassOnly: false,
+    // 「让主模型看图重写」时用哪套酒馆已保存的设置（空 = 跟随酒馆当前）
+    comfyRewritePreset: '',            // 对话预设名（Chat Completion 预设）
+    comfyRewriteModel: '',             // 聊天补全的模型名
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -5414,6 +5417,59 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     } catch (_) { return ''; }
   }
 
+  // 读酒馆「已保存」的对话预设（Chat Completion 那一套）
+  function listChatPresets() {
+    try {
+      const pm = getSTContext()?.getPresetManager?.('openai');
+      if (!pm) return { names: [], current: '' };
+      const list = pm.getPresetList?.() || [];
+      const names = list.map((p) => (typeof p === 'string' ? p : p?.name)).filter(Boolean);
+      return { names, current: pm.getSelectedPresetName?.() || '' };
+    } catch (_) { return { names: [], current: '' }; }
+  }
+
+  // 读聊天补全的模型下拉（酒馆已经配好的模型清单）
+  function listChatModels() {
+    try {
+      const sel = document.getElementById('model_openai_select');
+      if (!sel) return { names: [], current: '' };
+      const names = [...sel.options].map((o) => o.value).filter(Boolean);
+      return { names, current: sel.value || '' };
+    } catch (_) { return { names: [], current: '' }; }
+  }
+
+  // 临时切到指定预设/模型 → 跑回调 → **无论成功失败都还原**
+  async function withTemporaryModelSettings({ preset, model }, fn) {
+    const pm = getSTContext()?.getPresetManager?.('openai');
+    const modelSel = document.getElementById('model_openai_select');
+    const origPreset = pm?.getSelectedPresetName?.() || '';
+    const origModel = modelSel?.value || '';
+    let presetSwapped = false;
+    let modelSwapped = false;
+    try {
+      if (pm && preset && preset !== origPreset) {
+        await pm.selectPreset(preset);
+        presetSwapped = true;
+      }
+      if (modelSel && model && model !== origModel) {
+        modelSel.value = model;
+        modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+        modelSwapped = true;
+      }
+      return await fn();
+    } finally {
+      try {
+        if (modelSwapped && modelSel && origModel) {
+          modelSel.value = origModel;
+          modelSel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      } catch (_) {}
+      try {
+        if (presetSwapped && pm && origPreset) await pm.selectPreset(origPreset);
+      } catch (_) {}
+    }
+  }
+
   async function rewriteVideoPromptByMainModel(dialog) {
     const ctx = getSTContext();
     const ta = dialog.querySelector('.sct-bk-text');
@@ -5462,13 +5518,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         draft ? `\n【初稿（是之前没看图时写的，凡与图不符一律以图为准）】\n${draft}` : ''
       ].filter(Boolean).join('\n');
 
-      const reply = await ctx.generateQuietPrompt({
-        quietPrompt: prompt,
-        quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
-        quietToLoud: false,
-        removeReasoning: true,
-        responseLength: 1600
-      });
+      const presetSel = dialog.querySelector('.sct-bk-preset');
+      const modelSel = dialog.querySelector('.sct-bk-model');
+      const wantPreset = String(presetSel?.value || '').trim();
+      const wantModel = String(modelSel?.value || '').trim();
+      saveSettings({ comfyRewritePreset: wantPreset, comfyRewriteModel: wantModel });
+
+      const reply = await withTemporaryModelSettings({ preset: wantPreset, model: wantModel }, () =>
+        ctx.generateQuietPrompt({
+          quietPrompt: prompt,
+          quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
+          quietToLoud: false,
+          removeReasoning: true,
+          responseLength: 1600
+        })
+      );
 
       const six = parseSixSectionPrompt(reply);
       if (!six) {
@@ -5481,7 +5545,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       sctBackendDialogPrefillFromAi = true;   // 场景专属，不覆盖全局默认模板
       sctBackendDialogRewritten = true;
       const tagEl = dialog.querySelector('.sct-bk-video-src');
-      if (tagEl) tagEl.textContent = '当前来源：🧠 主模型看图重写的（只用于本条）';
+      if (tagEl) {
+        const bits = [];
+        if (wantPreset) bits.push(`预设 ${wantPreset}`);
+        if (wantModel) bits.push(`模型 ${wantModel}`);
+        tagEl.textContent = `当前来源：🧠 主模型看图重写的（只用于本条${bits.length ? ' · ' + bits.join(' / ') : ''}）`;
+      }
     } catch (e) {
       showToast('主模型重写失败：' + (e?.message || e), 'error');
     } finally {
@@ -5563,6 +5632,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         videoPrefill = String(s.comfyVideoPrompt || '');
       }
     }
+    // 「看图重写」用的预设/模型清单（酒馆里已经保存的那些）
+    const presetInfo = isVideo ? listChatPresets() : { names: [], current: '' };
+    const modelInfo = isVideo ? listChatModels() : { names: [], current: '' };
+    const savedPreset = String(s.comfyRewritePreset || '');
+    const savedModel = String(s.comfyRewriteModel || '');
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -5584,6 +5658,25 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
             <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图 + <b>这条消息的正文</b> + 当前角色卡与对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
+            ${isVideo ? `<div class="sct-bk-two" style="margin-top:4px;">
+              <div class="sct-setting-col">
+                <label>🧠 重写用「对话预设」（酒馆已保存的）</label>
+                <select class="text_pole sct-bk-preset">
+                  <option value="">（跟随酒馆当前${presetInfo.current ? `：${escapeHtml(presetInfo.current)}` : ''}）</option>
+                  ${presetInfo.names.map((n) => `<option value="${escapeHtml(n)}" ${n === savedPreset ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-setting-col">
+                <label>🧠 重写用「模型」（酒馆已配置的）</label>
+                <select class="text_pole sct-bk-model">
+                  <option value="">（跟随酒馆当前${modelInfo.current ? `：${escapeHtml(modelInfo.current)}` : ''}）</option>
+                  ${modelInfo.names.map((n) => `<option value="${escapeHtml(n)}" ${n === savedModel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <div class="sct-bk-hint" style="margin-top:2px;">${presetInfo.names.length || modelInfo.names.length
+              ? '选好之后只在「看图重写」这一次生效，跑完会<b>自动还原</b>你原来的预设与模型。'
+              : '（当前接口不是聊天补全，读不到预设/模型清单 —— 这里会自动跟随酒馆当前设置）'}</div>` : ''}
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
               <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
               <button type="button" class="sct-comfy-btn sct-bk-use-default">↩️ 换成设置里的默认模板</button>
