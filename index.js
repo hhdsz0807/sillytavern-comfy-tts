@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.10.1';
+  const SCT_BUILD = '2.11.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -205,6 +205,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyVideoPromptMode: 'compact',   // 'compact' 精简版 | 'full' 完整版 | 'free' 自由发挥
     // 📐 分镜/写作规则（可自己换）：留空 = 用内置规则；填了就整段替换内置的那套（标签格式仍固定）
     comfyVideoInstructionText: '',
+    // 🔊 提交视频时，把正文里识别到的台词追加进提示词（不重写也能念出来）
+    comfyVideoSpeakLines: true,
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
     // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
@@ -5439,6 +5441,32 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return SIX_SECTION_KEYS.map((k) => `${k}:\n${parts[k] || ''}`).join('\n\n');
   }
 
+  // 从正文里抓「角色说的话」：中文引号「」『』“” 和英文双引号都认，最多取 3 句
+  function extractDialogueLines(anchor) {
+    let t = '';
+    try {
+      const mes = anchor?.closest?.('.mes');
+      const box = mes?.querySelector?.('.mes_text');
+      t = String(box?.innerText || box?.textContent || '');
+    } catch (_) {}
+    if (!t) return [];
+    t = t.replace(/image###[\s\S]*?###/g, ' ').replace(/<video>[\s\S]*?<\/video>/gi, ' ')
+      .replace(/🎬\s*视频提示词已就绪/g, ' ').trim();
+    const out = [];
+    const push = (s) => {
+      const v = String(s || '').replace(/\s+/g, ' ').trim();
+      if (!v || v.length > 120) return;
+      if (out.includes(v)) return;
+      out.push(v);
+    };
+    const pats = [/「([^「」]{1,120})」/g, /『([^『』]{1,120})』/g, /“([^“”]{1,120})”/g, /"([^"\n]{1,120})"/g];
+    pats.forEach((re) => {
+      let m;
+      while ((m = re.exec(t)) !== null) push(m[1]);
+    });
+    return out.slice(0, 3);
+  }
+
   // 抓「这条消息」的正文：作为【这一幕的正文】显式塞进重写要求里，
   // 免得聊天太长、上下文被截断时模型看不到图片前面的剧情
   function extractSceneText(anchor) {
@@ -5725,6 +5753,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const directorNote = String(noteEl?.value || '').trim();
     if (directorNote) saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
     const sceneText = extractSceneText(dialog.__sctAnchor);
+    const dialogueLines = extractDialogueLines(dialog.__sctAnchor);
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
     try {
@@ -5742,6 +5771,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         '7) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。',
         sceneText
           ? `\n【这一幕的正文（酒馆里这条消息的文字，用来说明剧情与动作；画面细节仍以图为准）】\n${sceneText}`
+          : '',
+        dialogueLines.length
+          ? `\n【★ 必须让角色说出来的台词（从正文里抓的，原样引用，不许改写/翻译/加戏）】\n${dialogueLines.map((s) => `· 「${s}」`).join('\n')}\n写法：把每一句放进最合适的那个镜头，用双引号包住原句，并写 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；overall_soundscape 里也要交代这句台词的音轨。`
           : '',
         directorNote
           ? `\n【用户想要的效果（中文指导，必须尽量满足）】\n${directorNote}\n（注意：指导里如果要求在画面里做动作，就把动作写进 [Shot 1] 的画面内部微动里；但"镜头不许动、不许重新取景"这条永远优先，冲突时以镜头不动为准。）`
@@ -5967,6 +5999,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       model: String(s.comfyRewriteApiModel || s.comfyAiAssistModel || '')
     };
     const apiModelCache = Array.isArray(sctApiModelCache) ? sctApiModelCache.slice() : [];
+    // 🔊 本条消息里的台词（从引号里抓），提交时可以追加进提示词
+    const dialogLines = isVideo ? extractDialogueLines(anchor) : [];
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -6047,7 +6081,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               </select>
             </div>
           </div>
-          <label class="sct-bk-check" for="sct-bk-onepass"><input type="checkbox" id="sct-bk-onepass" class="sct-bk-onepass" ${s.comfyVideoOnePassOnly ? 'checked' : ''} /> <b>只跑一采（不跑二采）</b><span class="sct-bk-hint"> — 快很多、显存更省；代价是只有一采的草稿画质，没有二采的高清成品</span></label>` : `
+          <label class="sct-bk-check" for="sct-bk-onepass"><input type="checkbox" id="sct-bk-onepass" class="sct-bk-onepass" ${s.comfyVideoOnePassOnly ? 'checked' : ''} /> <b>只跑一采（不跑二采）</b><span class="sct-bk-hint"> — 快很多、显存更省；代价是只有一采的草稿画质，没有二采的高清成品</span></label>
+          <label class="sct-bk-check" for="sct-bk-speak"><input type="checkbox" id="sct-bk-speak" class="sct-bk-speak" ${s.comfyVideoSpeakLines !== false ? 'checked' : ''} /> <b>🔊 让角色念出正文台词</b><span class="sct-bk-hint"> — ${dialogLines.length ? `本条识别到 ${dialogLines.length} 句：${escapeHtml(dialogLines.join(' ／ '))}` : '本条正文里没识别到引号台词（用「」『』“”或英文双引号写的才算）'}</span></label>` : `
           <div class="sct-bk-two">
             <div class="sct-setting-col">
               <label>重绘步数（20~30 步够用，越高越慢）</label>
@@ -6216,6 +6251,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
       const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
       if (isVideo) {
+        const speakEl = overlay.querySelector('.sct-bk-speak');
+        const speak = !!(speakEl && speakEl.checked);
+        saveSettings({ comfyVideoSpeakLines: speak });
+        // 🔊 台词兜底：提示词里还没写进去，就把正文里抓到的台词追加一条（不重写也能念）
+        if (speak && dialogLines.length) {
+          const missing = dialogLines.filter((l) => !String(text).includes(l));
+          if (missing.length) {
+            text = `${text}\n\nSpoken line (she says it aloud with natural lip movement; the line is clearly heard in the audio): ${missing.map((l) => `"${l}"`).join(' / ')}`;
+          }
+        }
         saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoOnePassOnly: onePassOnly });
         // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；
         // 模型写的 / 看图重写的都是场景专属的，不该覆盖全局默认
