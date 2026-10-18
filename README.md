@@ -81,6 +81,32 @@
 | **文生图（可选）** | 设置里把「文生图后端」切到 MOSS | 本机 `MOSS-Image` 工作流 | 把中文写进画面最准；**不挂 LoRA**，尺寸必须是 16 的整数倍 |
 | **图像编辑** | 图片卡片底栏 **✏️ 编辑** | 本机 `Qwen-Image 2.1` 编辑工作流 | 源图默认是卡片当前这张，也能从手机相册选；写中文指令即可（例：把头发改成亮粉色，其他别动）；**还能再挂一张参考图**（见下） |
 
+**🎭 换头换装（动作迁移）—— v2.16.0**
+
+这是 H3 的**第三条路**（和下面 `ref_videos` 那条不同）：**参考视频当"动作模板"**，角色图当身份，靠专用 LoRA 换人。
+
+```
+角色图  ────────────────────────────► ref_images.ref_image_0        ← 身份
+参考视频 → 24fps 取帧 ──────────────► MiniMaxH3AddGuide.frame_idx=0  ← 动作/表演/镜头（与生成画面共享时空网格）
+UNET → 预处理 → 加速 LoRA → character_swap LoRA → 预览 → 引导器
+提示词自动加 body_swap: 触发词 + 换人说明；音频默认沿用参考视频原声
+```
+
+**先下 LoRA**（在 H3 的 LoRA 仓库，**不是**那个 BFS 换脸仓库）：
+
+| 文件 | 大小 | 说明 |
+| :--- | :--- | :--- |
+| `loras/minimax_h3_character_swap_v1.1_ref2va_fro.safetensors` | **80 MB** | ✅ 官方推荐版（插件默认就用这个，**本机已下好**） |
+| `loras/minimax_h3_character_swap_v1.0_ref2va_r64_gl.safetensors` | 620 MB | 旧版（rank 64，你那份工作流用的） |
+| `loras/minimax_h3_head_swap_v1.0_r32.safetensors` | 310 MB | 只换头 |
+
+仓库：<https://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/tree/main/loras>
+下载脚本：`D:\cli\_sct_get_h3_swap_loras.ps1`（默认下 80 MB 那个；`-All` 下全部；`-List` 只看清单；走 hf-mirror）
+下完丢进 `ComfyUI/models/loras/` 并刷新模型列表。**插件开跑前会查 `/object_info` 预检**：LoRA 不在就直接中止并给出下载地址，不会白跑 20 分钟。
+
+用法：🎬 弹窗 → **🎞 上传一段参考视频** → 自动勾上 **「🎭 换头换装（动作迁移 · 更保脸）」** → 🚀
+提示词只写中文意思就行（插件补 `body_swap:` 触发词，句子可在设置里改）。
+
 **🎞 参考视频 = 角色替换（v2.15.0）**
 
 H3 的原生节点本来就支持参考视频，之前只用了参考图：
