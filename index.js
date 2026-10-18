@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.13.0';
+  const SCT_BUILD = '2.14.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4493,7 +4493,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
   const SCT_WF_PATCH = {
     moss: { loader: '1', positive: '4', negative: '5', latent: '6', sampler: '16', save: '18' },
-    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487' },
+    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487', encoder: '497' },
     video: { image: '24', prompt: '6', seed: '12', seconds: '17', size: '8',
              onePass: '126', twoPass: '114', save: '114' }
   };
@@ -4504,6 +4504,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogEl = null;
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
+  let sctBackendDialogRef2 = null;        // 编辑弹窗的「第二张参考图」（URL / File，可选）
   let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
   let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
   let sctApiModelCache = [];                   // 独立 API「连接」后拿到的模型清单（内存缓存，关掉弹窗再开还在）
@@ -4729,7 +4730,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   }
 
   // 图像编辑：Qwen-Image 2.1（源图 + 中文指令 → 改图）
-  async function triggerComfyQwenEdit(source, instruction, container, taskKey = null) {
+  async function triggerComfyQwenEdit(source, instruction, container, taskKey = null, ref2 = null) {
     const s = getSettings();
     renderLoadingCard(container, instruction, '📤 正在把源图上传到 ComfyUI…', taskKey);
     let uploaded = '';
@@ -4739,15 +4740,39 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       renderErrorCard(container, instruction, '源图上传失败：' + e.message, [], taskKey);
       return false;
     }
+    // ➕ 第二张参考图（可选）：多参考图合并/换装
+    let uploaded2 = '';
+    if (ref2) {
+      try {
+        renderLoadingCard(container, instruction, '📤 正在上传第二张参考图…', taskKey);
+        uploaded2 = await prepareComfySourceImage(ref2);
+      } catch (e) {
+        showToast('第二张参考图上传失败，这次只用第一张：' + e.message, 'warning');
+        uploaded2 = '';
+      }
+    }
     const wf = cloneWorkflow(SCT_WF_QWEN);
     const P = SCT_WF_PATCH.qwen;
     wf[P.image].inputs.image = uploaded;
-    wf[P.prompt].inputs.value = String(instruction || '');
+    // 两张参考图时给模型一句"谁是图一谁是图二"的定位说明，避免它搞反
+    const finalInstruction = uploaded2
+      ? `[Reference images: image 1 = the main character / scene to keep; image 2 = the extra reference (its character and/or its outfit). Do exactly what the instruction says about which element comes from which image; keep the faces and identities of each person from their own image.]\n${String(instruction || '')}`
+      : String(instruction || '');
+    wf[P.prompt].inputs.value = finalInstruction;
     wf[P.sampler].inputs.steps = Math.min(60, Math.max(4, parseInt(s.comfyEditSteps, 10) || 30));
     wf[P.sampler].inputs.cfg = Math.min(8, Math.max(1, parseFloat(s.comfyEditCfg) || 4.0));
     wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
     wf[P.scale].inputs.megapixels = Math.min(16, Math.max(0.1, parseFloat(s.comfyEditMegapixels) || 1.0));
     wf[P.save].inputs.filename_prefix = 'SCT_EDIT/QW21_' + uniqueFileStamp() + '_';
+    if (uploaded2) {
+      // ★ Node 497 的 images 是 autogrow（image_1 … image_16）：再加一路 LoadImage→缩放 挂到 image_2
+      wf['640'] = { class_type: 'LoadImage', inputs: { image: uploaded2 } };
+      wf['641'] = {
+        class_type: 'ImageScaleToTotalPixels',
+        inputs: { image: ['640', 0], megapixels: wf[P.scale].inputs.megapixels, resolution_steps: 32, upscale_method: 'lanczos' }
+      };
+      wf[P.encoder].inputs['images.image_2'] = ['641', 0];
+    }
 
     container.__sctLastParams = {
       checkpoint: 'Qwen-Image 2.1 int8（编辑工作流）', cfg: wf[P.sampler].inputs.cfg,
@@ -4755,7 +4780,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       scheduler: wf[P.sampler].inputs.scheduler, size: `${wf[P.scale].inputs.megapixels} MP`,
       batch: 1, seed: wf[P.sampler].inputs.seed, vae: 'qwen_image_2.1_vae_bf16',
       hires: '关', faceFix: '关', styleRef: '关', loras: ['（编辑后端不挂 LoRA）'],
-      positive: String(instruction || ''), negative: wf['497']?.inputs?.negative_prompt || ''
+      positive: finalInstruction, negative: wf['497']?.inputs?.negative_prompt || ''
     };
     container.__sctLastWorkflow = wf;
 
@@ -6060,6 +6085,26 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const apiModelCache = Array.isArray(sctApiModelCache) ? sctApiModelCache.slice() : [];
     // 🔊 本条消息里的台词（从引号里抓），提交时可以追加进提示词
     const dialogLines = isVideo ? extractDialogueLines(anchor) : [];
+    // ➕ 第二张参考图的下拉选项：聊天里其他已出图卡片（编辑模式才有）
+    const ref2Options = (() => {
+      if (isVideo) return '';
+      const opts = [];
+      try {
+        document.querySelectorAll('#chat .mes').forEach((mes) => {
+          const rawId = mes.getAttribute('mesid') ?? mes.dataset?.sctMesId ?? '';
+          const mesNo = Number.parseInt(rawId, 10);
+          mes.querySelectorAll('.sct-comfy-card-container').forEach((c) => {
+            if (c === anchor) return;
+            const img = c.querySelector('.sct-comfy-viewport img');
+            const src = img ? String(img.getAttribute('src') || '') : '';
+            if (!src || src.startsWith('data:image/svg')) return;
+            const slot = Number.parseInt(c.dataset.sctSlotIdx || '0', 10) || 0;
+            opts.push(`<option value="${escapeHtml(src)}">🖼 第${Number.isFinite(mesNo) ? mesNo + 1 : '?'}楼 · 第${slot + 1}张</option>`);
+          });
+        });
+      } catch (_) {}
+      return opts.slice(0, 60).join('');
+    })();
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -6076,6 +6121,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <div class="sct-bk-hint">源图会先上传到本机 ComfyUI 的 input 目录</div>
             </div>
           </div>
+          ${isVideo ? '' : `<div class="sct-bk-srcrow" style="margin-top:6px;">
+            <img class="sct-bk-ref2-preview" alt="参考图2" src="${escapeHtml(typeof sctBackendDialogRef2 === 'string' ? sctBackendDialogRef2 : '')}" style="${sctBackendDialogRef2 ? 'max-width:72px;' : 'display:none; max-width:72px;'}" />
+            <div class="sct-bk-srcside">
+              <div class="sct-bk-srctag">➕ 第二张参考图（可选）</div>
+              <select class="text_pole sct-bk-ref2">
+                <option value="">不使用第二张</option>
+                <option value="__album__">📁 从手机相册选</option>
+                ${ref2Options}
+              </select>
+              <input type="file" accept="image/*" class="sct-bk-ref2-file" style="display:none;" />
+              <div class="sct-bk-hint">两张图会一起编码给模型（最多支持 16 张）。用法举例：<b>「把图二里那个人身上的衣服穿到图一的人身上」</b>、<b>「让图一的人和图二的人抱在一起」</b>。图一＝上面那张源图，图二＝这里选的。</div>
+            </div>
+          </div>`}
           <div class="sct-setting-col">
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
             ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
@@ -6225,6 +6283,29 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
     bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
 
+    // ➕ 第二张参考图：从聊天里别的图选，或从相册选
+    const ref2Sel = overlay.querySelector('.sct-bk-ref2');
+    const ref2File = overlay.querySelector('.sct-bk-ref2-file');
+    const showRef2Preview = (val) => {
+      const img = overlay.querySelector('.sct-bk-ref2-preview');
+      if (!img) return;
+      if (val) { img.style.display = ''; img.src = val; }
+      else { img.style.display = 'none'; img.removeAttribute('src'); }
+    };
+    ref2Sel?.addEventListener('change', () => {
+      const v = String(ref2Sel.value || '');
+      if (v === '__album__') { ref2File?.click(); return; }
+      sctBackendDialogRef2 = v || null;
+      showRef2Preview(v);
+    });
+    ref2File?.addEventListener('change', () => {
+      const f = ref2File.files && ref2File.files[0];
+      if (!f) return;
+      sctBackendDialogRef2 = f;
+      if (ref2Sel) ref2Sel.value = '';
+      showRef2Preview(URL.createObjectURL(f));
+    });
+
     // 🔗 独立 API「连接并获取模型」：GET /models，把清单灌进下拉
     bindBackendTap(overlay.querySelector('.sct-bk-api-connect'), async () => {
       const btn = overlay.querySelector('.sct-bk-api-connect');
@@ -6348,7 +6429,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
       if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly });
-      else await triggerComfyQwenEdit(source, text, cardEl);
+      else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
   }
 
