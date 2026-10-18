@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.2.2';
+  const SCT_BUILD = '2.4.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -41,10 +41,10 @@
   //    交给主模型的好处：它已经知道剧情与画面，不用另接一个 AI 接口，也不会跑偏
   //    （代价：每次回复会长一些、多花 token，所以给了开关与精简/完整两档）
   // ---------------------------------------------------------------------------
-  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【写法硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚（固定脸型、发色、眼睛、身材比例），再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，同时写死手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
-  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后**只写一个 [Shot 1]，不写时间戳、不转场**：动作只写微动（呼吸起伏、一次眨眼、头发与衣角轻飘、光影闪动），并写死 ONE single unbroken continuous shot / NO camera cut / NO angle change / NO scene change。\n`;
-  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；每个镜头都要写 Hand assignment（右手做什么、左手做什么、全程不换手），镜头与动作数量要和视频时长匹配（6 秒最多 2 个动作）。\n`;
-  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n`;
+  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 最重要 · 绝对不许自己定镜头】你写这段时**还没看到生成出来的图**，所以**绝不能规定景别与机位**：不许出现 medium shot / close-up / wide shot / full body / upper body / portrait / camera orbits / zoom in / dutch angle / low angle / high angle / side view / from behind 这类镜头词 —— 一旦写了，出片就会"换角度、重新构图"。整段只允许描述**画面内部的微动**。\nsummary 与 detailed_description 里都必须写死这句（原样照抄）: "The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed."\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，同时写死手部任务锁（哪只手拿什么、全程不换手）、上面那句"构图与参考图完全一致"，以及禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
+  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后**只写一个 [Shot 1]，不写时间戳、不转场、不写景别**：只写画面内部的微动（呼吸起伏、一次眨眼、头发与衣角轻飘、光影闪动），并写死 ONE single unbroken continuous shot / NO camera cut / NO angle change / NO re-framing / NO scene change。\n`;
+  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；**但每个镜头都不许改变机位与景别**（只允许画面内部的微动与节奏变化），每个镜头都要写 Hand assignment（右手做什么、左手做什么、全程不换手），镜头与动作数量要和视频时长匹配（6 秒最多 2 个动作）。\n`;
+  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。\n`;
 
   function buildVideoInstruction(mode) {
     const compact = mode !== 'full';
@@ -148,7 +148,7 @@
 <Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
 
 summary:
-[reference generation] The target video is a single unbroken flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>. She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
+[reference generation] The target video is a single unbroken flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>. The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed. She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
 
 retention_analysis:
 <Subject 1> (appears in [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
@@ -156,7 +156,7 @@ retention_analysis:
 <Subject 2> (appears in [Shot 1]): fully_preserved - the scenery stays consistent.
 
 detailed_description:
-The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. ONE single unbroken continuous shot: no camera cut, no angle change, no new action, no scene change. [Shot 1] Medium shot of <Subject 1>: only micro-motion happens - slow breathing, one soft blink, hair and hem swaying faintly, gentle light flickering. Hand assignment: both hands rest still and never move. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
+The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. Framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1>; the camera never moves and the shot is never re-framed. ONE single unbroken continuous shot: no camera cut, no angle change, no new action, no scene change. [Shot 1] The girl sits still and only micro-motion happens - slow breathing, one soft blink, hair and hem swaying faintly, gentle light flickering. Hand assignment: both hands rest still and never move. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
 
 overall_soundscape:
 A quiet room tone with faint ambience, strictly action-synced to the few visible motions.
@@ -4434,13 +4434,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
   const SCT_WF_QWEN = {"13":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"9:16 (Portrait Widescreen)","megapixels":1.5,"multiple":32}},"475":{"class_type":"LoadImage","inputs":{"image":""}},"476":{"class_type":"UNETLoader","inputs":{"unet_name":"Qwen\\qwen_image_2.1_int8_convrot.safetensors","weight_dtype":"default"}},"477":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_8b_int8_convrot.safetensors","device":"default","type":"qwen_image"}},"478":{"class_type":"VAELoader","inputs":{"vae_name":"qwen_image_2.1_vae_bf16.safetensors"}},"479":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":["13",1],"width":["13",0]}},"480":{"class_type":"VAEDecode","inputs":{"samples":["481",0],"vae":["478",0]}},"481":{"class_type":"KSampler","inputs":{"cfg":1.0,"denoise":1.0,"latent_image":["482",0],"model":["483",0],"negative":["497",1],"positive":["497",0],"sampler_name":"euler","scheduler":"simple","seed":["502",0],"steps":30}},"482":{"class_type":"ComfySwitchNode","inputs":{"on_false":["497",2],"on_true":["479",0],"switch":false}},"483":{"class_type":"QwenImage21Cache","inputs":{"device":"auto","dtype":"default","model":["476",0]}},"487":{"class_type":"SaveImage","inputs":{"filename_prefix":"QW21-%date:yyyyMMddhhmmss%","images":["480",0]}},"497":{"class_type":"TextEncodeQwenImage21","inputs":{"clip":["477",0],"images.image_1":["532",0],"negative_prompt":"","prompt":["571",0],"resolution":0,"vae":["478",0]}},"502":{"class_type":"Seed (rgthree)","inputs":{"seed":-1}},"532":{"class_type":"ImageScaleToTotalPixels","inputs":{"image":["475",0],"megapixels":1.5,"resolution_steps":32,"upscale_method":"lanczos"}},"571":{"class_type":"PrimitiveStringMultiline","inputs":{"value":""}}};
 
-  const SCT_WF_MM = {"10":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},"106":{"class_type":"LTXVConcatAVLatent","inputs":{"audio_latent":["90",1],"video_latent":["118",0]}},"107":{"class_type":"VAEDecode","inputs":{"samples":["113",0],"vae":["26",0]}},"11":{"class_type":"RandomNoise","inputs":{"noise_seed":["12",0]}},"110":{"class_type":"ConditioningZeroOut","inputs":{"conditioning":["6",0]}},"113":{"class_type":"MMH3UltimateUpscale","inputs":{"cfg":1.0,"conditioning":["6",0],"latent":["106",0],"model":["129",0],"negative":["110",0],"noise":["11",0],"sampler":["10",0],"sigmas":["117",1],"temporal_split_param":["98",0]}},"114":{"class_type":"VHS_VideoCombine","inputs":{"audio":["83",0],"filename_prefix":"video/自改二采/二采/minimax_二采_","format":"video/h264-mp4","frame_rate":24.0,"images":["107",0],"loop_count":0,"pingpong":false,"save_output":true}},"117":{"class_type":"SplitSigmas","inputs":{"sigmas":["119",0],"step":["150",0]}},"118":{"class_type":"MinimaxH3LatentUpscaler3D","inputs":{"align":32,"device":"cuda","enable_temporal_chunking":true,"force_unload":true,"latent":["90",0],"mode":"scale by multiplier","mode.scale":["151",0],"model_name":"minimax_h3_latent_upscaler_3d_fp16.safetensors","precision":"fp16"}},"119":{"class_type":"BasicScheduler","inputs":{"denoise":1.0,"model":["129",0],"scheduler":"simple","steps":["149",1]}},"12":{"class_type":"Seed (rgthree)","inputs":{"seed":412998550581804}},"125":{"class_type":"ModelAttentionBackend","inputs":{"attention":"comfy kitchen attention","model":["22",0]}},"129":{"class_type":"ModelPreviewOverrideKJ","inputs":{"jpeg_quality":80,"max_resolution":480,"model":["156",0],"preview_fps":8,"preview_frames":999,"suppress_default_preview":true,"tiny_vae":"taeh3.safetensors","vae":"taeh3.safetensors"}},"14":{"class_type":"BasicGuider","inputs":{"conditioning":["6",0],"model":["129",0]}},"148":{"class_type":"INTConstant","inputs":{"value":4}},"149":{"class_type":"ComfyMathExpression","inputs":{"expression":"a + b","values.a":["150",0],"values.b":["148",0]}},"150":{"class_type":"INTConstant","inputs":{"value":8}},"151":{"class_type":"FloatConstant","inputs":{"value":2.0}},"156":{"class_type":"MiniMaxH3SigmaShift","inputs":{"model":["21",0],"shift_audio":3.0,"shift_video":12.0}},"17":{"class_type":"PrimitiveFloat","inputs":{"value":3.0}},"18":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_int8_convrot.safetensors","device":"default","type":"minimax"}},"19":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},"20":{"class_type":"UNETLoader","inputs":{"unet_name":"h3\\DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors","weight_dtype":"default"}},"21":{"class_type":"LoraLoaderModelOnly","inputs":{"lora_name":"minimax h3\\加速\\TaoMate-H3-3step.safetensors","model":["125",0],"strength_model":1.0}},"22":{"class_type":"MiniMaxH3MemoryEfficientSageAttentionPatch","inputs":{"model":["20",0]}},"24":{"class_type":"LoadImage","inputs":{"image":""}},"26":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},"40":{"class_type":"ComfyMathExpression","inputs":{"expression":"max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17","values.a":["17",0],"values.b":["8",1]}},"6":{"class_type":"MiniMaxH3ReferenceToVideo","inputs":{"audio_vae":["19",0],"clip":["18",0],"height":["8",1],"length":["40",1],"prompt":"","ref_image_size":"match","ref_images.ref_image_0":["24",0],"vae":["26",0],"width":["8",0]}},"7":{"class_type":"SamplerCustomAdvanced","inputs":{"guider":["14",0],"latent_image":["6",1],"noise":["11",0],"sampler":["10",0],"sigmas":["117",0]}},"8":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"16:9 (Widescreen)","megapixels":0.2,"multiple":32}},"83":{"class_type":"VAEDecodeAudio","inputs":{"samples":["113",0],"vae":["19",0]}},"90":{"class_type":"LTXVSeparateAVLatent","inputs":{"av_latent":["7",1]}},"98":{"class_type":"MMH3TemporalSplitParams","inputs":{"anchor_strength":0.99,"chunk_length":153,"temporal_overlap":17}}};
+  const SCT_WF_MM = {"10":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},"106":{"class_type":"LTXVConcatAVLatent","inputs":{"audio_latent":["90",1],"video_latent":["118",0]}},"107":{"class_type":"VAEDecode","inputs":{"samples":["113",0],"vae":["26",0]}},"11":{"class_type":"RandomNoise","inputs":{"noise_seed":["12",0]}},"110":{"class_type":"ConditioningZeroOut","inputs":{"conditioning":["6",0]}},"113":{"class_type":"MMH3UltimateUpscale","inputs":{"cfg":1.0,"conditioning":["6",0],"latent":["106",0],"model":["129",0],"negative":["110",0],"noise":["11",0],"sampler":["10",0],"sigmas":["117",1],"temporal_split_param":["98",0]}},"114":{"class_type":"VHS_VideoCombine","inputs":{"audio":["83",0],"filename_prefix":"video/自改二采/二采/minimax_二采_","format":"video/h264-mp4","frame_rate":24.0,"images":["107",0],"loop_count":0,"pingpong":false,"save_output":true}},"117":{"class_type":"SplitSigmas","inputs":{"sigmas":["119",0],"step":["150",0]}},"118":{"class_type":"MinimaxH3LatentUpscaler3D","inputs":{"align":32,"device":"cuda","enable_temporal_chunking":true,"force_unload":true,"latent":["90",0],"mode":"scale by multiplier","mode.scale":["151",0],"model_name":"minimax_h3_latent_upscaler_3d_fp16.safetensors","precision":"fp16"}},"119":{"class_type":"BasicScheduler","inputs":{"denoise":1.0,"model":["129",0],"scheduler":"simple","steps":["149",1]}},"12":{"class_type":"Seed (rgthree)","inputs":{"seed":412998550581804}},"125":{"class_type":"ModelAttentionBackend","inputs":{"attention":"comfy kitchen attention","model":["22",0]}},"126":{"class_type":"VHS_VideoCombine","inputs":{"audio":["128",0],"filename_prefix":"video/自改二采/一采/minimax_一采_","format":"video/h264-mp4","frame_rate":24.0,"images":["5",0],"loop_count":0,"pingpong":false,"save_output":true}},"128":{"class_type":"VAEDecodeAudio","inputs":{"samples":["7",1],"vae":["19",0]}},"129":{"class_type":"ModelPreviewOverrideKJ","inputs":{"jpeg_quality":80,"max_resolution":480,"model":["156",0],"preview_fps":8,"preview_frames":999,"suppress_default_preview":true,"tiny_vae":"taeh3.safetensors","vae":"taeh3.safetensors"}},"14":{"class_type":"BasicGuider","inputs":{"conditioning":["6",0],"model":["129",0]}},"148":{"class_type":"INTConstant","inputs":{"value":4}},"149":{"class_type":"ComfyMathExpression","inputs":{"expression":"a + b","values.a":["150",0],"values.b":["148",0]}},"150":{"class_type":"INTConstant","inputs":{"value":8}},"151":{"class_type":"FloatConstant","inputs":{"value":2.0}},"156":{"class_type":"MiniMaxH3SigmaShift","inputs":{"model":["21",0],"shift_audio":3.0,"shift_video":12.0}},"17":{"class_type":"PrimitiveFloat","inputs":{"value":3.0}},"18":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_int8_convrot.safetensors","device":"default","type":"minimax"}},"19":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},"20":{"class_type":"UNETLoader","inputs":{"unet_name":"h3\\DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors","weight_dtype":"default"}},"21":{"class_type":"LoraLoaderModelOnly","inputs":{"lora_name":"minimax h3\\加速\\TaoMate-H3-3step.safetensors","model":["125",0],"strength_model":1.0}},"22":{"class_type":"MiniMaxH3MemoryEfficientSageAttentionPatch","inputs":{"model":["20",0]}},"24":{"class_type":"LoadImage","inputs":{"image":""}},"26":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},"40":{"class_type":"ComfyMathExpression","inputs":{"expression":"max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17","values.a":["17",0],"values.b":["8",1]}},"5":{"class_type":"VAEDecode","inputs":{"samples":["7",1],"vae":["26",0]}},"6":{"class_type":"MiniMaxH3ReferenceToVideo","inputs":{"audio_vae":["19",0],"clip":["18",0],"height":["8",1],"length":["40",1],"prompt":"","ref_image_size":"match","ref_images.ref_image_0":["24",0],"vae":["26",0],"width":["8",0]}},"7":{"class_type":"SamplerCustomAdvanced","inputs":{"guider":["14",0],"latent_image":["6",1],"noise":["11",0],"sampler":["10",0],"sigmas":["117",0]}},"8":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"16:9 (Widescreen)","megapixels":0.2,"multiple":32}},"83":{"class_type":"VAEDecodeAudio","inputs":{"samples":["113",0],"vae":["19",0]}},"90":{"class_type":"LTXVSeparateAVLatent","inputs":{"av_latent":["7",1]}},"98":{"class_type":"MMH3TemporalSplitParams","inputs":{"anchor_strength":0.99,"chunk_length":153,"temporal_overlap":17}}};
 
   // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
   const SCT_WF_PATCH = {
     moss: { loader: '1', positive: '4', negative: '5', latent: '6', sampler: '16', save: '18' },
     qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487' },
-    video: { image: '24', prompt: '6', seed: '12', seconds: '17', size: '8', save: '114' }
+    video: { image: '24', prompt: '6', seed: '12', seconds: '17', size: '8',
+             onePass: '126', twoPass: '114', save: '114' }
   };
 
   const SCT_VIDEO_ASPECTS = ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)', '1:1 (Square)',
@@ -4449,6 +4450,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogEl = null;
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
+  let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
 
   function cloneWorkflow(tpl) {
     return JSON.parse(JSON.stringify(tpl));
@@ -4499,11 +4501,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   }
 
   // 从 /history 任务里收集输出（图片走 images，视频走 gifs/videos）
+  // byNode 记录「哪个节点出的」——一采(#126) 与 二采(#114) 要分开推送
   function collectComfyApiOutputs(task, host) {
     const images = [], videos = [];
+    const byNode = {};
     const outputs = (task && task.outputs) || {};
     Object.keys(outputs).forEach((nid) => {
       const out = outputs[nid] || {};
+      const mine = { images: [], videos: [] };
       Object.keys(out).forEach((key) => {
         const arr = out[key];
         if (!Array.isArray(arr)) return;
@@ -4513,12 +4518,18 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             `&subfolder=${encodeURIComponent(item.subfolder || '')}` +
             `&type=${encodeURIComponent(item.type || 'output')}`;
           const fn = String(item.filename).toLowerCase();
-          if (/\.(mp4|webm|mkv|mov|gif)$/.test(fn) || key === 'gifs' || key === 'videos') videos.push(url);
-          else images.push(url);
+          if (/\.(mp4|webm|mkv|mov|gif)$/.test(fn) || key === 'gifs' || key === 'videos') {
+            videos.push(url);
+            mine.videos.push(url);
+          } else {
+            images.push(url);
+            mine.images.push(url);
+          }
         });
       });
+      if (mine.images.length || mine.videos.length) byNode[String(nid)] = mine;
     });
-    return { images, videos };
+    return { images, videos, byNode };
   }
 
   // 提交 API 工作流 + 轮询结果（图片与视频共用；options: {video, timeoutMs, onProgress}）
@@ -4534,18 +4545,24 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     };
 
     let ws = null;
+    let livePromptId = '';
     try {
       ws = new WebSocket(host.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`);
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (!options.onProgress) return;
-          if (msg.type === 'progress' && msg.data) {
-            const { value, max } = msg.data;
+          if (!msg || !msg.type) return;
+          const d = msg.data || {};
+          if (msg.type === 'progress' && options.onProgress) {
+            const { value, max } = d;
             const pct = max ? Math.round((value / max) * 100) : 0;
             options.onProgress(`⏳ 采样中 ${value}/${max} 步 (${pct}%) · 已用 ${since()}`);
-          } else if (msg.type === 'executing' && msg.data && msg.data.node) {
-            options.onProgress(`⚙️ 正在执行节点 ${msg.data.node}… · 已用 ${since()}`);
+          } else if (msg.type === 'executing' && d.node && options.onProgress) {
+            options.onProgress(`⚙️ 正在执行节点 ${d.node}… · 已用 ${since()}`);
+          } else if (msg.type === 'executed' && d.node && options.onOutput) {
+            // ★ 逐节点输出：一采视频一好就先推给界面，不用等整条工作流跑完
+            if (livePromptId && d.prompt_id && String(d.prompt_id) !== String(livePromptId)) return;
+            options.onOutput(String(d.node), d.output || {});
           }
         } catch (_) {}
       };
@@ -4566,6 +4583,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         throw new Error('提交失败：' + detail);
       }
       promptId = data.prompt_id;
+      livePromptId = promptId;      // 让 ws 的 executed 只认本次任务
     } catch (e) {
       if (ws) { try { ws.close(); } catch (_) {} }
       throw e;
@@ -4732,40 +4750,105 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     const wf = cloneWorkflow(SCT_WF_MM);
     const P = SCT_WF_PATCH.video;
+    const vStamp = uniqueFileStamp();
     wf[P.image].inputs.image = uploaded;
     wf[P.prompt].inputs.prompt = String(videoPrompt || '');
     wf[P.seed].inputs.seed = Math.floor(Math.random() * 1125899906842624);
     wf[P.seconds].inputs.value = seconds;
     wf[P.size].inputs.aspect_ratio = opts.aspect || s.comfyVideoAspect || '16:9 (Widescreen)';
     wf[P.size].inputs.megapixels = Math.min(1, Math.max(0.1, parseFloat(s.comfyVideoMegapixels) || 0.2));
-    wf[P.save].inputs.filename_prefix = 'video/SCT_H3/minimax_' + uniqueFileStamp() + '_';
+    // 一采 / 二采 各自的文件名前缀都带唯一戳，且分目录，绝不互相覆盖
+    wf[P.onePass].inputs.filename_prefix = `video/SCT_H3/一采/minimax_${vStamp}_`;
+    wf[P.twoPass].inputs.filename_prefix = `video/SCT_H3/二采/minimax_${vStamp}_`;
 
     container.__sctLastParams = {
-      checkpoint: 'MiniMax H3 int8（二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
+      checkpoint: 'MiniMax H3 int8（一采 + 二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
       steps: '一采 8 + 二采 4', sampler: 'res_multistep', scheduler: 'simple',
       size: `${wf[P.size].inputs.aspect_ratio} / ${wf[P.size].inputs.megapixels} MP`,
       batch: 1, seed: wf[P.seed].inputs.seed, vae: 'minimax_h3_video_vae_fp16 + audio_vae_fp32',
       hires: `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: ['TaoMate-H3-3step（加速，链内固定）'],
+      output: `一采(#${P.onePass}) 先推送 → 二采(#${P.twoPass}) 好了再补`,
       positive: String(videoPrompt || ''), negative: '—'
     };
     container.__sctLastWorkflow = wf;
+
+    // ★ 分阶段推送：一采一好就先显示，二采出来再补上（本机实测一采比二采早 4 分钟以上）
+    const onePassNode = String(P.onePass || '');
+    const twoPassNode = String(P.twoPass || P.save || '');
+    const staged = { one: '', two: '' };
+    let cardShown = false;
+    const stageItems = () => {
+      const arr = [];
+      if (staged.one) arr.push({ url: staged.one, label: '一采 · 低清草稿（先看构图与动作；二采成品还在跑）' });
+      if (staged.two) arr.push({ url: staged.two, label: '二采 · 成品（高清 + 音轨，拿这条用）' });
+      return arr;
+    };
+    const paintStage = (note, running) => {
+      const list = stageItems();
+      if (!list.length) return;
+      cardShown = true;
+      renderBackendVideoCard(container, list, videoPrompt, { note, running });
+    };
 
     renderLoadingCard(container, videoPrompt, `${hint} · 正在装载模型…`, null);
     try {
       const out = await submitComfyApiPrompt(wf, {
         video: true, timeoutMs: 60 * 60 * 1000,
-        onProgress: (t) => renderLoadingCard(container, videoPrompt, `${hint}\n${t}`, null)
+        onProgress: (t) => {
+          if (cardShown) {
+            // 一采卡片已经在显示：只更新顶部那行状态，别把视频卡刷掉
+            const noteEl = container.querySelector('.sct-bk-stage-note span');
+            if (noteEl) noteEl.textContent = `${hint} · ${t}`;
+            return;
+          }
+          renderLoadingCard(container, videoPrompt, `${hint}\n${t}`, null);
+        },
+        onOutput: (nodeId, output) => {
+          let got;
+          try { got = collectComfyApiOutputs({ outputs: { [nodeId]: output } }, getCleanComfyHost()); } catch (_) { return; }
+          if (!got || !got.videos.length) return;
+          if (nodeId === onePassNode && !staged.one) {
+            staged.one = got.videos[0];
+            paintStage('一采已出（低清草稿），二采成品还在跑…', true);
+            showToast('一采视频已出，先看草稿；二采成品还在跑', 'info');
+          } else if (nodeId === twoPassNode && !staged.two) {
+            staged.two = got.videos[0];
+            paintStage('二采成品已出', true);
+          }
+        }
       });
-      renderBackendVideoCard(container, out.videos, videoPrompt);
+
+      // 收尾：用 /history 的最终结果补齐（万一 ws 漏了消息）
+      const byNode = out.byNode || {};
+      if (!staged.one && byNode[onePassNode]?.videos?.length) staged.one = byNode[onePassNode].videos[0];
+      if (!staged.two && byNode[twoPassNode]?.videos?.length) staged.two = byNode[twoPassNode].videos[0];
+      if (!staged.one && !staged.two) {
+        out.videos.forEach((u, i) => { if (i === 0) staged.one = u; else if (i === 1) staged.two = u; });
+      }
+      const finalList = stageItems();
+      if (!finalList.length) {
+        renderErrorCard(container, videoPrompt, '跑完了但没拿到视频文件（去 ComfyUI 的 output/video/SCT_H3 看看）');
+        return false;
+      }
+      paintStage(staged.one && staged.two ? '一采 + 二采 都已出片 ✅' : '出片完成', false);
       const rec = {
         id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        kind: 'video', urls: out.videos, prompt: videoPrompt, at: Date.now()
+        kind: 'video', urls: finalList.map((it) => it.url), videoItems: finalList,
+        prompt: videoPrompt, at: Date.now()
       };
       saveChatBackendCard(container, rec);
-      showToast('视频生成完成！点播放或「⬇️ 保存到手机」', 'success');
+      showToast(staged.two ? '视频生成完成！二采成品在下面那条，可播放或「⬇️ 保存到手机」' : '视频生成完成！', 'success');
       return true;
     } catch (e) {
-      renderErrorCard(container, videoPrompt, e.message);
+      if (cardShown) {
+        const noteEl = container.querySelector('.sct-bk-stage-note span');
+        if (noteEl) noteEl.textContent = '二采中断：' + e.message + '（一采草稿已保留）';
+        const abortBtn = container.querySelector('.sct-bk-abort');
+        if (abortBtn) abortBtn.remove();
+        showToast('二采失败，但一采草稿还在：' + e.message, 'warning');
+      } else {
+        renderErrorCard(container, videoPrompt, e.message);
+      }
       return false;
     }
   }
@@ -5054,33 +5137,51 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   /* ---------------------------- 多后端结果卡与持久化 ---------------------------- */
 
   // 视频卡：<video> 直接播放 + 一键下载到手机
-  function renderBackendVideoCard(container, urls, promptText) {
-    if (!urls || !urls.length) return;
-    container.__sctVideoUrls = urls.slice();
-    const one = (u, i) => `
-      <video class="sct-bk-video" controls playsinline preload="metadata" src="${escapeHtml(u)}"></video>
-      <div class="sct-bk-video-bar">
-        <a class="sct-comfy-btn" href="${escapeHtml(u)}" download="sct_h3_${i + 1}.mp4" target="_blank" rel="noopener">⬇️ 保存到手机</a>
-        <span class="sct-bk-hint">播放卡住就先下载再看 · 文件也留在 ComfyUI 的 output 里</span>
+  // 视频卡：一采 / 二采 可以分别在出片时先推送，所以支持「分阶段渲染」
+  //   items: [{ url, label }] 或 ['url']；opts: { note, running }
+  function renderBackendVideoCard(container, items, promptText, opts = {}) {
+    const list = (items || [])
+      .map((it) => (typeof it === 'string' ? { url: it, label: '' } : (it || {})))
+      .filter((it) => it.url);
+    if (!list.length) return;
+    container.__sctVideoUrls = list.map((it) => it.url);
+    container.__sctVideoItems = list.slice();
+    const running = !!opts.running;
+
+    const one = (it, i) => `
+      <div class="sct-bk-video-block">
+        ${it.label ? `<div class="sct-bk-video-label">${escapeHtml(it.label)}</div>` : ''}
+        <video class="sct-bk-video" controls playsinline preload="metadata" src="${escapeHtml(it.url)}"></video>
+        <div class="sct-bk-video-bar">
+          <a class="sct-comfy-btn" href="${escapeHtml(it.url)}" download="sct_h3_${i + 1}.mp4" target="_blank" rel="noopener">⬇️ 保存到手机</a>
+          <span class="sct-bk-hint">播放卡住就先下载再看 · 文件也留在 ComfyUI 的 output 里</span>
+        </div>
       </div>`;
+
     container.innerHTML = `
       <div class="sct-comfy-card sct-bk-card">
         <div class="sct-comfy-card-header">
           <div class="sct-title"><span>🎬</span><span>MiniMax H3 图生视频</span></div>
           <div class="sct-prompt-preview" title="${encodeURIComponent(String(promptText || ''))}">${escapeHtml(String(promptText || '').slice(0, 40))}…</div>
         </div>
-        <div class="sct-bk-videos">${urls.map(one).join('')}</div>
+        <div class="sct-bk-stage-note"${opts.note ? '' : ' style="display:none;"'}>${running ? '⏳ ' : ''}<span>${escapeHtml(opts.note || '')}</span></div>
+        <div class="sct-bk-videos">${list.map(one).join('')}</div>
         <div class="sct-comfy-footer">
           <button type="button" class="sct-comfy-btn sct-bk-again">🎬 再做一条</button>
           <button type="button" class="sct-comfy-btn sct-bk-params">🧩 本次工作流</button>
+          ${running ? '<button type="button" class="sct-comfy-btn sct-bk-abort">🛑 中止本次视频任务</button>' : ''}
           <button type="button" class="sct-comfy-btn sct-btn-danger sct-bk-close">✕ 关掉这张卡</button>
         </div>
       </div>`;
 
-    bindBackendTap(container.querySelector('.sct-bk-close'), (e) => {
+    bindBackendTap(container.querySelector('.sct-bk-close'), () => {
       const id = container.dataset.sctBkId;
       if (id) removeChatBackendCard(mesIdOf(container), id);
       container.remove();
+    });
+    bindBackendTap(container.querySelector('.sct-bk-abort'), async () => {
+      await clearComfyQueue();
+      renderErrorCard(container, promptText, '你中止了本次视频任务（ComfyUI 排队已清空）');
     });
     bindBackendTap(container.querySelector('.sct-bk-again'), () => {
       openBackendDialog('video', container, container.__sctSourceUrl || '');
@@ -5166,7 +5267,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
         .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
       textEl.appendChild(el);
-      if (rec.kind === 'video') renderBackendVideoCard(el, rec.urls, rec.prompt || '');
+      if (rec.kind === 'video') renderBackendVideoCard(el, rec.videoItems || rec.urls, rec.prompt || '');
       else renderCarouselCard(el, rec.urls, rec.prompt || '', []);
     });
   }
@@ -5202,6 +5303,132 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     } catch (e) {
       if (notify) showToast('腾显存失败：' + (e?.message || e), 'warning');
       return null;
+    }
+  }
+
+  /* ---------------------------------------------------------------------------
+     🧠 让酒馆「主模型」看着图重写视频六段式
+     用的就是酒馆自己的 generateQuietPrompt（当前角色卡 + 当前对话预设 + 这张图），
+     效果等同于你在输入框里发这条要求，但结果不写进聊天，而是直接填进视频提示词框。
+     需要：酒馆 ≥ 1.12 的 generateQuietPrompt + 支持看图的模型 + 打开「媒体内联」。
+     --------------------------------------------------------------------------- */
+  const SIX_SECTION_KEYS = ['subject_definitions', 'summary', 'retention_analysis',
+    'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result || ''));
+      fr.onerror = () => reject(new Error('图片转 Base64 失败'));
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  // 酒馆能不能把图片真的发给模型（ST 的判断在 openai.js 的 isImageInliningSupported 里，
+  // 这里只做插件能做的探测：接口类型 + 「媒体内联」开关）
+  function imageToModelBlockers() {
+    const reasons = [];
+    try {
+      const ctx = getSTContext();
+      if (ctx && ctx.main_api && ctx.main_api !== 'openai') {
+        reasons.push(`当前接口类型是「${ctx.main_api}」，不是聊天补全(openai 兼容)`);
+      }
+    } catch (_) {}
+    try {
+      const cb = document.getElementById('openai_media_inlining');
+      if (cb && cb.checked === false) reasons.push('酒馆设置 → 聊天补全 里的「媒体内联 (Media Inlining)」没开');
+    } catch (_) {}
+    return reasons;
+  }
+
+  // 从主模型回复里抠出六段（容忍 markdown 标题/加粗、代码围栏、前后寒暄），并统一成规范段名
+  function parseSixSectionPrompt(text) {
+    let t = String(text || '').replace(/\r\n/g, '\n').trim();
+    t = t.replace(/```[a-zA-Z]*/g, '').replace(/<\/?video>/gi, '').trim();
+    const positions = [];
+    SIX_SECTION_KEYS.forEach((k) => {
+      const re = new RegExp('(^|\\n)[\\s>*-]*(?:#{1,6}\\s*)?(?:\\*\\*)?\\s*' + k + '\\s*(?:\\*\\*)?\\s*[:：]', 'i');
+      const m = t.match(re);
+      if (m) positions.push({ k, i: m.index + (m[1] ? m[1].length : 0) });
+    });
+    positions.sort((a, b) => a.i - b.i);
+    if (positions.length < 4) return '';
+    const parts = {};
+    positions.forEach((p, n) => {
+      const stop = (n + 1 < positions.length) ? positions[n + 1].i : t.length;
+      let body = t.slice(p.i, stop);
+      body = body.replace(/^[\s>*-]*(?:#{1,6}\s*)?(?:\*\*)?\s*[a-z_]+\s*(?:\*\*)?\s*[:：]\s*/i, '');
+      parts[p.k] = body.replace(/\n{3,}/g, '\n\n').trim();
+    });
+    const lastKey = positions[positions.length - 1].k;
+    if (parts[lastKey]) {
+      const cut = parts[lastKey].search(/\n\s*(?:希望|以上|如果需要|需要我|If you|Hope |Let me know|Note:)/i);
+      if (cut > 0) parts[lastKey] = parts[lastKey].slice(0, cut).trim();
+    }
+    return SIX_SECTION_KEYS.map((k) => `${k}:\n${parts[k] || ''}`).join('\n\n');
+  }
+
+  async function rewriteVideoPromptByMainModel(dialog) {
+    const ctx = getSTContext();
+    const ta = dialog.querySelector('.sct-bk-text');
+    const btn = dialog.querySelector('.sct-bk-ai-rewrite');
+    if (!ta) return;
+    if (typeof ctx?.generateQuietPrompt !== 'function') {
+      showToast('当前酒馆版本没有 generateQuietPrompt，无法用主模型重写（请更新酒馆）', 'warning');
+      return;
+    }
+    if (!sctBackendDialogSource) {
+      showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning');
+      return;
+    }
+    const blockers = imageToModelBlockers();
+    if (blockers.length > 0) {
+      const ok = window.confirm('注意：主模型很可能看不到这张图。\n\n原因：\n· ' + blockers.join('\n· ')
+        + '\n\n另外模型本身也必须支持看图（GPT-4o / Claude / Gemini / Qwen-VL 这类）。\n\n仍然要用主模型重写吗？');
+      if (!ok) return;
+    }
+
+    const draft = String(ta.value || '').trim();
+    const oldText = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
+    try {
+      const blob = await toImageBlob(sctBackendDialogSource);
+      const dataUrl = await blobToDataUrl(blob);
+      const prompt = [
+        '你现在扮演「视频提示词助手」。下面这张图就是这条消息里要拿去做视频的那张画面，请你**看着这张图**，写一份 MiniMax H3 用的六段式英文提示词。',
+        '硬性要求：',
+        '1) 六段齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:',
+        '2) ★最重要：镜头、角度、景别、构图、人物姿势必须与你**看到的这张图完全一致**，不许自己规定景别或镜头运动（不要 medium shot / close-up / wide shot / camera orbits / zoom 这类词）；只描述画面内部的微动（呼吸、眨眼、头发衣摆轻飘、光影闪动）。summary 与 detailed_description 里都要写死这句：The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed.',
+        '3) 人物外观（发色、瞳色、服装、配饰、姿势、背景）必须按你**实际看到的这张图**写；图里看不清或你不确定的部分就写 "as shown in <Picture 1>"，绝不编造。',
+        '4) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
+        '5) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
+        '6) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。',
+        draft ? `\n【初稿（是之前没看图时写的，凡与图不符一律以图为准）】\n${draft}` : ''
+      ].join('\n');
+
+      const reply = await ctx.generateQuietPrompt({
+        quietPrompt: prompt,
+        quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
+        quietToLoud: false,
+        removeReasoning: true,
+        responseLength: 1600
+      });
+
+      const six = parseSixSectionPrompt(reply);
+      if (!six) {
+        ta.value = String(reply || '').trim();
+        showToast('主模型回复里没认出六段结构，已把原文放进框里，你自己改一下', 'warning');
+      } else {
+        ta.value = six;
+        showToast('已用主模型（当前角色卡 + 对话预设 + 这张图）重写完成', 'success');
+      }
+      sctBackendDialogPrefillFromAi = true;   // 场景专属，不覆盖全局默认模板
+      const tagEl = dialog.querySelector('.sct-bk-video-src');
+      if (tagEl) tagEl.textContent = '当前来源：🧠 主模型看图重写的（只用于本条）';
+    } catch (e) {
+      showToast('主模型重写失败：' + (e?.message || e), 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = oldText || '🧠 让主模型看图重写'; }
     }
   }
 
@@ -5263,7 +5490,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     // 🎬 视频提示词预填优先级：聊天模型写好的（本条消息这个槽位） > 设置里的默认模板
     let videoPrefill = '';
-    let videoPrefillFromAi = false;
+    sctBackendDialogPrefillFromAi = false;
     let videoSourceLabel = '设置里的默认模板';
     if (isVideo) {
       const slotIdx = String(anchor?.dataset?.sctSlotIdx ?? '0');
@@ -5271,7 +5498,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         || getChatMessageVideoPrompt(mesIdOf(anchor), slotIdx);
       if (aiVp) {
         videoPrefill = aiVp;
-        videoPrefillFromAi = true;
+        sctBackendDialogPrefillFromAi = true;
         videoSourceLabel = '聊天主模型写好的（可以直接改，也能换成默认模板）';
       } else {
         videoPrefill = String(s.comfyVideoPrompt || '');
@@ -5297,8 +5524,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+              <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
               <button type="button" class="sct-comfy-btn sct-bk-use-default">↩️ 换成设置里的默认模板</button>
-              <span class="sct-bk-hint">当前来源：${escapeHtml(videoSourceLabel)}</span>
+              <span class="sct-bk-hint sct-bk-video-src">当前来源：${escapeHtml(videoSourceLabel)}</span>
             </div>` : ''}
           </div>
           ${isVideo ? `
@@ -5387,6 +5615,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     });
 
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
+    bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
 
     bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
       const ta = overlay.querySelector('.sct-bk-text');
@@ -5410,8 +5639,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (isVideo) {
         saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect });
         // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；
-        // 聊天模型针对本幕写的那份是场景专属的，不该覆盖全局默认
-        if (!videoPrefillFromAi && text !== String(videoPrefill || '').trim()) {
+        // 模型写的 / 看图重写的都是场景专属的，不该覆盖全局默认
+        if (!sctBackendDialogPrefillFromAi && text !== String(videoPrefill || '').trim()) {
           saveSettings({ comfyVideoPrompt: text.slice(0, 20000) });
         }
       } else saveSettings({

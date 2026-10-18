@@ -2871,3 +2871,19 @@
   vertical-align: middle;
   user-select: none;
 }
+
+/* 🎬 一采 / 二采 分阶段推送：每段视频带标题，顶部一行状态 */
+.sct-bk-video-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.sct-bk-video-label {
+  font-size: 12px; font-weight: 600; opacity: 0.9;
+  color: var(--sct-accent, #76ABAE);
+  padding-left: 2px;
+}
+.sct-bk-stage-note {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 8px 6px; padding: 6px 10px;
+  font-size: 11.5px; line-height: 1.5;
+  color: var(--sct-ink-soft, #B0B5B4);
+  background: var(--sct-accent-soft, #76ABAE26);
+  border-radius: var(--sct-radius-sm, 8px);
+}
