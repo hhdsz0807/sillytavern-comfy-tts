@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.4.0';
+  const SCT_BUILD = '2.4.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -167,6 +167,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     //   代价：每次回复会变长、多花 token；关掉就只能用上面的默认模板或手写
     comfyAutoVideoPrompt: true,
     comfyVideoPromptMode: 'compact',   // 'compact' 精简版(单镜头微动, ≤350 词) | 'full' 完整版(可多镜头, ≤900 词)
+    // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
+    comfyVideoDirectorNote: '',
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -4451,6 +4453,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
   let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
+  let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
 
   function cloneWorkflow(tpl) {
     return JSON.parse(JSON.stringify(tpl));
@@ -5389,6 +5392,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
 
     const draft = String(ta.value || '').trim();
+    const noteEl = dialog.querySelector('.sct-bk-director');
+    const directorNote = String(noteEl?.value || '').trim();
+    if (directorNote) saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
     try {
@@ -5403,8 +5409,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         '4) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
         '5) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
         '6) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。',
+        directorNote
+          ? `\n【用户想要的效果（中文指导，必须尽量满足）】\n${directorNote}\n（注意：指导里如果要求在画面里做动作，就把动作写进 [Shot 1] 的画面内部微动里；但"镜头不许动、不许重新取景"这条永远优先，冲突时以镜头不动为准。）`
+          : '',
         draft ? `\n【初稿（是之前没看图时写的，凡与图不符一律以图为准）】\n${draft}` : ''
-      ].join('\n');
+      ].filter(Boolean).join('\n');
 
       const reply = await ctx.generateQuietPrompt({
         quietPrompt: prompt,
@@ -5423,6 +5432,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         showToast('已用主模型（当前角色卡 + 对话预设 + 这张图）重写完成', 'success');
       }
       sctBackendDialogPrefillFromAi = true;   // 场景专属，不覆盖全局默认模板
+      sctBackendDialogRewritten = true;
       const tagEl = dialog.querySelector('.sct-bk-video-src');
       if (tagEl) tagEl.textContent = '当前来源：🧠 主模型看图重写的（只用于本条）';
     } catch (e) {
@@ -5491,6 +5501,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     // 🎬 视频提示词预填优先级：聊天模型写好的（本条消息这个槽位） > 设置里的默认模板
     let videoPrefill = '';
     sctBackendDialogPrefillFromAi = false;
+    sctBackendDialogRewritten = false;
     let videoSourceLabel = '设置里的默认模板';
     if (isVideo) {
       const slotIdx = String(anchor?.dataset?.sctSlotIdx ?? '0');
@@ -5522,6 +5533,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           </div>
           <div class="sct-setting-col">
             <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
+            ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
+            <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图和当前对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
               <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
@@ -5627,9 +5640,25 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     });
 
     bindBackendTap(overlay.querySelector('.sct-bk-go'), async () => {
-      const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
+      let text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
       if (!text) { showToast(isVideo ? '先写视频提示词（六段式）' : '先写编辑指令', 'warning'); return; }
       if (!sctBackendDialogSource) { showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning'); return; }
+
+      // 🧭 填了中文指导但还没重写：先问一句要不要重写（不偷偷多花一次模型调用）
+      const noteEl = overlay.querySelector('.sct-bk-director');
+      const directorNote = String(noteEl?.value || '').trim();
+      if (isVideo && directorNote) {
+        saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
+        if (!sctBackendDialogRewritten) {
+          const wantRewrite = window.confirm('你填了「🧭 中文指导」，但还没让主模型照着重写。\n\n确定 = 先让主模型看图重写（会多一次模型调用），再开始生成\n取消 = 直接按现在框里的提示词生成（中文指导不会生效）');
+          if (wantRewrite) {
+            await rewriteVideoPromptByMainModel(overlay);
+            const after = String(overlay.querySelector('.sct-bk-text')?.value || '').trim();
+            if (!after) { showToast('重写没有产出内容，已取消这次生成', 'warning'); return; }
+            text = after;
+          }
+        }
+      }
       const source = sctBackendDialogSource;
       const seconds = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value) || parseFloat(s.comfyVideoSeconds) || 6;
       const aspect = overlay.querySelector('.sct-bk-aspect')?.value || s.comfyVideoAspect || '16:9 (Widescreen)';
