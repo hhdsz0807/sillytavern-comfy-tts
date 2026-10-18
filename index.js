@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.10.0';
+  const SCT_BUILD = '2.10.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -43,10 +43,10 @@
   // ---------------------------------------------------------------------------
   // 标签格式（这段永远固定：插件靠它认出视频提示词）
   const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
-  const VIDEO_INSTRUCTION_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 镜头怎么处理】第一帧的构图、人物长相、服装、场景必须与参考图 <Picture 1> 一致（不许换人、换景、换画风）；但**镜头不用全程静止**：可以跟着动作推/拉/摇/跟，也可以在同一个场景里换景别。禁止的是"无理由跳到另一个地方 / 换一套打光 / 突然换成另一个机位再切回来"。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
-  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]（3~6 秒片就一镜到底，不写时间戳）：写清这个镜头里人物做什么、镜头怎么动（例如 slight push-in / gentle follow），动作不要塞太多；有台词就按上面的规则把台词写进这一镜。\n`;
-  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；10~15 秒建议 2~3 个镜头，按正文顺序推进动作，每个镜头都写清机位/运镜（推拉摇跟、景别切换都行）与 Hand assignment。\n`;
-  const VIDEO_INSTRUCTION_SHOT_FREE = `5. detailed_description 先写一句全片风格声明，然后**按正文自由发挥**：可以设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），把正文里的动作、情绪和台词都演出来；镜头切换要跟着剧情走，不要无理由乱切；仍然是同一个角色、同一个场景设定、同一套画风。\n`;
+  const VIDEO_INSTRUCTION_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 镜头怎么处理】**分镜由你（AI）自己排**，不用等用户给：第一帧的构图、人物长相、服装、场景必须与参考图 <Picture 1> 一致（不许换人、换景、换画风）；但**镜头不用全程静止**：可以跟着动作推/拉/摇/跟，也可以在同一个场景里换景别。禁止的是"无理由跳到另一个地方 / 换一套打光 / 突然换成另一个机位再切回来"。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
+  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]，**必须按分镜写法标清**：景别（如 medium shot / half body）、机位（与参考图同侧、平视或略低）、运镜（slight push-in / gentle follow）、人物动作、台词（正文有就原样写进引号）、关键音效。首帧构图必须与参考图一致，动作不要塞太多。\n`;
+  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，然后**按分镜表写 2~3 个镜头**：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；**每个镜头都必须标清 景别 / 机位 / 运镜 / 动作 / 台词（正文有就原样）/ 音效**，按正文顺序推进；第一镜与参考图构图一致，之后的镜头可以换景别、可以推拉摇跟，但同一个人物、同一个场景。\n`;
+  const VIDEO_INSTRUCTION_SHOT_FREE = `5. detailed_description 先写一句全片风格声明，然后**自己按正文设计 3~5 个镜头的分镜**：每个镜头写 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 动作 + 台词 + 音效；推拉摇移、跟拍、景别切换、慢动作都可以，切换跟着剧情走；第一镜与参考图构图一致，之后仍是同一个人物、同一个场景、同一套画风。**分镜由你自己决定，不要等用户给。**\n`;
   const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；**角色说的话要在这一段的音轨里有交代**（声音特质、语气、是否听清）；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。\n`;
 
   function defaultVideoRules(mode) {
@@ -77,14 +77,14 @@
     if (override) return `【分镜 / 写作规则（用户自定义，以此为准）】\n${override.slice(0, 6000)}`;
     const m = String(mode || 'compact');
     if (m === 'free') {
-      return '镜头：可以按剧情自由设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），切换要跟着剧情走；但始终是同一个角色、同一个场景设定、同一套 2D 赛璐璐画风。'
+      return '分镜由你自己排（不要等用户给）：按剧情设计 3~5 个镜头，每个镜头写清 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 动作 + 台词 + 音效；推拉摇移、跟拍、景别切换、慢动作都行；第一镜与参考图构图一致，之后仍是同一个人物、同一个场景、同一套 2D 赛璐璐画风。'
         + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement, the line is clearly heard in the audio。';
     }
     if (m === 'full') {
-      return '镜头：首帧与参考图一致；10~15 秒建议 2~3 个镜头，允许推拉摇跟，但不要无理由跳到另一个场景。'
+      return '分镜由你自己排：按正文设计 2~3 个镜头，每个镜头写清 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 动作 + 台词 + 音效；第一镜与参考图构图一致，之后允许推拉摇跟，但不要无理由跳到另一个场景。'
         + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement。';
     }
-    return '镜头：第一帧构图与参考图一致；镜头可以做轻微推近或跟随，但不要跳切、不要换机位。'
+    return '分镜由你自己排：写 1 个 [Shot 1]，并标清 景别 / 机位 / 运镜（轻微推近或跟随）/ 动作 / 台词 / 音效；首帧构图与参考图一致，不要跳切、不要换机位。'
       + '\n台词：正文里角色说了话，就把原句用双引号写进这一镜（语言跟正文一致），并写明 she says it aloud with natural lip movement；没有台词不要编。';
   }
 
@@ -10141,13 +10141,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <div class="sct-hint">开启后：模型每插入一个 <code>&lt;image&gt;</code> 标签，就在后面补一个 <code>&lt;video&gt;…&lt;/video&gt;</code>（第 N 个视频标签配第 N 个图标签，正文里会显示成一枚「🎬 视频提示词已就绪」小徽章）。<br>点图片卡片上的「🎬 视频」，弹窗会**自动填进模型写好的那份**；想临时换就当场改，改完会记成新的默认。</div>
 
             <div class="sct-setting-col">
-              <label for="sct-cfg-video-inst">📐 分镜 / 写作规则（可自己换；留空 = 用内置那套）</label>
-              <textarea id="sct-cfg-video-inst" class="text_pole" rows="6" placeholder="留空 = 用内置规则（六段式 + 首帧与参考图一致 + 允许运镜 + 台词原样演）。填了就整段替换内置规则；<video>…</video> 标签格式由插件固定，别动。">${escapeHtml(s.comfyVideoInstructionText || '')}</textarea>
+              <label for="sct-cfg-video-inst">📐 分镜 / 写作规则（高级 · 平时不用填）</label>
+              <textarea id="sct-cfg-video-inst" class="text_pole" rows="6" placeholder="留空就行：AI 会自己按分镜写（每个镜头标清 景别 / 机位 / 运镜 / 动作 / 台词 / 音效）。只有想强行改掉它的写法时才填；标签格式 <video>…</video> 由插件固定。">${escapeHtml(s.comfyVideoInstructionText || '')}</textarea>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
                 <button type="button" class="sct-comfy-btn" id="sct-btn-fill-video-inst">↩️ 填入内置规则（当模板改）</button>
                 <button type="button" class="sct-comfy-btn" id="sct-btn-clear-video-inst">🧹 清空（回到内置）</button>
               </div>
-              <div class="sct-hint">想换成你自己的分镜写法（比如"分镜表/镜头编号/时长"那套）就填在这里，模型会照它写；内置的三档（精简/完整/自由发挥）只在留空时生效。</div>
+              <div class="sct-hint">这块是"高级覆盖"：留空时 AI 会自己排分镜（精简 1 镜 / 完整 2~3 镜 / 自由发挥 3~5 镜，每镜都有景别·机位·运镜·台词）。填了才会整段替换掉内置写法。</div>
             </div>
 
             <div class="sct-setting-col">
