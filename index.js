@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.8.0';
+  const SCT_BUILD = '2.8.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5714,15 +5714,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const rewriteMode = String(modeSel?.value || getSettings().comfyRewriteMode || 'tavern');
       const profileSel = dialog.querySelector('.sct-bk-profile');
       const presetSel = dialog.querySelector('.sct-bk-preset');
-      const modelSel = dialog.querySelector('.sct-bk-model');
-      const modelIdEl = dialog.querySelector('.sct-bk-model-id');
       const wantProfile = String(profileSel?.value || '').trim();
       const wantPreset = String(presetSel?.value || '').trim();
-      // 手填的模型 ID 优先（解决"清单里没有那个模型"）
-      const wantModel = String(modelIdEl?.value || modelSel?.value || '').trim();
       saveSettings({
         comfyRewriteMode: rewriteMode,
-        comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset, comfyRewriteModel: wantModel
+        comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset
       });
 
       let reply = '';
@@ -5743,7 +5739,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           maxTokens: cur.comfyRewriteMaxTokens
         });
       } else {
-        reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset, model: wantModel }, () =>
+        reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset }, () =>
           ctx.generateQuietPrompt({
             quietPrompt: prompt,
             quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
@@ -5923,10 +5919,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const profileInfo = isVideo ? listConnectionProfiles() : { list: [], current: '' };
     const presetInfo = isVideo ? listChatPresets() : { names: [], current: '' };
     const savedProfile = String(s.comfyRewriteProfile || '');
-    const selectedProfile = profileInfo.list.find((p) => p.id === savedProfile) || null;
-    const modelInfo = isVideo ? listChatModels(selectedProfile ? selectedProfile.model : '') : { names: [], current: '' };
     const savedPreset = String(s.comfyRewritePreset || '');
-    const savedModel = String(s.comfyRewriteModel || '');
     // 看图重写走哪：'tavern' 走酒馆主模型；'api' 走独立 API（地址/Key/模型自己填，留空复用「AI 辅助」那套）
     const rewriteMode = String(s.comfyRewriteMode || 'tavern');
     const apiPrefill = {
@@ -5984,15 +5977,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 </select>
               </div>
               <div class="sct-setting-col">
-                <label>🧠 重写用「模型」</label>
-                <select class="text_pole sct-bk-model">
-                  <option value="">（用该连接配置里存的模型）</option>
-                  ${modelInfo.list.map((m) => `<option value="${escapeHtml(m.value)}" ${m.value === savedModel ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
-                </select>
-                <input type="text" class="text_pole sct-bk-model-id" placeholder="清单里没有？直接填模型 ID" value="${escapeHtml(savedModel)}" style="margin-top:4px;" />
-                <button type="button" class="sct-comfy-btn sct-bk-refresh-models" style="margin-top:4px;" title="临时切到该连接配置读一次模型清单，读完自动切回">🔄 读取该配置的模型清单</button>
-              </div>
-              <div class="sct-setting-col">
                 <label>🧠 重写用「对话预设」（显示预设名）</label>
                 <select class="text_pole sct-bk-preset">
                   <option value="">（跟随酒馆当前${presetInfo.current ? `：${escapeHtml(presetInfo.current)}` : ''}）</option>
@@ -6000,8 +5984,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 </select>
               </div>
             </div>
-            <div class="sct-bk-hint" style="margin-top:2px;">${(profileInfo.list.length || presetInfo.list.length || modelInfo.list.length)
-              ? '这三样都只影响「看图重写」这一次，跑完会<b>自动还原</b>你原来的连接配置 / 模型 / 预设。模型清单只列酒馆当前已加载的；缺哪个就在下面直接填模型 ID，或点「🔄 读取该配置的模型清单」。'
+            <div class="sct-bk-hint" style="margin-top:2px;">${(profileInfo.list.length || presetInfo.list.length)
+              ? '这两样都只影响「看图重写」这一次，跑完会<b>自动还原</b>你原来的连接配置 / 预设。模型不用在这里选：走酒馆主模型时用连接配置自带的模型，走独立 API 时用上面拉到的模型。'
               : '（读不到酒馆的连接配置 / 预设清单 —— 可能「连接配置」扩展没启用，或酒馆版本较旧；这里会自动跟随当前设置）'}</div>` : ''}
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
               <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
@@ -6154,46 +6138,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     };
     overlay.querySelector('.sct-bk-rewrite-mode')?.addEventListener('change', syncRewriteMode);
     syncRewriteMode();
-
-    // 选了别的「连接配置」时，把模型下拉刷新成该配置自带的模型 + 当前已知清单
-    overlay.querySelector('.sct-bk-profile')?.addEventListener('change', (e) => {
-      const id = String(e.target.value || '');
-      const modelSel = overlay.querySelector('.sct-bk-model');
-      const modelIdEl = overlay.querySelector('.sct-bk-model-id');
-      const prof = listConnectionProfiles().list.find((p) => p.id === id);
-      const info = listChatModels(prof ? prof.model : '');
-      if (modelIdEl) modelIdEl.value = prof && prof.model ? prof.model : '';
-      if (!modelSel) return;
-      const keep = modelSel.value;
-      modelSel.innerHTML = `<option value="">（用该连接配置里存的模型）</option>` +
-        info.list.map((m) => `<option value="${escapeHtml(m.value)}"${m.value === keep ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('');
-    });
-
-    // 「🔄 读取该配置的模型清单」：临时切过去让酒馆把清单拉回来，读完自动切回
-    bindBackendTap(overlay.querySelector('.sct-bk-refresh-models'), async () => {
-      const btn = overlay.querySelector('.sct-bk-refresh-models');
-      const profId = String(overlay.querySelector('.sct-bk-profile')?.value || '');
-      if (!profId) { showToast('先在上面选一个「连接配置」', 'warning'); return; }
-      const old = btn ? btn.textContent : '';
-      if (btn) { btn.disabled = true; btn.textContent = '⏳ 读取中…'; }
-      try {
-        await withTemporaryModelSettings({ profile: profId }, async () => {
-          await new Promise((r) => setTimeout(r, 2200));   // 等酒馆把该配置的模型清单拉回来
-        });
-        const info = listChatModels();
-        const sel = overlay.querySelector('.sct-bk-model');
-        if (sel) {
-          const keep = sel.value;
-          sel.innerHTML = `<option value="">（用该连接配置里存的模型）</option>` +
-            info.list.map((m) => `<option value="${escapeHtml(m.value)}"${m.value === keep ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('');
-        }
-        showToast(`读到 ${info.list.length} 个模型（已自动切回原来的连接配置）`, 'info');
-      } catch (e) {
-        showToast('读取模型清单失败：' + (e?.message || e), 'warning');
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = old || '🔄 读取该配置的模型清单'; }
-      }
-    });
 
     bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
       const ta = overlay.querySelector('.sct-bk-text');
