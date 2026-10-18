@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.6.1';
+  const SCT_BUILD = '2.6.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5436,40 +5436,74 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   }
 
   // 对话预设：优先用酒馆的 presetManager，读不到就退回设置面板里的下拉
+  // 对话预设：直接读酒馆设置面板里的下拉 —— option.value 是序号、option.text 才是预设名。
+  // ★ 之前拿 value 当名字显示，所以下拉里是一串 0/1/2/3（用户反馈"谁看得懂"）。
   function listChatPresets() {
-    let names = [];
+    const list = [];
     let current = '';
     try {
-      const pm = getSTContext()?.getPresetManager?.('openai');
-      if (pm?.getPresetList) {
-        const list = pm.getPresetList() || [];
-        names = list.map((p) => (typeof p === 'string' ? p : p?.name)).filter(Boolean);
+      const sel = document.getElementById('settings_preset_openai');
+      if (sel) {
+        [...sel.options].forEach((o) => {
+          const label = String(o.text || '').trim();
+          if (!label) return;
+          list.push({ label, value: String(o.value) });
+        });
+        const cur = sel.selectedOptions && sel.selectedOptions[0];
+        current = cur ? String(cur.text || '').trim() : '';
       }
-      current = pm?.getSelectedPresetName?.() || '';
     } catch (_) {}
-    if (!names.length) {
+    if (!list.length) {
+      // 兜底：presetManager 的 preset_names（名字 → 序号）
       try {
-        const sel = document.getElementById('settings_preset_openai');
-        if (sel) {
-          names = [...sel.options].map((o) => o.value).filter(Boolean);
-          current = current || sel.value || '';
+        const pm = getSTContext()?.getPresetManager?.('openai');
+        const names = pm?.getPresetList?.()?.preset_names;
+        if (names && typeof names === 'object') {
+          Object.keys(names).forEach((name) => list.push({ label: name, value: String(names[name]) }));
         }
+        current = current || (pm?.getSelectedPresetName?.() || '');
       } catch (_) {}
     }
-    return { names, current };
+    return { list, current };
   }
 
-  // 模型清单：酒馆聊天补全里的下拉选项（可把「连接配置自带的模型」排到最前）
+  // 预设「名字」→ 酒馆下拉里的值（序号）；找不到返回空
+  function presetValueOf(label) {
+    try {
+      const sel = document.getElementById('settings_preset_openai');
+      if (!sel) return '';
+      const hit = [...sel.options].find((o) => String(o.text || '').trim() === label);
+      if (hit) return String(hit.value);
+      const pm = getSTContext()?.getPresetManager?.('openai');
+      if (pm?.findPreset) {
+        const v = pm.findPreset(label);
+        if (v !== undefined && v !== null && String(v) !== '') return String(v);
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  // 模型清单：option.value = 模型 id，option.text = 给人看的名字
   function listChatModels(profileModel = '') {
-    const names = [];
+    const list = [];
+    const seen = new Set();
     try {
       const sel = document.getElementById('model_openai_select');
-      if (sel) [...sel.options].forEach((o) => { if (o.value && !names.includes(o.value)) names.push(o.value); });
+      if (sel) {
+        [...sel.options].forEach((o) => {
+          const value = String(o.value || '').trim();
+          if (!value || seen.has(value)) return;
+          seen.add(value);
+          list.push({ value, label: String(o.text || value).trim() || value });
+        });
+      }
     } catch (_) {}
-    if (profileModel && !names.includes(profileModel)) names.unshift(profileModel);
+    if (profileModel && !seen.has(profileModel)) {
+      list.unshift({ value: profileModel, label: `${profileModel}（连接配置里存的）` });
+    }
     let current = '';
     try { current = document.getElementById('model_openai_select')?.value || ''; } catch (_) {}
-    return { names, current };
+    return { list, current };
   }
 
   // 给 <select> 赋值并触发 change（等于用户自己在下拉里选）；选项不存在时可按需补一个
@@ -5505,23 +5539,24 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           await new Promise((r) => setTimeout(r, 1200));
         }
       }
-      // 2) 换模型（等下拉刷新，最多重试 3 次；选项不存在就不硬塞，免得弄脏酒馆的下拉）
+      // 2) 换模型（等下拉刷新，最多重试 3 次；手填的模型 ID 若不在清单里就补一个选项，否则设不上）
       if (model) {
         for (let i = 0; i < 3; i++) {
           const sel = document.getElementById('model_openai_select');
           if (sel && [...sel.options].some((o) => o.value === model)) break;
           await new Promise((r) => setTimeout(r, 500));
         }
-        modelSwapped = setSelectValue(document.getElementById('model_openai_select'), model, false);
+        modelSwapped = setSelectValue(document.getElementById('model_openai_select'), model, true);
       }
-      // 3) 换对话预设
+      // 3) 换对话预设（入参是「名字」，这里换成酒馆下拉里的值=序号）
       if (preset && preset !== origPreset) {
         const pm = getSTContext()?.getPresetManager?.('openai');
-        if (pm?.selectPreset) {
-          await pm.selectPreset(preset);
+        const presetVal = presetValueOf(preset);
+        if (pm?.selectPreset && presetVal) {
+          await pm.selectPreset(presetVal);
           presetSwapped = true;
-        } else {
-          presetSwapped = setSelectValue(document.getElementById('settings_preset_openai'), preset, true);
+        } else if (presetVal) {
+          presetSwapped = setSelectValue(document.getElementById('settings_preset_openai'), presetVal, true);
         }
       }
       return await fn();
@@ -5530,8 +5565,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       try {
         if (presetSwapped) {
           const pm = getSTContext()?.getPresetManager?.('openai');
-          if (pm?.selectPreset && origPreset) await pm.selectPreset(origPreset);
-          else if (origPreset) setSelectValue(document.getElementById('settings_preset_openai'), origPreset, true);
+          const back = presetValueOf(origPreset);   // origPreset 是名字，要换成序号
+          if (pm?.selectPreset && back) await pm.selectPreset(back);
+          else if (back) setSelectValue(document.getElementById('settings_preset_openai'), back, true);
         }
       } catch (_) {}
       try {
@@ -5594,9 +5630,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const profileSel = dialog.querySelector('.sct-bk-profile');
       const presetSel = dialog.querySelector('.sct-bk-preset');
       const modelSel = dialog.querySelector('.sct-bk-model');
+      const modelIdEl = dialog.querySelector('.sct-bk-model-id');
       const wantProfile = String(profileSel?.value || '').trim();
       const wantPreset = String(presetSel?.value || '').trim();
-      const wantModel = String(modelSel?.value || '').trim();
+      // 手填的模型 ID 优先（解决"清单里没有那个模型"）
+      const wantModel = String(modelIdEl?.value || modelSel?.value || '').trim();
       saveSettings({ comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset, comfyRewriteModel: wantModel });
 
       const reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset, model: wantModel }, () =>
@@ -5815,19 +5853,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 <label>🧠 重写用「模型」</label>
                 <select class="text_pole sct-bk-model">
                   <option value="">（用该连接配置里存的模型）</option>
-                  ${modelInfo.names.map((n) => `<option value="${escapeHtml(n)}" ${n === savedModel ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+                  ${modelInfo.list.map((m) => `<option value="${escapeHtml(m.value)}" ${m.value === savedModel ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
                 </select>
+                <input type="text" class="text_pole sct-bk-model-id" placeholder="清单里没有？直接填模型 ID" value="${escapeHtml(savedModel)}" style="margin-top:4px;" />
+                <button type="button" class="sct-comfy-btn sct-bk-refresh-models" style="margin-top:4px;" title="临时切到该连接配置读一次模型清单，读完自动切回">🔄 读取该配置的模型清单</button>
               </div>
               <div class="sct-setting-col">
-                <label>🧠 重写用「对话预设」</label>
+                <label>🧠 重写用「对话预设」（显示预设名）</label>
                 <select class="text_pole sct-bk-preset">
                   <option value="">（跟随酒馆当前${presetInfo.current ? `：${escapeHtml(presetInfo.current)}` : ''}）</option>
-                  ${presetInfo.names.map((n) => `<option value="${escapeHtml(n)}" ${n === savedPreset ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+                  ${presetInfo.list.map((p) => `<option value="${escapeHtml(p.label)}" ${p.label === savedPreset ? 'selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}
                 </select>
               </div>
             </div>
-            <div class="sct-bk-hint" style="margin-top:2px;">${(profileInfo.list.length || presetInfo.names.length || modelInfo.names.length)
-              ? '这三样都只影响「看图重写」这一次，跑完会<b>自动还原</b>你原来的连接配置 / 模型 / 预设。换连接配置会连 API、地址、密钥一起换（跑完就换回来）。'
+            <div class="sct-bk-hint" style="margin-top:2px;">${(profileInfo.list.length || presetInfo.list.length || modelInfo.list.length)
+              ? '这三样都只影响「看图重写」这一次，跑完会<b>自动还原</b>你原来的连接配置 / 模型 / 预设。模型清单只列酒馆当前已加载的；缺哪个就在下面直接填模型 ID，或点「🔄 读取该配置的模型清单」。'
               : '（读不到酒馆的连接配置 / 预设清单 —— 可能「连接配置」扩展没启用，或酒馆版本较旧；这里会自动跟随当前设置）'}</div>` : ''}
             ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
               <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
@@ -5924,16 +5964,44 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
     bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
 
-    // 选了别的「连接配置」时，把模型下拉刷新成该配置自带的模型（其余清单等真正切换时再补）
+    // 选了别的「连接配置」时，把模型下拉刷新成该配置自带的模型 + 当前已知清单
     overlay.querySelector('.sct-bk-profile')?.addEventListener('change', (e) => {
       const id = String(e.target.value || '');
       const modelSel = overlay.querySelector('.sct-bk-model');
-      if (!modelSel) return;
+      const modelIdEl = overlay.querySelector('.sct-bk-model-id');
       const prof = listConnectionProfiles().list.find((p) => p.id === id);
-      const names = listChatModels(prof ? prof.model : '').names;
+      const info = listChatModels(prof ? prof.model : '');
+      if (modelIdEl) modelIdEl.value = prof && prof.model ? prof.model : '';
+      if (!modelSel) return;
       const keep = modelSel.value;
       modelSel.innerHTML = `<option value="">（用该连接配置里存的模型）</option>` +
-        names.map((n) => `<option value="${escapeHtml(n)}"${n === keep ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+        info.list.map((m) => `<option value="${escapeHtml(m.value)}"${m.value === keep ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('');
+    });
+
+    // 「🔄 读取该配置的模型清单」：临时切过去让酒馆把清单拉回来，读完自动切回
+    bindBackendTap(overlay.querySelector('.sct-bk-refresh-models'), async () => {
+      const btn = overlay.querySelector('.sct-bk-refresh-models');
+      const profId = String(overlay.querySelector('.sct-bk-profile')?.value || '');
+      if (!profId) { showToast('先在上面选一个「连接配置」', 'warning'); return; }
+      const old = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 读取中…'; }
+      try {
+        await withTemporaryModelSettings({ profile: profId }, async () => {
+          await new Promise((r) => setTimeout(r, 2200));   // 等酒馆把该配置的模型清单拉回来
+        });
+        const info = listChatModels();
+        const sel = overlay.querySelector('.sct-bk-model');
+        if (sel) {
+          const keep = sel.value;
+          sel.innerHTML = `<option value="">（用该连接配置里存的模型）</option>` +
+            info.list.map((m) => `<option value="${escapeHtml(m.value)}"${m.value === keep ? ' selected' : ''}>${escapeHtml(m.label)}</option>`).join('');
+        }
+        showToast(`读到 ${info.list.length} 个模型（已自动切回原来的连接配置）`, 'info');
+      } catch (e) {
+        showToast('读取模型清单失败：' + (e?.message || e), 'warning');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = old || '🔄 读取该配置的模型清单'; }
+      }
     });
 
     bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
