@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.15.0';
+  const SCT_BUILD = '2.16.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -207,6 +207,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyVideoInstructionText: '',
     // 🔊 提交视频时，把正文里识别到的台词追加进提示词（不重写也能念出来）
     comfyVideoSpeakLines: true,
+    // 🎭 换头换装（动作迁移）：参考视频当"动作模板"(AddGuide frame_idx=0) + 角色图当身份 + body_swap 触发词
+    comfyH3SwapMode: false,
+    comfyH3SwapLora: 'minimax_h3_character_swap_v1.1_ref2va_fro.safetensors',
+    comfyH3SwapLoraStrength: 1.0,
+    comfyH3DmadLora: '',                                             // 加速 LoRA（留空 = 用内置的 TaoMate-H3-3step）
+    comfyH3DmadLoraStrength: 1.0,
+    comfyH3SwapPrompt: 'body_swap: 将参考视频里的角色用 <Picture 1> 的角色进行替换，保留参考视频的动作、表演节奏、镜头运动与背景；人物身份、脸型、五官、发色、瞳色、服装严格按 <Picture 1>。',
+    comfyH3KeepRefVideoAudio: true,
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
     // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
@@ -4558,6 +4566,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return await uploadComfyInputImage(host, blob, name, '');
   }
 
+  // 本机 ComfyUI 里「可用的 LoRA 文件名」清单（来自 /object_info，用于开跑前预检）
+  let sctComfyLoraCache = null;
+  async function fetchComfyLoraList() {
+    if (Array.isArray(sctComfyLoraCache)) return sctComfyLoraCache;
+    try {
+      const host = getCleanComfyHost();
+      const res = await fetch(`${host}/object_info/LoraLoaderModelOnly`);
+      const j = await res.json();
+      const node = j?.LoraLoaderModelOnly || Object.values(j || {})[0];
+      const arr = node?.input?.required?.lora_name?.[0];
+      sctComfyLoraCache = Array.isArray(arr) ? arr.map((x) => String(x)) : [];
+    } catch (_) { sctComfyLoraCache = []; }
+    return sctComfyLoraCache;
+  }
+
   // 从 /history 任务里收集输出（图片走 images，视频走 gifs/videos）
   // byNode 记录「哪个节点出的」——一采(#126) 与 二采(#114) 要分开推送
   function collectComfyApiOutputs(task, host) {
@@ -4892,12 +4915,66 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       wf[P.prompt].inputs.prompt = String(videoPrompt || '') + refClause;
     }
 
+    // 🎭 换头换装（动作迁移）：参考视频 → MiniMaxH3AddGuide(frame_idx=0) + character_swap LoRA + body_swap 触发词
+    const loraNote = ['TaoMate-H3-3step（加速，链内固定）'];
+    const swapMode = !!opts.swapMode && !!uploadedVideo;
+    if (opts.swapMode && !uploadedVideo) {
+      showToast('「🎭 换头换装」需要先选一段参考视频，这次按普通图生视频跑', 'warning');
+    }
+    if (swapMode) {
+      const wantSwap = String(s.comfyH3SwapLora || '').trim();
+      const loras = await fetchComfyLoraList();
+      if (wantSwap && loras.length) {
+        const norm = (v) => String(v).replace(/\\/g, '/').trim();
+        if (!loras.some((n) => norm(n) === norm(wantSwap))) {
+          const msg = `找不到角色替换 LoRA：${wantSwap}\n\n下载后放到 ComfyUI/models/loras/（推荐 80MB 的 v1.1）：\nhttps://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/tree/main/loras\n\n或者在插件设置里把它改成你已有的文件名。`;
+          renderErrorCard(container, videoPrompt, msg, [], taskKey);
+          showToast('缺「角色替换 LoRA」，已中止（避免白跑 20 分钟）', 'error');
+          return false;
+        }
+      }
+      const wantDmad = String(s.comfyH3DmadLora || '').trim();
+      if (wantDmad) {
+        wf['21'].inputs.lora_name = wantDmad;
+        wf['21'].inputs.strength_model = Math.min(2, Math.max(0.1, parseFloat(s.comfyH3DmadLoraStrength) || 1.0));
+        loraNote[0] = `${wantDmad}（加速）`;
+      }
+      // 链序照作者工作流：UNET → 预处理 → 加速 LoRA → character_swap LoRA → 预览 → 采样
+      wf['156'].inputs.model = ['125', 0];
+      wf['711'] = {
+        class_type: 'LoraLoaderModelOnly',
+        inputs: {
+          lora_name: wantSwap,
+          model: ['21', 0],
+          strength_model: Math.min(2, Math.max(0.1, parseFloat(s.comfyH3SwapLoraStrength) || 1.0))
+        }
+      };
+      wf['129'].inputs.model = ['711', 0];
+      loraNote.push(`${wantSwap}（角色替换 · strength ${Math.min(2, Math.max(0.1, parseFloat(s.comfyH3SwapLoraStrength) || 1.0))}）`);
+      // 参考视频当动作模板（frame_idx=0：与生成画面共享空间/时间网格）
+      wf['712'] = {
+        class_type: 'MiniMaxH3AddGuide',
+        inputs: { positive: ['6', 0], latent: ['6', 1], vae: ['26', 0], image: ['700', 0], frame_idx: 0 }
+      };
+      wf['14'].inputs.conditioning = ['712', 0];
+      if (wf['110']) wf['110'].inputs.conditioning = ['712', 0];
+      if (wf['113']) wf['113'].inputs.conditioning = ['712', 0];
+      // 沿用参考视频的原声（真实人物视频里通常有说话声）
+      if (s.comfyH3KeepRefVideoAudio !== false) {
+        if (wf['126']) wf['126'].inputs.audio = ['700', 2];
+        if (wf['114']) wf['114'].inputs.audio = ['700', 2];
+      }
+      // body_swap: 触发词 + 换人说明
+      const swapClause = String(s.comfyH3SwapPrompt || '').trim();
+      if (swapClause) wf[P.prompt].inputs.prompt = String(wf[P.prompt].inputs.prompt || '') + '\n\n' + swapClause;
+    }
+
     container.__sctLastParams = {
       checkpoint: 'MiniMax H3 int8（一采 + 二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
       steps: '一采 8 + 二采 4', sampler: 'res_multistep', scheduler: 'simple',
       size: `${wf[P.size].inputs.aspect_ratio} / ${wf[P.size].inputs.megapixels} MP`,
       batch: 1, seed: wf[P.seed].inputs.seed, vae: 'minimax_h3_video_vae_fp16 + audio_vae_fp32',
-      hires: onePassOnly ? '只跑一采' : `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: ['TaoMate-H3-3step（加速，链内固定）'],
+      hires: onePassOnly ? '只跑一采' : `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: loraNote,
       output: `一采(#${P.onePass}) 先推送 → 二采(#${P.twoPass}) 好了再补`,
       positive: String(videoPrompt || ''), negative: '—'
     };
@@ -6275,6 +6352,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <input type="file" accept="video/*" class="sct-bk-refvid-file" style="display:none;" />
               <span class="sct-bk-hint sct-bk-refvid-name">${sctBackendDialogRefVideo ? escapeHtml(sctBackendDialogRefVideo.name || '已选一段视频') : '没选就按普通「图生视频」跑'}</span>
               <div class="sct-bk-hint"><b>角色替换玩法</b>：图一＝要用的角色，这段视频＝动作/镜头/背景来源 → 「<b>把图一的角色替换到这段视频里</b>」。动作、运镜、背景照视频走，人物长相按图一。</div>
+              <label class="sct-bk-check" for="sct-bk-swapmode"><input type="checkbox" id="sct-bk-swapmode" class="sct-bk-swapmode" ${s.comfyH3SwapMode ? 'checked' : ''} /> <b>🎭 换头换装（动作迁移 · 更保脸）</b><span class="sct-bk-hint"> — 把参考视频当动作模板（AddGuide，frame_idx=0）+ 挂 character_swap LoRA + 自动加 <code>body_swap:</code> 触发词；需要 LoRA：<code>${escapeHtml(String(s.comfyH3SwapLora || '（未设置）'))}</code>（放 ComfyUI 的 <code>models/loras/</code>）</span></label>
             </div>
           </div>` : `
           <div class="sct-bk-two">
@@ -6374,7 +6452,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       sctBackendDialogRefVideo = f;
       const tag = overlay.querySelector('.sct-bk-refvid-name');
       if (tag) tag.textContent = `已选：${f.name}（${(f.size / 1048576).toFixed(1)} MB）`;
-      showToast('参考视频已选：开始后会先把图一的角色替换进这段视频的动作里', 'info');
+      // 选了参考视频 → 默认勾上「换头换装」（要的是保脸效果）
+      const swapBox = overlay.querySelector('.sct-bk-swapmode');
+      if (swapBox && !swapBox.checked) {
+        swapBox.checked = true;
+        showToast('已自动勾上「🎭 换头换装（动作迁移）」：会挂 character_swap LoRA + 加 body_swap 触发词', 'info');
+      } else {
+        showToast('参考视频已选：开始后会先把图一的角色替换进这段视频的动作里', 'info');
+      }
     });
 
     // ➕ 第二张参考图：从聊天里别的图选，或从相册选
@@ -6522,7 +6607,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly, refVideo: sctBackendDialogRefVideo });
+      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly, refVideo: sctBackendDialogRefVideo, swapMode: !!overlay.querySelector('.sct-bk-swapmode')?.checked });
       else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
   }
