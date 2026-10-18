@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.6.0';
+  const SCT_BUILD = '2.6.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5635,6 +5635,73 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
   /* ------------------------------- 编辑 / 视频对话框 ------------------------------- */
 
+  /* ---------------------------------------------------------------------------
+     卡片按钮的「总部兜底」：在聊天区装一次委托监听（捕获阶段）。
+     不管卡片是哪一次渲染出来的、有没有成功绑上按钮事件、页面更新后 DOM 有没有被重刷，
+     点「✏️ 编辑 / 🎬 视频 / 立即开始生图 / 🔄 重新生成」都能用。
+     --------------------------------------------------------------------------- */
+  function cardCurrentImage(container) {
+    try {
+      const cardId = container?.dataset?.sctCardId;
+      const st = cardId ? cardStateMap.get(cardId) : null;
+      if (st && Array.isArray(st.images) && st.images.length) {
+        const url = st.images[((st.currentIdx % st.images.length) + st.images.length) % st.images.length];
+        return { url: url || '', prompt: st.prompt || '' };
+      }
+    } catch (_) {}
+    // 兜底：直接从 DOM 里读当前显示的那张
+    try {
+      const img = container?.querySelector?.('.sct-comfy-viewport img');
+      const src = img ? String(img.getAttribute('src') || '') : '';
+      return { url: src, prompt: container?.dataset?.sctPrompt || '' };
+    } catch (_) { return { url: '', prompt: '' }; }
+  }
+
+  function openBackendDialogSafe(kind, anchor, sourceUrl) {
+    try {
+      openBackendDialog(kind, anchor, sourceUrl);
+      return true;
+    } catch (e) {
+      console.error('[SCT] 打开弹窗失败：', e);
+      showToast('打开弹窗失败：' + (e?.message || e) + '（详情见控制台）', 'error');
+      return false;
+    }
+  }
+
+  function installCardActionDelegate() {
+    const chatRoot = document.getElementById('chat');
+    if (!chatRoot || chatRoot.__sctActionDelegate) return;
+    chatRoot.__sctActionDelegate = true;
+    chatRoot.addEventListener('click', (e) => {
+      const t = e.target && e.target.closest
+        ? e.target.closest('.sct-bk-edit-btn, .sct-bk-video-btn, .sct-start-draw, .sct-retry-btn')
+        : null;
+      if (!t) return;
+      const container = t.closest('.sct-comfy-card-container');
+      if (!container) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const prompt = String(container.dataset.sctPrompt || '');
+      const taskKey = container.dataset.sctTaskKey || null;
+      const textEl = container.closest('.mes')?.querySelector('.mes_text');
+      try {
+        if (t.classList.contains('sct-bk-edit-btn') || t.classList.contains('sct-bk-video-btn')) {
+          const kind = t.classList.contains('sct-bk-video-btn') ? 'video' : 'edit';
+          const { url } = cardCurrentImage(container);
+          if (!url) { showToast('这张卡的图片信息丢了：请点「🔄 重新生成」再来', 'warning'); return; }
+          openBackendDialogSafe(kind, container, url);
+          return;
+        }
+        // 立即开始生图 / 重新生成
+        if (taskKey) sctDrawingTasks.delete(taskKey);
+        triggerComfyDraw(prompt, container, detectActiveLoras(textEl?.textContent || '', prompt), taskKey);
+      } catch (err) {
+        console.error('[SCT] 卡片按钮出错：', err);
+        showToast('操作失败：' + (err?.message || err), 'error');
+      }
+    }, true);
+  }
+
   function closeBackendDialog() {
     if (sctBackendDialogEsc) {
       document.removeEventListener('keydown', sctBackendDialogEsc, true);
@@ -6988,6 +7055,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   }
 
   function scanAllMessages() {
+    installCardActionDelegate();   // 每次扫描顺手确保「卡片按钮委托」在（幂等）
     document.querySelectorAll('#chat .mes').forEach(processSingleMessage);
   }
 
