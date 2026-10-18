@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.12.3';
+  const SCT_BUILD = '2.12.4';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5452,19 +5452,39 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
+  // 按卡片在 DOM 里的真实位置切「这张图上方那段」：
+  // 上一张卡片之后 → 这张卡片之前的所有文字（不跨图片，也不往更前面翻）。
+  // 这样即使卡片是别的路径建的、没带上 __sctScriptText，也能切对。
+  function textBeforeCard(anchor) {
+    try {
+      const mesText = anchor?.closest?.('.mes_text');
+      if (!mesText || !anchor) return '';
+      const cards = [...mesText.querySelectorAll('.sct-comfy-card-container')];
+      const idx = cards.indexOf(anchor);
+      const prev = idx > 0 ? cards[idx - 1] : null;
+      const walker = document.createTreeWalker(mesText, NodeFilter.SHOW_TEXT, null);
+      let out = '';
+      let n = walker.nextNode();
+      while (n) {
+        const beforeAnchor = !!(n.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING);
+        if (beforeAnchor) {
+          const beforePrev = prev ? !!(n.compareDocumentPosition(prev) & Node.DOCUMENT_POSITION_FOLLOWING) : false;
+          if (!beforePrev) out += String(n.nodeValue || '') + ' ';
+        }
+        n = walker.nextNode();
+      }
+      return out.replace(/\s+/g, ' ').trim();
+    } catch (_) { return ''; }
+  }
+
   // 从正文里抓「角色说的话」：中文引号「」『』“” 和英文双引号都认，最多取 3 句
   function extractDialogueLines(anchor) {
     let t = '';
-    // ★ 以 <image> 标签为界：上一张图的标签结束 → 这张图的标签开始，中间这一整段正文
-    //   就是这张图的正文（图片后面的文字属于下一张图；也不往上一张图之前翻）。
-    if (typeof anchor?.__sctScriptText === 'string') {
+    // ★ 以卡片位置为界：上一张卡片之后 → 这张卡片之前，这段正文就是这张图的（不跨图片）。
+    if (typeof anchor?.__sctScriptText === 'string' && anchor.__sctScriptText) {
       t = String(anchor.__sctScriptText || '');
     } else {
-      try {
-        const mes = anchor?.closest?.('.mes');
-        const box = mes?.querySelector?.('.mes_text');
-        t = String(box?.innerText || box?.textContent || '');
-      } catch (_) {}
+      t = textBeforeCard(anchor);   // 现场按 DOM 位置切，绝不退回整条消息
     }
     if (!t) return [];
     t = t.replace(/image###[\s\S]*?###/g, ' ').replace(/<video>[\s\S]*?<\/video>/gi, ' ')
@@ -5484,43 +5504,27 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return out.slice(0, 3);
   }
 
-  // 抓「这条消息」的正文：作为【这一幕的正文】显式塞进重写要求里，
-  // 免得聊天太长、上下文被截断时模型看不到图片前面的剧情
+  // 抓这张图「上方那段」正文：作为【这一幕的正文】显式塞进重写要求里。
+  // 位置判定：上一张卡片之后 → 这张卡片之前（不跨图片，也不退回整条消息）
   function extractSceneText(anchor) {
-    // ★ 只取「这张图上面那段」正文（图片后面的内容属于下一张图）
-    if (typeof anchor?.__sctScriptText === 'string') {
-      let t = String(anchor.__sctScriptText || '');
-      t = t
-        .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
-        .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
-        .replace(/video###[\s\S]*?###/gi, ' ')
-        .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
-        .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
-        .replace(/image###[\s\S]*?###/gi, ' ')
-        .replace(/🎬\s*视频提示词已就绪/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
+    let raw = '';
+    if (typeof anchor?.__sctScriptText === 'string' && anchor.__sctScriptText) {
+      raw = String(anchor.__sctScriptText || '');
+    } else {
+      raw = textBeforeCard(anchor);
     }
-    try {
-      const mes = anchor?.closest?.('.mes');
-      const box = mes?.querySelector?.('.mes_text');
-      if (!box) return '';
-      let t = String(box.innerText || box.textContent || '');
-      t = t
-        .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
-        .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
-        .replace(/video###[\s\S]*?###/gi, ' ')
-        .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
-        .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
-        .replace(/image###[\s\S]*?###/gi, ' ')
-        .replace(/🎬\s*视频提示词已就绪/g, ' ')
-        .replace(/[ \t]+\n/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .replace(/[ \t]{2,}/g, ' ')
-        .trim();
-      return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
-    } catch (_) { return ''; }
+    if (!raw) return '';
+    let t = raw
+      .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
+      .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
+      .replace(/video###[\s\S]*?###/gi, ' ')
+      .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
+      .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
+      .replace(/image###[\s\S]*?###/gi, ' ')
+      .replace(/🎬\s*视频提示词已就绪/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
   }
 
   // ---- 读酒馆「已经保存好」的三样东西：连接配置 / 模型 / 对话预设 ----
