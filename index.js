@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.16.1';
+  const SCT_BUILD = '2.17.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -214,6 +214,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyH3DmadLora: '',                                             // 加速 LoRA（留空 = 用内置的 TaoMate-H3-3step）
     comfyH3DmadLoraStrength: 1.0,
     comfyH3SwapPrompt: 'body_swap: 将参考视频里的角色用 <Picture 1> 的角色进行替换，保留参考视频的动作、表演节奏、镜头运动与背景；人物身份、脸型、五官、发色、瞳色、服装严格按 <Picture 1>。',
+    // 🎨 换人后的画风（实测：画风上限由参考图决定，提示词只是微调；长句写实描述会反向变平涂）
+    comfyH3SwapStyle: 'video',      // 'video' 跟参考视频 | 'realistic' 写实实拍 | 'anime' 纯平涂2D | 'custom'
+    comfyH3SwapStyleCustom: '',
     comfyH3KeepRefVideoAudio: true,
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
@@ -4971,6 +4974,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       // body_swap: 触发词 + 换人说明
       const swapClause = String(s.comfyH3SwapPrompt || '').trim();
       if (swapClause) wf[P.prompt].inputs.prompt = String(wf[P.prompt].inputs.prompt || '') + '\n\n' + swapClause;
+      // 🎨 画风句（实测：写实要短、要英文；长句中式描述会反向变平涂）
+      const styleKey = String(opts.swapStyle || s.comfyH3SwapStyle || 'video');
+      const styleSentence = styleKey === 'realistic'
+        ? 'Photorealistic live-action footage: real human skin with pores, real hair strands, real fabric, natural studio lighting, 4K photo look. No anime, no cel shading, no cartoon, no illustration, realistic human anatomy.'
+        : (styleKey === 'anime'
+          ? 'Pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere.'
+          : (styleKey === 'custom' ? String(s.comfyH3SwapStyleCustom || '').trim() : ''));
+      if (styleSentence) {
+        wf[P.prompt].inputs.prompt = String(wf[P.prompt].inputs.prompt || '') + '\n' + styleSentence;
+        loraNote.push(`画风：${styleKey === 'realistic' ? '写实实拍' : (styleKey === 'anime' ? '平涂 2D' : '自定义')}`);
+      } else {
+        loraNote.push('画风：跟参考视频');
+      }
     }
 
     container.__sctLastParams = {
@@ -6357,6 +6373,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <span class="sct-bk-hint sct-bk-refvid-name">${sctBackendDialogRefVideo ? escapeHtml(sctBackendDialogRefVideo.name || '已选一段视频') : '没选就按普通「图生视频」跑'}</span>
               <div class="sct-bk-hint"><b>角色替换玩法</b>：图一＝要用的角色，这段视频＝动作/镜头/背景来源 → 「<b>把图一的角色替换到这段视频里</b>」。动作、运镜、背景照视频走，人物长相按图一。</div>
               <label class="sct-bk-check" for="sct-bk-swapmode"><input type="checkbox" id="sct-bk-swapmode" class="sct-bk-swapmode" ${s.comfyH3SwapMode ? 'checked' : ''} /> <b>🎭 换头换装（动作迁移 · 更保脸）</b><span class="sct-bk-hint"> — 把参考视频当动作模板（AddGuide，frame_idx=0）+ 挂 character_swap LoRA + 自动加 <code>body_swap:</code> 触发词；需要 LoRA：<code>${escapeHtml(String(s.comfyH3SwapLora || '（未设置）'))}</code>（放 ComfyUI 的 <code>models/loras/</code>）</span></label>
+              <div class="sct-setting-col" style="max-width:320px;">
+                <label for="sct-bk-swapstyle">🎨 换人后画风</label>
+                <select class="text_pole sct-bk-swapstyle" id="sct-bk-swapstyle">
+                  <option value="video" ${String(s.comfyH3SwapStyle || 'video') === 'video' ? 'selected' : ''}>跟参考视频（不加风格句 · 实测最稳）</option>
+                  <option value="realistic" ${s.comfyH3SwapStyle === 'realistic' ? 'selected' : ''}>写实实拍（短英文句 · 参考视频是真人时用）</option>
+                  <option value="anime" ${s.comfyH3SwapStyle === 'anime' ? 'selected' : ''}>纯平涂 2D 赛璐璐（要动漫感时用）</option>
+                  <option value="custom" ${s.comfyH3SwapStyle === 'custom' ? 'selected' : ''}>自定义（用设置里那句）</option>
+                </select>
+                <div class="sct-bk-hint">⚠️ 实测：<b>画风上限由参考图决定</b>——你给动漫图，出来就是动漫脸（跟画风选项无关）；想要真人质感，参考图得换真人照片。长句中式"写实"描述会<b>反向变平涂</b>，所以写实选项用的是短英文句。</div>
+              </div>
             </div>
           </div>` : `
           <div class="sct-bk-two">
@@ -6453,8 +6479,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     refVidFile?.addEventListener('change', () => {
       const f = refVidFile.files && refVidFile.files[0];
       if (!f) return;
-      sctBackendDialogRefVideo = f;
-      const tag = overlay.querySelector('.sct-bk-refvid-name');
+      sctBackendDialogRefVideo = f;      const tag = overlay.querySelector('.sct-bk-refvid-name');
       if (tag) tag.textContent = `已选：${f.name}（${(f.size / 1048576).toFixed(1)} MB）`;
       // 选了参考视频 → 默认勾上「换头换装」（要的是保脸效果）
       const swapBox = overlay.querySelector('.sct-bk-swapmode');
@@ -6611,7 +6636,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly, refVideo: sctBackendDialogRefVideo, swapMode: !!overlay.querySelector('.sct-bk-swapmode')?.checked });
+      if (isVideo) await triggerComfyH3Video(source, text, cardEl, {
+        seconds, aspect, onePassOnly,
+        refVideo: sctBackendDialogRefVideo,
+        swapMode: !!overlay.querySelector('.sct-bk-swapmode')?.checked,
+        swapStyle: String(overlay.querySelector('.sct-bk-swapstyle')?.value || '')
+      });
       else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
   }
