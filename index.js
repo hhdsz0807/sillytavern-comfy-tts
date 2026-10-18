@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.14.1';
+  const SCT_BUILD = '2.15.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4505,6 +4505,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
   let sctBackendDialogRef2 = null;        // 编辑弹窗的「第二张参考图」（URL / File，可选）
+  let sctBackendDialogRefVideo = null;    // 视频弹窗的「参考视频」（File，可选 → H3 ref_videos）
   let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
   let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
   let sctApiModelCache = [];                   // 独立 API「连接」后拿到的模型清单（内存缓存，关掉弹窗再开还在）
@@ -4832,6 +4833,22 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       renderErrorCard(container, videoPrompt, '源图上传失败：' + e.message);
       return false;
     }
+    // 🎞 参考视频（可选）：角色替换 —— 图一的角色 + 这段视频的动作/镜头/背景
+    let uploadedVideo = '';
+    if (opts.refVideo && typeof opts.refVideo === 'object' && typeof opts.refVideo.size === 'number') {
+      try {
+        renderLoadingCard(container, videoPrompt, '📤 正在上传参考视频…', null);
+        const host = getCleanComfyHost();
+        const vf = opts.refVideo;
+        const ext = (String(vf.name || '').match(/\.(mp4|webm|mkv|mov|gif)$/i) || ['.mp4'])[0].toLowerCase();
+        const vname = `sct_refvideo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${ext}`;
+        uploadedVideo = await uploadComfyInputImage(host, vf, vname, '');
+        showToast('参考视频已上传：这次按「角色替换」跑（动作镜头照视频，长相照图一）', 'info');
+      } catch (e) {
+        uploadedVideo = '';
+        showToast('参考视频上传失败，这次退回普通图生视频：' + e.message, 'warning');
+      }
+    }
 
     const wf = cloneWorkflow(SCT_WF_MM);
     const P = SCT_WF_PATCH.video;
@@ -4848,6 +4865,31 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     if (onePassOnly) {
       // 摘掉二采的输出节点 → ComfyUI 只执行一采那条链（二采的上游不会被执行）
       try { delete wf[P.twoPass]; } catch (_) {}
+    }
+    // 🎞 参考视频 → H3 的 ref_videos（IMAGE 帧，24fps）+ ref_video_audios（原声）
+    if (uploadedVideo) {
+      wf['700'] = {
+        class_type: 'VHS_LoadVideoPath',
+        inputs: {
+          video: uploadedVideo,
+          force_rate: 24,
+          custom_width: 0,
+          custom_height: 0,
+          frame_load_cap: frames,      // 只取目标长度，别把整段长视频全读进来
+          skip_first_frames: 0,
+          select_every_nth: 1,
+          format: 'None'
+        }
+      };
+      if (!wf[P.prompt].inputs) wf[P.prompt].inputs = {};
+      wf[P.prompt].inputs['ref_videos.ref_video_0'] = ['700', 0];
+      // 保留参考视频的原声（H3 的 ref_video_audio 会一起条件化音频）
+      try {
+        wf[P.prompt].inputs['ref_video_audios.ref_video_audio_0'] = ['700', 2];
+      } catch (_) {}
+      // 在六段式后面补一句"谁是谁"的定位，免得把视频里的人当成主角
+      const refClause = '\n\n[Reference video (Video 1): keep its motion, timing, camera movement, framing and background. Replace the performer with the character from <Picture 1>, keeping her face, hair, eye colour, body proportions and outfit exactly as in <Picture 1>. Do not copy the performer\'s identity from the reference video.]';
+      wf[P.prompt].inputs.prompt = String(videoPrompt || '') + refClause;
     }
 
     container.__sctLastParams = {
@@ -6225,7 +6267,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 <option value="none">🚫 不用（不写进提示词）</option>
               </select>
             </div>`).join('')}
-          </div>` : ''}` : `
+          </div>` : ''}
+          <div class="sct-bk-srcrow" style="margin-top:6px;">
+            <div class="sct-bk-srcside">
+              <div class="sct-bk-srctag">🎞 参考视频（可选 · 角色替换）</div>
+              <button type="button" class="sct-comfy-btn sct-bk-refvid-pick">🎞 上传一段参考视频</button>
+              <input type="file" accept="video/*" class="sct-bk-refvid-file" style="display:none;" />
+              <span class="sct-bk-hint sct-bk-refvid-name">${sctBackendDialogRefVideo ? escapeHtml(sctBackendDialogRefVideo.name || '已选一段视频') : '没选就按普通「图生视频」跑'}</span>
+              <div class="sct-bk-hint"><b>角色替换玩法</b>：图一＝要用的角色，这段视频＝动作/镜头/背景来源 → 「<b>把图一的角色替换到这段视频里</b>」。动作、运镜、背景照视频走，人物长相按图一。</div>
+            </div>
+          </div>` : `
           <div class="sct-bk-two">
             <div class="sct-setting-col">
               <label>重绘步数（20~30 步够用，越高越慢）</label>
@@ -6312,6 +6363,18 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           ? '指令已填好 —— 记得在上面选「➕ 第二张参考图」（图二）再开始'
           : '指令已填好，可以继续手改', 'info');
       });
+    });
+
+    // 🎞 参考视频（可选）：选了就按「角色替换」跑
+    const refVidFile = overlay.querySelector('.sct-bk-refvid-file');
+    bindBackendTap(overlay.querySelector('.sct-bk-refvid-pick'), () => refVidFile?.click());
+    refVidFile?.addEventListener('change', () => {
+      const f = refVidFile.files && refVidFile.files[0];
+      if (!f) return;
+      sctBackendDialogRefVideo = f;
+      const tag = overlay.querySelector('.sct-bk-refvid-name');
+      if (tag) tag.textContent = `已选：${f.name}（${(f.size / 1048576).toFixed(1)} MB）`;
+      showToast('参考视频已选：开始后会先把图一的角色替换进这段视频的动作里', 'info');
     });
 
     // ➕ 第二张参考图：从聊天里别的图选，或从相册选
@@ -6459,7 +6522,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly });
+      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly, refVideo: sctBackendDialogRefVideo });
       else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
   }
