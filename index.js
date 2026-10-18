@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.7.0';
+  const SCT_BUILD = '2.8.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4466,6 +4466,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
   let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
   let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
+  let sctApiModelCache = [];                   // 独立 API「连接」后拿到的模型清单（内存缓存，关掉弹窗再开还在）
 
   function cloneWorkflow(tpl) {
     return JSON.parse(JSON.stringify(tpl));
@@ -5625,6 +5626,42 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return out;
   }
 
+  // 由 chat/completions 地址推出 /models 地址
+  function modelsUrlFrom(chatUrl) {
+    const u = String(chatUrl || '').trim();
+    if (!u) return '';
+    try {
+      const url = new URL(u);
+      let p = url.pathname.replace(/\/+$/, '');
+      if (/\/chat\/completions$/i.test(p)) p = p.replace(/\/chat\/completions$/i, '/models');
+      else if (!/\/models$/i.test(p)) p = p + '/models';
+      url.pathname = p;
+      return url.toString();
+    } catch (_) {
+      if (/\/chat\/completions$/i.test(u)) return u.replace(/\/chat\/completions$/i, '/models');
+      return u.replace(/\/+$/, '') + '/models';
+    }
+  }
+
+  // 拉模型清单（OpenAI 兼容 GET /models）
+  async function fetchApiModelList(url, key) {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: key ? { Authorization: 'Bearer ' + String(key).trim() } : {}
+    });
+    const txt = await res.text();
+    let data = null;
+    try { data = JSON.parse(txt); } catch (_) {}
+    if (!res.ok) {
+      const msg = data?.error?.message || data?.message || txt.slice(0, 200) || ('HTTP ' + res.status);
+      throw new Error('HTTP ' + res.status + '：' + msg);
+    }
+    const arr = Array.isArray(data)
+      ? data
+      : (Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : []));
+    return arr.map((m) => (typeof m === 'string' ? m : (m?.id || m?.name || ''))).filter(Boolean);
+  }
+
   async function rewriteVideoPromptByMainModel(dialog) {
     const ctx = getSTContext();
     const ta = dialog.querySelector('.sct-bk-text');
@@ -5897,6 +5934,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       key: String(s.comfyRewriteApiKey || s.comfyAiAssistKey || ''),
       model: String(s.comfyRewriteApiModel || s.comfyAiAssistModel || '')
     };
+    const apiModelCache = Array.isArray(sctApiModelCache) ? sctApiModelCache.slice() : [];
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -5928,6 +5966,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 <input type="text" class="text_pole sct-bk-api-url" placeholder="API 地址（OpenAI 兼容 …/v1/chat/completions）" value="${escapeHtml(apiPrefill.url)}" />
                 <input type="password" class="text_pole sct-bk-api-key" placeholder="API Key（Bearer）" value="${escapeHtml(apiPrefill.key)}" style="margin-top:4px;" />
                 <input type="text" class="text_pole sct-bk-api-model" placeholder="模型名（要能看图，如 gpt-4o / qwen-vl-max）" value="${escapeHtml(apiPrefill.model)}" style="margin-top:4px;" />
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+                  <button type="button" class="sct-comfy-btn sct-bk-api-connect" title="用上面的地址和 Key 请求一次 /models，把它返回的模型列出来">🔗 连接并获取模型</button>
+                  <select class="text_pole sct-bk-api-model-select" style="flex:1; min-width:150px;">
+                    <option value="">（连接后在这里选模型）</option>
+                    ${apiModelCache.map((m) => `<option value="${escapeHtml(m)}" ${m === apiPrefill.model ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
+                  </select>
+                </div>
               </div>
             </div>
             <div class="sct-bk-two" style="margin-top:4px;">
@@ -6052,6 +6097,51 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
     bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
+
+    // 🔗 独立 API「连接并获取模型」：GET /models，把清单灌进下拉
+    bindBackendTap(overlay.querySelector('.sct-bk-api-connect'), async () => {
+      const btn = overlay.querySelector('.sct-bk-api-connect');
+      const urlEl = overlay.querySelector('.sct-bk-api-url');
+      const keyEl = overlay.querySelector('.sct-bk-api-key');
+      const url = String(urlEl?.value || '').trim();
+      const key = String(keyEl?.value || '').trim();
+      if (!url) { showToast('先填 API 地址', 'warning'); return; }
+      const old = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = '⏳ 连接中…'; }
+      try {
+        saveSettings({ comfyRewriteApiUrl: url, comfyRewriteApiKey: key });
+        const modelsUrl = modelsUrlFrom(url);
+        let list = [];
+        try {
+          list = await fetchApiModelList(modelsUrl, key);
+        } catch (e1) {
+          // 有的服务 /models 不带 /v1 前缀，退一步再试一次
+          const alt = String(url).replace(/\/+$/, '').replace(/\/chat\/completions$/i, '') + '/models';
+          if (alt !== modelsUrl) list = await fetchApiModelList(alt, key);
+          else throw e1;
+        }
+        sctApiModelCache = list.slice();
+        const sel = overlay.querySelector('.sct-bk-api-model-select');
+        if (sel) {
+          sel.innerHTML = `<option value="">（选一个模型）</option>` +
+            list.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+        }
+        showToast(list.length
+          ? `连接成功，读到 ${list.length} 个模型 · 下面选一个`
+          : '连接成功，但这个接口没返回模型列表 —— 直接手填模型名', list.length ? 'success' : 'warning');
+      } catch (e) {
+        showToast('连接失败：' + (e?.message || e), 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = old || '🔗 连接并获取模型'; }
+      }
+    });
+
+    // 下拉选模型 → 同步进「模型」输入框（真正提交用的是那个输入框）
+    overlay.querySelector('.sct-bk-api-model-select')?.addEventListener('change', (e) => {
+      const v = String(e.target.value || '');
+      const input = overlay.querySelector('.sct-bk-api-model');
+      if (v && input) input.value = v;
+    });
 
     // 切「走酒馆主模型 / 走独立 API」：显示对应输入（独立 API 模式下不需要连接配置）
     const syncRewriteMode = () => {
