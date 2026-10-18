@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.17.3';
+  const SCT_BUILD = '2.18.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -218,6 +218,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyH3SwapStyle: 'video',      // 'video' 跟参考视频 | 'realistic' 写实实拍 | 'anime' 纯平涂2D | 'custom'
     comfyH3SwapStyleCustom: '',
     comfyH3KeepRefVideoAudio: true,
+    // ✂️ 参考视频裁剪：从第几秒开始截（秒）；截多长由「时长」决定，最终帧数=17n+5
+    comfyH3RefStartSec: 0,
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
     // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
@@ -4516,7 +4518,20 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
   let sctBackendDialogRef2 = null;        // 编辑弹窗的「第二张参考图」（URL / File，可选）
-  let sctBackendDialogRefVideo = null;    // 视频弹窗的「参考视频」（File，可选 → H3 ref_videos）
+  let sctBackendDialogRefVideo = null;    // 视频弹窗的「参考视频」（File，可选 → H3 ref_videos / AddGuide）
+  let sctBackendDialogRefVideoDur = 0;    // 该参考视频的时长（秒，选文件时探测）
+
+  // 读本地视频时长（用 <video> 元数据，不上传）
+  function probeVideoDuration(file, cb) {
+    try {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => { const d = Number(v.duration) || 0; URL.revokeObjectURL(url); cb(d); };
+      v.onerror = () => { URL.revokeObjectURL(url); cb(0); };
+      v.src = url;
+    } catch (_) { cb(0); }
+  }
   let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
   let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
   let sctApiModelCache = [];                   // 独立 API「连接」后拿到的模型清单（内存缓存，关掉弹窗再开还在）
@@ -4902,7 +4917,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           custom_width: 0,
           custom_height: 0,
           frame_load_cap: frames,      // 只取目标长度，别把整段长视频全读进来
-          skip_first_frames: 0,
+          skip_first_frames: Math.max(0, Math.round((parseFloat(opts.refStart) || 0) * 24)),   // ✂️ 从第几秒开始截
           select_every_nth: 1,
           format: 'None'
         }
@@ -6370,6 +6385,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <div class="sct-bk-srctag">🎞 参考视频（可选 · 角色替换）</div>
               <button type="button" class="sct-comfy-btn sct-bk-refvid-pick">🎞 上传一段参考视频</button>
               <input type="file" accept="video/*" class="sct-bk-refvid-file" style="display:none;" />
+              <div class="sct-bk-two" style="margin-top:4px;">
+                <div class="sct-setting-col">
+                  <label>✂️ 从第几秒开始截</label>
+                  <input type="number" class="text_pole sct-bk-refvid-start" min="0" step="0.5" value="${Number(s.comfyH3RefStartSec) || 0}" />
+                </div>
+                <div class="sct-setting-col">
+                  <label>截取预览（选文件后自动算）</label>
+                  <div class="sct-bk-hint sct-bk-refvid-dur">还没选视频</div>
+                </div>
+              </div>
               <span class="sct-bk-hint sct-bk-refvid-name">${sctBackendDialogRefVideo ? escapeHtml(sctBackendDialogRefVideo.name || '已选一段视频') : '没选就按普通「图生视频」跑'}</span>
               <div class="sct-bk-hint"><b>角色替换玩法</b>：图一＝要用的角色，这段视频＝动作/镜头/背景来源 → 「<b>把图一的角色替换到这段视频里</b>」。动作、运镜、背景照视频走，人物长相按图一。<br>💡 <b>实测要点</b>：① 参考图给<b>真人</b>才能出真人质感（给动漫图出来就是动漫脸）；② 参考图要含<b>全身（有鞋）</b>，否则模型会自己编脚 —— 四视图建议「正面格＋侧面格」拼一张，并把底部标签文字切掉；③ 衣服也按参考图来（想换裙子就换参考图）。</div>
               <label class="sct-bk-check" for="sct-bk-swapmode"><input type="checkbox" id="sct-bk-swapmode" class="sct-bk-swapmode" ${s.comfyH3SwapMode ? 'checked' : ''} /> <b>🎭 换头换装（动作迁移 · 更保脸）</b><span class="sct-bk-hint"> — 把参考视频当动作模板（AddGuide，frame_idx=0）+ 挂 character_swap LoRA + 自动加 <code>body_swap:</code> 触发词；需要 LoRA：<code>${escapeHtml(String(s.comfyH3SwapLora || '（未设置）'))}</code>（放 ComfyUI 的 <code>models/loras/</code>）</span></label>
@@ -6482,6 +6507,27 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       sctBackendDialogRefVideo = f;      const tag = overlay.querySelector('.sct-bk-refvid-name');
       if (tag) tag.textContent = `已选：${f.name}（${(f.size / 1048576).toFixed(1)} MB）`;
       // 选了参考视频 → 默认勾上「换头换装」（要的是保脸效果）
+      // ✂️ 探测视频时长 + 更新截取预览
+      const durEl = overlay.querySelector('.sct-bk-refvid-dur');
+      const readStart = () => Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0);
+      const readLen = () => {
+        const v = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value);
+        return Number.isFinite(v) ? v : 6;
+      };
+      const updCutPreview = () => {
+        if (!durEl) return;
+        const d = sctBackendDialogRefVideoDur;
+        const st = readStart();
+        const len = readLen();
+        if (!d) { durEl.textContent = st > 0 ? `将从 ${st} 秒起截 ${len} 秒（视频时长未知，按 24fps 取帧）` : '还没选视频'; return; }
+        const end = st + len;
+        const bad = end > d + 0.05;
+        durEl.innerHTML = `视频 <b>${d.toFixed(1)}</b> 秒 · 截 <b>${st.toFixed(1)}→${Math.min(end, d).toFixed(2)}</b> 秒（${len} 秒）` +
+          (bad ? ` <span style="color:#e06c6c;">⚠️ 超出视频长度，实际只到 ${d.toFixed(1)} 秒</span>` : '');
+      };
+      probeVideoDuration(f, (d) => { sctBackendDialogRefVideoDur = d; updCutPreview(); });
+      overlay.querySelector('.sct-bk-refvid-start')?.addEventListener('input', updCutPreview);
+      overlay.querySelector('.sct-bk-seconds')?.addEventListener('change', updCutPreview);
       const swapBox = overlay.querySelector('.sct-bk-swapmode');
       if (swapBox && !swapBox.checked) {
         swapBox.checked = true;
@@ -6636,11 +6682,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
+      // ✂️ 参考视频裁剪越界提醒（不阻断）
+      if (isVideo && sctBackendDialogRefVideo && sctBackendDialogRefVideoDur > 0) {
+        const st = Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0);
+        const len = seconds;
+        if (st + len > sctBackendDialogRefVideoDur + 0.05) {
+          showToast(`截取 ${st}→${(st+len).toFixed(1)} 秒超出视频长度 ${sctBackendDialogRefVideoDur.toFixed(1)} 秒，实际只截到结尾`, 'warning');
+        }
+        saveSettings({ comfyH3RefStartSec: st });
+      }
       if (isVideo) await triggerComfyH3Video(source, text, cardEl, {
         seconds, aspect, onePassOnly,
         refVideo: sctBackendDialogRefVideo,
         swapMode: !!overlay.querySelector('.sct-bk-swapmode')?.checked,
-        swapStyle: String(overlay.querySelector('.sct-bk-swapstyle')?.value || '')
+        swapStyle: String(overlay.querySelector('.sct-bk-swapstyle')?.value || ''),
+        refStart: Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0)
       });
       else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
