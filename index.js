@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.16.0';
+  const SCT_BUILD = '2.16.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4892,7 +4892,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     // 🎞 参考视频 → H3 的 ref_videos（IMAGE 帧，24fps）+ ref_video_audios（原声）
     if (uploadedVideo) {
       wf['700'] = {
-        class_type: 'VHS_LoadVideoPath',
+        class_type: 'VHS_LoadVideo',   // 用 combo 版：VHS_LoadVideoPath 要绝对路径，combo 版认 input/ 里的文件名
         inputs: {
           video: uploadedVideo,
           force_rate: 24,
@@ -4904,15 +4904,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           format: 'None'
         }
       };
-      if (!wf[P.prompt].inputs) wf[P.prompt].inputs = {};
-      wf[P.prompt].inputs['ref_videos.ref_video_0'] = ['700', 0];
-      // 保留参考视频的原声（H3 的 ref_video_audio 会一起条件化音频）
-      try {
-        wf[P.prompt].inputs['ref_video_audios.ref_video_audio_0'] = ['700', 2];
-      } catch (_) {}
-      // 在六段式后面补一句"谁是谁"的定位，免得把视频里的人当成主角
-      const refClause = '\n\n[Reference video (Video 1): keep its motion, timing, camera movement, framing and background. Replace the performer with the character from <Picture 1>, keeping her face, hair, eye colour, body proportions and outfit exactly as in <Picture 1>. Do not copy the performer\'s identity from the reference video.]';
-      wf[P.prompt].inputs.prompt = String(videoPrompt || '') + refClause;
+      // ★ 换头换装模式下**不接** ref_videos：作者工作流只用 AddGuide 当动作模板，
+      //   同时再接原生视频参考会把原演员的长相一起带进来，跟 body_swap 打架。
+      if (!opts.swapMode) {
+        if (!wf[P.prompt].inputs) wf[P.prompt].inputs = {};
+        wf[P.prompt].inputs['ref_videos.ref_video_0'] = ['700', 0];
+        // 保留参考视频的原声（H3 的 ref_video_audio 会一起条件化音频）
+        try {
+          wf[P.prompt].inputs['ref_video_audios.ref_video_audio_0'] = ['700', 2];
+        } catch (_) {}
+        // 在六段式后面补一句"谁是谁"的定位，免得把视频里的人当成主角
+        const refClause = '\n\n[Reference video (Video 1): keep its motion, timing, camera movement, framing and background. Replace the performer with the character from <Picture 1>, keeping her face, hair, eye colour, body proportions and outfit exactly as in <Picture 1>. Do not copy the performer\'s identity from the reference video.]';
+        wf[P.prompt].inputs.prompt = String(videoPrompt || '') + refClause;
+      }
     }
 
     // 🎭 换头换装（动作迁移）：参考视频 → MiniMaxH3AddGuide(frame_idx=0) + character_swap LoRA + body_swap 触发词
