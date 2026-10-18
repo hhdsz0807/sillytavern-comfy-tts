@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.4.1';
+  const SCT_BUILD = '2.4.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -169,6 +169,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyVideoPromptMode: 'compact',   // 'compact' 精简版(单镜头微动, ≤350 词) | 'full' 完整版(可多镜头, ≤900 词)
     // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
     comfyVideoDirectorNote: '',
+    // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
+    comfyVideoOnePassOnly: false,
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -4740,7 +4742,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return f;
     })();
     const blocks = frames <= 153 ? 1 : Math.ceil((frames - 153) / 136) + 1;
-    const hint = `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 二采 ${blocks} 组`;
+    // 只跑一采：不提交二采那条链（省掉一次 4 步精修 + 3D 潜空间放大，快很多）
+    const onePassOnly = (opts.onePassOnly !== undefined) ? !!opts.onePassOnly : !!s.comfyVideoOnePassOnly;
+    const hint = onePassOnly
+      ? `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 只跑一采（不跑二采）`
+      : `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 二采 ${blocks} 组`;
 
     renderLoadingCard(container, videoPrompt, '📤 正在把源图上传到 ComfyUI…', null);
     let uploaded = '';
@@ -4763,13 +4769,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     // 一采 / 二采 各自的文件名前缀都带唯一戳，且分目录，绝不互相覆盖
     wf[P.onePass].inputs.filename_prefix = `video/SCT_H3/一采/minimax_${vStamp}_`;
     wf[P.twoPass].inputs.filename_prefix = `video/SCT_H3/二采/minimax_${vStamp}_`;
+    if (onePassOnly) {
+      // 摘掉二采的输出节点 → ComfyUI 只执行一采那条链（二采的上游不会被执行）
+      try { delete wf[P.twoPass]; } catch (_) {}
+    }
 
     container.__sctLastParams = {
       checkpoint: 'MiniMax H3 int8（一采 + 二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
       steps: '一采 8 + 二采 4', sampler: 'res_multistep', scheduler: 'simple',
       size: `${wf[P.size].inputs.aspect_ratio} / ${wf[P.size].inputs.megapixels} MP`,
       batch: 1, seed: wf[P.seed].inputs.seed, vae: 'minimax_h3_video_vae_fp16 + audio_vae_fp32',
-      hires: `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: ['TaoMate-H3-3step（加速，链内固定）'],
+      hires: onePassOnly ? '只跑一采' : `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: ['TaoMate-H3-3step（加速，链内固定）'],
       output: `一采(#${P.onePass}) 先推送 → 二采(#${P.twoPass}) 好了再补`,
       positive: String(videoPrompt || ''), negative: '—'
     };
@@ -4782,7 +4792,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     let cardShown = false;
     const stageItems = () => {
       const arr = [];
-      if (staged.one) arr.push({ url: staged.one, label: '一采 · 低清草稿（先看构图与动作；二采成品还在跑）' });
+      if (staged.one) {
+        arr.push({
+          url: staged.one,
+          label: onePassOnly
+            ? '一采 · 草稿（本次只跑一采，没有二采高清版）'
+            : '一采 · 低清草稿（先看构图与动作；二采成品还在跑）'
+        });
+      }
       if (staged.two) arr.push({ url: staged.two, label: '二采 · 成品（高清 + 音轨，拿这条用）' });
       return arr;
     };
@@ -4833,7 +4850,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         renderErrorCard(container, videoPrompt, '跑完了但没拿到视频文件（去 ComfyUI 的 output/video/SCT_H3 看看）');
         return false;
       }
-      paintStage(staged.one && staged.two ? '一采 + 二采 都已出片 ✅' : '出片完成', false);
+      paintStage(onePassOnly
+        ? '一采出片完成（本次没跑二采）'
+        : (staged.one && staged.two ? '一采 + 二采 都已出片 ✅' : '出片完成'), false);
       const rec = {
         id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         kind: 'video', urls: finalList.map((it) => it.url), videoItems: finalList,
@@ -5556,7 +5575,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 ${SCT_VIDEO_ASPECTS.map((v) => `<option value="${escapeHtml(v)}" ${v === (s.comfyVideoAspect || '16:9 (Widescreen)') ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
               </select>
             </div>
-          </div>` : `
+          </div>
+          <label class="sct-bk-check" for="sct-bk-onepass"><input type="checkbox" id="sct-bk-onepass" class="sct-bk-onepass" ${s.comfyVideoOnePassOnly ? 'checked' : ''} /> <b>只跑一采（不跑二采）</b><span class="sct-bk-hint"> — 快很多、显存更省；代价是只有一采的草稿画质，没有二采的高清成品</span></label>` : `
           <div class="sct-bk-two">
             <div class="sct-setting-col">
               <label>重绘步数（20~30 步够用，越高越慢）</label>
@@ -5662,11 +5682,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const source = sctBackendDialogSource;
       const seconds = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value) || parseFloat(s.comfyVideoSeconds) || 6;
       const aspect = overlay.querySelector('.sct-bk-aspect')?.value || s.comfyVideoAspect || '16:9 (Widescreen)';
+      const onePassEl = overlay.querySelector('.sct-bk-onepass');
+      const onePassOnly = !!(onePassEl && onePassEl.checked);
       const steps = parseInt(overlay.querySelector('.sct-bk-steps')?.value, 10);
       const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
       const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
       if (isVideo) {
-        saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect });
+        saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoOnePassOnly: onePassOnly });
         // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；
         // 模型写的 / 看图重写的都是场景专属的，不该覆盖全局默认
         if (!sctBackendDialogPrefillFromAi && text !== String(videoPrefill || '').trim()) {
@@ -5680,7 +5702,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect });
+      if (isVideo) await triggerComfyH3Video(source, text, cardEl, { seconds, aspect, onePassOnly });
       else await triggerComfyQwenEdit(source, text, cardEl);
     });
   }

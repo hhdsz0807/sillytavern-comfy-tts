@@ -2887,3 +2887,17 @@
   background: var(--sct-accent-soft, #76ABAE26);
   border-radius: var(--sct-radius-sm, 8px);
 }
+
+/* 🎬 只跑一采 勾选项 */
+.sct-bk-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  user-select: none;
+  padding: 6px 2px;
+}
+.sct-bk-check input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; }
