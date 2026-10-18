@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.1.3';
+  const SCT_BUILD = '2.1.4';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -413,6 +413,30 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
+  // 每次出图都用独一无二的文件名前缀。
+  // ★ 为什么必须这样：ComfyUI 的 SaveImage 计数器会随「重启 / 清空输出」归零，
+  //   固定前缀（老版本用的 "SillyTavern"）会让新图覆盖同名的旧文件 —— 老会话的卡片指的
+  //   还是那个文件名，于是刷出别人的图；手机本地图库按文件名当 key 缓存，会跟着再串一遍。
+  function uniqueFileStamp() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+
+  function normPromptKey(text) {
+    return String(text || '').trim().replace(/\s+/g, ' ');
+  }
+
+  // 存档里的提示词与当前提示词是否指同一次生成
+  // （拿不准就当不匹配：宁可不显示，也绝不把别的图显示成这一条的图）
+  function promptMatches(stored, current) {
+    const a = normPromptKey(stored);
+    const b = normPromptKey(current);
+    if (!b) return true;      // 调用方没给提示词，无从判断
+    if (!a) return false;     // 存档里没记提示词 → 无法确认
+    if (a === b) return true;
+    const n = Math.min(40, a.length, b.length);
+    return n > 0 && a.slice(0, n) === b.slice(0, n);
+  }
+
   // 按文件名去重：保留首次出现的顺序，但采用最新的带时间戳 URL (规避浏览器缓存读到旧图)
   function dedupeComfyImages(list) {
     const order = [];
@@ -555,16 +579,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   }
 
   // 多层级查找已生成的任务 (内存 -> 酒馆 extra -> 本地 localStorage)
+  // ★ 每一层都必须核对提示词：同一个槽位可能已经换了画面内容（消息重写、换了 tag），
+  //   不核对就会把「上一次 / 别的会话」的图当成这一条的图显示出来（用户反馈过的串图）。
   function findCachedTask(taskKey, mesId, slotIdx, rawPrompt) {
-    // 1. 检查内存缓存 sctDrawingTasks
+    // 1. 检查内存缓存 sctDrawingTasks（键里已带聊天作用域）
     const inMem = sctDrawingTasks.get(taskKey);
     if (inMem && inMem.status === 'completed' && inMem.images && inMem.images.length > 0) {
-      return inMem;
+      if (promptMatches(inMem.prompt, rawPrompt)) return inMem;
     }
 
-    // 2. 检查酒馆消息 extra
+    // 2. 检查酒馆消息 extra（属于本聊天本条消息；仍然核对提示词，防止槽位复用串图）
     const fromExtra = getChatMessageExtraImages(mesId, slotIdx);
-    if (fromExtra && fromExtra.images && fromExtra.images.length > 0) {
+    if (fromExtra && fromExtra.images && fromExtra.images.length > 0
+        && promptMatches(fromExtra.prompt, rawPrompt)) {
       const entry = {
         status: 'completed',
         images: fromExtra.images.map(normalizeComfyImageUrl),
@@ -575,16 +602,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return entry;
     }
 
-    // 3. 检查 localStorage 持久化缓存 (新格式键名)
-    const pTasks = getPersistentTasks();
-    let fromStorage = pTasks[taskKey];
-    // 兼顾旧版键名格式兜底 (mes_${mesId}_slot_${idx}_${item.prompt.slice(0, 40)})
-    if (!fromStorage && rawPrompt) {
-      const legacyKey = `mes_${mesId}_slot_${slotIdx}_${rawPrompt.slice(0, 40)}`;
-      fromStorage = pTasks[legacyKey];
-    }
-
-    if (fromStorage && fromStorage.images && fromStorage.images.length > 0) {
+    // 3. 检查 localStorage 持久化缓存（只认带聊天作用域的新键名）
+    //    ★ 旧版键名 `mes_x_slot_y_prompt` 没有聊天作用域，跨角色/跨会话会直接串图，已移除
+    const fromStorage = getPersistentTasks()[taskKey];
+    if (fromStorage && fromStorage.images && fromStorage.images.length > 0
+        && promptMatches(fromStorage.prompt, rawPrompt)) {
       const entry = {
         status: 'completed',
         images: fromStorage.images.map(normalizeComfyImageUrl),
@@ -4087,10 +4109,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
 
     // 10. SaveImage (Node 9)
+    // ★ 文件名带唯一时间戳：固定前缀会让 ComfyUI 计数器归零后覆盖旧图，导致老会话卡片串图
     workflow["9"] = {
       "class_type": "SaveImage",
       "inputs": {
-        "filename_prefix": "SillyTavern",
+        "filename_prefix": `SillyTavern_${uniqueFileStamp()}_`,
         "images": finalImageRef
       }
     };
@@ -4504,7 +4527,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     wf[P.latent].inputs.height = h;
     wf[P.sampler].inputs.steps = Math.min(80, Math.max(4, parseInt(s.comfyMossSteps, 10) || 20));
     wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
-    wf[P.save].inputs.filename_prefix = 'SCT_MOSS';
+    wf[P.save].inputs.filename_prefix = 'SCT_MOSS_' + uniqueFileStamp() + '_';
 
     container.__sctLastParams = {
       checkpoint: `MOSS-Image（${String(s.comfyMossModelDir || '').split('/').pop()}）`,
@@ -4557,7 +4580,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     wf[P.sampler].inputs.cfg = Math.min(8, Math.max(1, parseFloat(s.comfyEditCfg) || 4.0));
     wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
     wf[P.scale].inputs.megapixels = Math.min(16, Math.max(0.1, parseFloat(s.comfyEditMegapixels) || 1.0));
-    wf[P.save].inputs.filename_prefix = 'SCT_EDIT/QW21';
+    wf[P.save].inputs.filename_prefix = 'SCT_EDIT/QW21_' + uniqueFileStamp() + '_';
 
     container.__sctLastParams = {
       checkpoint: 'Qwen-Image 2.1 int8（编辑工作流）', cfg: wf[P.sampler].inputs.cfg,
@@ -4622,7 +4645,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     wf[P.seconds].inputs.value = seconds;
     wf[P.size].inputs.aspect_ratio = opts.aspect || s.comfyVideoAspect || '16:9 (Widescreen)';
     wf[P.size].inputs.megapixels = Math.min(1, Math.max(0.1, parseFloat(s.comfyVideoMegapixels) || 0.2));
-    wf[P.save].inputs.filename_prefix = 'video/SCT_H3/minimax_';
+    wf[P.save].inputs.filename_prefix = 'video/SCT_H3/minimax_' + uniqueFileStamp() + '_';
 
     container.__sctLastParams = {
       checkpoint: 'MiniMax H3 int8（二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
@@ -4675,7 +4698,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     state.currentIdx = safeIdx;
     const currentUrl = normalizedImages[safeIdx];
     // ★ 优先用手机本地副本显示:服务器文件被删 / 隧道换址时,卡片里依然能看到图
-    const currentSrc = localImageUrls.get(comfyFileKey(currentUrl)) || currentUrl;
+    //   （本地副本会核对提示词，防止同名文件被覆盖后串图）
+    const currentSrc = localCopyFor(currentUrl, promptText) || currentUrl;
 
     const loraBadgeHtml = activeLoras && activeLoras.length > 0 
       ? `<span class="sct-lora-badge" title="${escapeHtml(activeLoras.map(l => l.name).join(', '))}">🎭 LoRA: ${escapeHtml(activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', '))}</span>`
@@ -4747,7 +4771,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           ev.preventDefault();
           ev.stopPropagation();
           await loadLocalImageUrls();
-          const local = localImageUrls.get(comfyFileKey(currentUrl));
+          const local = localCopyFor(currentUrl, promptText);
           vpImg.setAttribute('src', local || `${currentUrl}${currentUrl.includes('?') ? '&' : '?'}r=${Date.now()}`);
           errBox.style.display = 'none';
         });
@@ -8629,18 +8653,32 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
   /** 本地出图副本的 key → objectURL(卡片展示优先用它,服务器图失效也能看) */
   const localImageUrls = new Map();
+  // ★ key → 这张图当初是用什么提示词生成的。同名文件可能已经被新图覆盖（ComfyUI 计数器会归零），
+  //   所以展示本地副本前必须核对提示词，否则会把别的会话 / 上一次的图显示出来
+  const localImagePrompts = new Map();
 
   async function loadLocalImageUrls() {
     try {
       const list = await getAllLocalImages();
       list.forEach(e => {
-        if (!e || !e.key || !e.blob || localImageUrls.has(e.key)) return;
+        if (!e || !e.key || !e.blob) return;
+        if (e.prompt) localImagePrompts.set(e.key, String(e.prompt));
+        if (localImageUrls.has(e.key)) return;
         try {
           localImageUrls.set(e.key, URL.createObjectURL(e.blob));
         } catch (_) {}
       });
     } catch (_) {}
     return localImageUrls.size;
+  }
+
+  /** 取这张图的本地副本（提示词对不上就不给，宁可显示服务器图或报错，也不串图） */
+  function localCopyFor(url, promptText) {
+    const key = comfyFileKey(url);
+    if (!key || !localImageUrls.has(key)) return '';
+    const stored = localImagePrompts.get(key);
+    if (stored && promptText && !promptMatches(stored, promptText)) return '';
+    return localImageUrls.get(key) || '';
   }
 
   /**
@@ -8885,6 +8923,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <input type="number" id="sct-cfg-localcache-max" class="text_pole" style="max-width:110px;" min="100" max="8000" step="100" value="${s.comfyLocalCacheMaxMB || 800}" />
             </div>
             <div class="sct-hint">图片存在手机浏览器本地(IndexedDB),会申请持久化存储权限;已有图片可在图片管理里点「📱 备份当前显示的全部到手机」一次性补存。</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
+              <button type="button" class="sct-comfy-btn" id="sct-btn-purge-local">🧹 清空手机本地图库缓存</button>
+              <span class="sct-hint" id="sct-local-stat"></span>
+            </div>
+            <div class="sct-hint">★ 如果你以前遇到过「别的角色卡 / 以前生成的图串到这条消息上」：那是老版本固定文件名被 ComfyUI 覆盖造成的，本地缓存里可能存着串掉的图。点了上面这个按钮清一次，之后新出的图都用<b>唯一文件名</b>，不会再串了（老消息里的老图无法找回，需要的话点卡片上的「🔄 重新生成」）。</div>
           </div>
 
           <!-- 板块 3: 提示词与画面质量参数 -->
@@ -9567,6 +9610,36 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         if (n > 0) showToast(`已按新上限清理最旧的 ${n} 张本地图`, 'info');
       });
     });
+
+    // 🧹 清空手机本地图库：老版本固定文件名被覆盖后，本地缓存里可能存着串掉的图，清一次最干净
+    const purgeLocalBtn = container.querySelector('#sct-btn-purge-local');
+    const localStatEl = container.querySelector('#sct-local-stat');
+    const refreshLocalStat = async () => {
+      if (!localStatEl) return;
+      try {
+        const list = await getAllLocalImages();
+        const size = list.reduce((n, e) => n + (e.blob?.size || 0), 0);
+        localStatEl.textContent = list.length
+          ? `当前 ${list.length} 张 / ${(size / 1048576).toFixed(1)} MB`
+          : '当前本地图库是空的';
+      } catch (_) { localStatEl.textContent = ''; }
+    };
+    refreshLocalStat();
+    if (purgeLocalBtn) {
+      purgeLocalBtn.addEventListener('click', async () => {
+        if (!window.confirm('清空手机本地图库缓存？\n\n· 只删手机里的副本，ComfyUI 服务器上的文件不动\n· 之前串过图的本地副本会被一起清掉（推荐）')) return;
+        try {
+          await clearLocalImages();
+          localImageUrls.clear();
+          localImagePrompts.clear();
+          await loadLocalImageUrls();
+          await refreshLocalStat();
+          showToast('手机本地图库缓存已清空（服务器上的文件没动）', 'success');
+        } catch (e) {
+          showToast('清空失败：' + (e?.message || e), 'error');
+        }
+      });
+    }
 
     // 分组生效时基础特征词是否始终注入
     container.querySelector('#sct-cfg-lora-base-always')?.addEventListener('change', (e) => {
