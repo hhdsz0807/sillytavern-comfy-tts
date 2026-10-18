@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.12.2';
+  const SCT_BUILD = '2.12.3';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5455,13 +5455,10 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   // 从正文里抓「角色说的话」：中文引号「」『』“” 和英文双引号都认，最多取 3 句
   function extractDialogueLines(anchor) {
     let t = '';
-    // ★ 只认「紧贴在这张图上方的那一段」正文：
-    //   · 不跨图片（图片后面的文字属于下一张图）；
-    //   · 也不往更上面的段落翻（上一段的台词属于上一张图 / 上一幕）。
+    // ★ 以 <image> 标签为界：上一张图的标签结束 → 这张图的标签开始，中间这一整段正文
+    //   就是这张图的正文（图片后面的文字属于下一张图；也不往上一张图之前翻）。
     if (typeof anchor?.__sctScriptText === 'string') {
-      const seg = String(anchor.__sctScriptText || '');
-      const paras = seg.split(/\n{2,}|\n/).map((s) => s.trim()).filter(Boolean);
-      t = paras.length ? paras[paras.length - 1] : '';
+      t = String(anchor.__sctScriptText || '');
     } else {
       try {
         const mes = anchor?.closest?.('.mes');
