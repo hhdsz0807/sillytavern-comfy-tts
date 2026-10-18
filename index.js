@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.2.0';
+  const SCT_BUILD = '2.2.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -2544,23 +2544,41 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   /**
    * 把正文里的「视频提示词标签」摘出来（聊天主模型在生图标签后面顺带写的那份六段式）
    * 兼容：<video>…</video>、&lt;video&gt;…&lt;/video&gt;、video###…###（外层可有 pre/code 包裹）
-   * 返回：按出现顺序排列的提示词数组；正文里把这些标签换成一枚「🎬 视频提示词」小徽章
+   * ★ 配对规则：**按位置**——谁的生图标签紧后面跟着视频标签，就算谁的那一份；
+   *   这样即使模型只给其中某几张图写了，也不会张冠李戴。
+   * 返回：{ list: 按顺序的提示词数组, byImage: { 第几张图(从0数): 提示词 } }
    */
   function extractVideoPrompts(textEl) {
-    const out = [];
+    const list = [];
+    const byImage = {};
     try {
       let html = textEl.innerHTML || '';
-      if (!/(<video[\s>]|&lt;video|<\/video>|video###)/i.test(html)) return out;
+      const hasVideoTag = /(<video[\s>]|&lt;video|<\/video>|video###)/i.test(html);
+      if (!hasVideoTag) return { list, byImage };
+
+      // 一次扫描同时数「图标签」和「视频标签」，按出现顺序判断归属
+      const scan = /(?:<image>[\s\S]*?<\/image>|&lt;image&gt;[\s\S]*?&lt;\/image&gt;|<img_prompt>[\s\S]*?<\/img_prompt>|&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;|image###[\s\S]*?###)|(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)/gi;
+      let m;
+      let imgIdx = -1;
+      while ((m = scan.exec(html)) !== null) {
+        const isVideo = (m[1] !== undefined || m[2] !== undefined || m[3] !== undefined);
+        if (!isVideo) { imgIdx++; continue; }
+        const text = String(m[1] || m[2] || m[3] || '').trim();
+        if (!text) continue;
+        list.push(text);
+        if (imgIdx >= 0) byImage[imgIdx] = text;   // 归属给「最近的那个图标签」
+      }
+
+      // 再从正文里移除视频标签，换成一枚小徽章（空标签也一并清掉，免得留下一个空的 <video> 占位）
       const re = /(?:<pre>\s*)?(?:<code>)?\s*(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
-      html = html.replace(re, (full, a, b, c) => {
+      const cleanedHtml = html.replace(re, (full, a, b, c) => {
         const text = String(a || b || c || '').trim();
         if (!text) return '';
-        out.push(text);
         return '<span class="sct-video-chip" title="聊天模型已经写好视频提示词：点卡片上的「🎬 视频」会自动填进弹窗">🎬 视频提示词已就绪</span>';
       });
-      if (out.length > 0) textEl.innerHTML = html;
+      if (cleanedHtml !== html) textEl.innerHTML = cleanedHtml;
     } catch (_) {}
-    return out;
+    return { list, byImage };
   }
 
   function parseImageTagContent(rawContent) {
@@ -6289,8 +6307,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           cardContainer.dataset.sctTaskKey = taskKey;
           cardContainer.dataset.sctMesId = String(mesId);
           cardContainer.dataset.sctSlotIdx = String(idx);
-          // 🎬 聊天模型顺带写好的视频提示词（第 N 个视频标签配第 N 个图标签）
-          const vpFromAi = videoPrompts[idx] || '';
+          // 🎬 聊天模型顺带写好的视频提示词（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
+          const vpFromAi = (videoPrompts.byImage || {})[idx] || '';
           cardContainer.__sctVideoPrompt = vpFromAi || getChatMessageVideoPrompt(mesId, idx) || '';
           if (vpFromAi && vpFromAi !== getChatMessageVideoPrompt(mesId, idx)) {
             saveChatMessageVideoPrompt(mesId, idx, vpFromAi);
