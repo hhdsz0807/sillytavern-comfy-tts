@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.12.4';
+  const SCT_BUILD = '2.13.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5504,6 +5504,28 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return out.slice(0, 3);
   }
 
+  // 弹窗里每句台词的归属：{ her: [...], him: [...] }（标成"不用"的直接丢掉）
+  function pickedDialogueLines(dialog, lines) {
+    const her = [];
+    const him = [];
+    try {
+      const sels = dialog.querySelectorAll('.sct-bk-line-voice');
+      if (sels.length) {
+        sels.forEach((sel) => {
+          const v = String(sel.value || '');
+          const i = parseInt(sel.dataset.idx, 10);
+          const text = Number.isFinite(i) ? (lines || [])[i] : '';
+          if (!text) return;
+          if (v === 'her') her.push(String(text));
+          else if (v === 'him') him.push(String(text));
+        });
+      } else {
+        (lines || []).forEach((t) => her.push(String(t)));
+      }
+    } catch (_) {}
+    return { her, him };
+  }
+
   // 抓这张图「上方那段」正文：作为【这一幕的正文】显式塞进重写要求里。
   // 位置判定：上一张卡片之后 → 这张卡片之前（不跨图片，也不退回整条消息）
   function extractSceneText(anchor) {
@@ -5790,6 +5812,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     if (directorNote) saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
     const sceneText = extractSceneText(dialog.__sctAnchor);
     const dialogueLines = extractDialogueLines(dialog.__sctAnchor);
+    const picked = pickedDialogueLines(dialog, dialogueLines);
     const oldText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
     try {
@@ -5808,8 +5831,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         sceneText
           ? `\n【这一幕的正文（酒馆里这条消息的文字，用来说明剧情与动作；画面细节仍以图为准）】\n${sceneText}`
           : '',
-        dialogueLines.length
-          ? `\n【★ 必须让角色说出来的台词（从正文里抓的，原样引用，不许改写/翻译/加戏）】\n${dialogueLines.map((s) => `· 「${s}」`).join('\n')}\n写法：把每一句放进最合适的那个镜头，用双引号包住原句，并写 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；overall_soundscape 里也要交代这句台词的音轨。`
+        (picked.her.length || picked.him.length)
+          ? `\n【★ 必须写进提示词的台词（从正文里抓的，原样引用，不许改写/翻译/加戏）】\n${picked.her.map((s) => `· [女声] 「${s}」`).join('\n')}${picked.her.length ? '\n（女声＝你看到的这个角色：写进对应镜头，双引号包住原句，写 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio）' : ''}${picked.him.length ? `\n${picked.him.map((s) => `· [男声] 「${s}」`).join('\n')}\n（男声＝另一个人的话，画面里不出现他：写成 off-screen male voice，只在音轨/overall_soundscape 里交代，写 the male line is clearly heard in the audio；女主**不要**为这句对口型）` : ''}`
           : '',
         directorNote
           ? `\n【用户想要的效果（中文指导，必须尽量满足）】\n${directorNote}\n（注意：指导里如果要求在画面里做动作，就把动作写进 [Shot 1] 的画面内部微动里；但"镜头不许动、不许重新取景"这条永远优先，冲突时以镜头不动为准。）`
@@ -6118,7 +6141,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             </div>
           </div>
           <label class="sct-bk-check" for="sct-bk-onepass"><input type="checkbox" id="sct-bk-onepass" class="sct-bk-onepass" ${s.comfyVideoOnePassOnly ? 'checked' : ''} /> <b>只跑一采（不跑二采）</b><span class="sct-bk-hint"> — 快很多、显存更省；代价是只有一采的草稿画质，没有二采的高清成品</span></label>
-          <label class="sct-bk-check" for="sct-bk-speak"><input type="checkbox" id="sct-bk-speak" class="sct-bk-speak" ${s.comfyVideoSpeakLines !== false ? 'checked' : ''} /> <b>🔊 让角色念出正文台词</b><span class="sct-bk-hint"> — ${dialogLines.length ? `本条识别到 ${dialogLines.length} 句：${escapeHtml(dialogLines.join(' ／ '))}` : '本条正文里没识别到引号台词（用「」『』“”或英文双引号写的才算）'}</span></label>` : `
+          <label class="sct-bk-check" for="sct-bk-speak"><input type="checkbox" id="sct-bk-speak" class="sct-bk-speak" ${s.comfyVideoSpeakLines !== false ? 'checked' : ''} /> <b>🔊 让角色念出正文台词</b><span class="sct-bk-hint"> — ${dialogLines.length ? `本条识别到 ${dialogLines.length} 句，下面每一句「谁说的」都可以改（女声/男声都会写进提示词，选'不用'才丢掉）：` : '本条正文里没识别到引号台词（用「」『』“”或英文双引号写的才算）'}</span></label>
+          ${dialogLines.length ? `<div class="sct-bk-lines">
+            ${dialogLines.map((l, i) => `<div class="sct-bk-line-row">
+              <span class="sct-bk-line-text">「${escapeHtml(l)}」</span>
+              <select class="text_pole sct-bk-line-voice" data-idx="${i}">
+                <option value="her" selected>👩 她说（女声·对口型）</option>
+                <option value="him">👨 他说（男声·画外音）</option>
+                <option value="none">🚫 不用（不写进提示词）</option>
+              </select>
+            </div>`).join('')}
+          </div>` : ''}` : `
           <div class="sct-bk-two">
             <div class="sct-setting-col">
               <label>重绘步数（20~30 步够用，越高越慢）</label>
@@ -6290,12 +6323,15 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         const speakEl = overlay.querySelector('.sct-bk-speak');
         const speak = !!(speakEl && speakEl.checked);
         saveSettings({ comfyVideoSpeakLines: speak });
-        // 🔊 台词兜底：提示词里还没写进去，就把正文里抓到的台词追加一条（不重写也能念）
-        if (speak && dialogLines.length) {
-          const missing = dialogLines.filter((l) => !String(text).includes(l));
-          if (missing.length) {
-            text = `${text}\n\nSpoken line (she says it aloud with natural lip movement; the line is clearly heard in the audio): ${missing.map((l) => `"${l}"`).join(' / ')}`;
-          }
+        // 🔊 台词兜底：按你标的「她说 / 他说」分组追加（已经写进提示词的那句不重复加）
+        if (speak) {
+          const usePicked = pickedDialogueLines(overlay, dialogLines);
+          const needHer = usePicked.her.filter((l) => !String(text).includes(l));
+          const needHim = usePicked.him.filter((l) => !String(text).includes(l));
+          const extras = [];
+          if (needHer.length) extras.push(`Spoken line (she says it aloud with natural lip movement; the line is clearly heard in the audio): ${needHer.map((l) => `"${l}"`).join(' / ')}`);
+          if (needHim.length) extras.push(`Spoken line (a male voice, off-screen, says it clearly in the audio; her lips do not move for this line): ${needHim.map((l) => `"${l}"`).join(' / ')}`);
+          if (extras.length) text = `${text}\n\n${extras.join('\n')}`;
         }
         saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoOnePassOnly: onePassOnly });
         // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；

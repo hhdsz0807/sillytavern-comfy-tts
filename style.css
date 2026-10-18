@@ -2901,3 +2901,38 @@
   padding: 6px 2px;
 }
 .sct-bk-check input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; }
+
+/* 🎭 每句台词的「谁说的」选择 */
+.sct-bk-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sct-bk-line-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sct-bk-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  opacity: 0.92;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sct-bk-line-row select.sct-bk-line-voice {
+  flex: 0 0 auto;
+  max-width: 46%;
+  font-size: 12px;
+  padding: 2px 4px;
+}
