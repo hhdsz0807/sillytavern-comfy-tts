@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.2.1';
+  const SCT_BUILD = '2.2.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5171,6 +5171,40 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     });
   }
 
+  // 让 ComfyUI 主动卸载模型 + 释放显存池（POST /free）。
+  // 跑视频这种"要加载 20GB+ 模型"的大活之前先清一下更稳；平时不用管，ComfyUI 自己会按需流式装卸。
+  async function freeComfyMemory(notify = true) {
+    const host = getCleanComfyHost();
+    const readFree = async () => {
+      try {
+        const r = await fetch(`${host}/system_stats`);
+        if (!r.ok) return null;
+        const d = await r.json();
+        return (d?.devices?.[0]?.vram_free || 0) / 1073741824;
+      } catch (_) { return null; }
+    };
+    const before = await readFree();
+    try {
+      const res = await fetch(`${host}/free`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unload_models: true, free_memory: true })
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      await new Promise((r) => setTimeout(r, 1200));
+      const after = await readFree();
+      if (notify) {
+        showToast((after !== null && before !== null)
+          ? `已让 ComfyUI 卸载模型并释放显存：空闲 ${before.toFixed(2)} → ${after.toFixed(2)} GB`
+          : '已让 ComfyUI 卸载模型并释放显存', 'success');
+      }
+      return after;
+    } catch (e) {
+      if (notify) showToast('腾显存失败：' + (e?.message || e), 'warning');
+      return null;
+    }
+  }
+
   /* ------------------------------- 编辑 / 视频对话框 ------------------------------- */
 
   function closeBackendDialog() {
@@ -5298,6 +5332,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           </div>`}
           <div class="sct-bk-foot">
             <button type="button" class="sct-comfy-btn sct-bk-go">🚀 开始</button>
+            <button type="button" class="sct-comfy-btn sct-bk-free" title="让 ComfyUI 卸载已加载的模型并释放显存（跑视频前点一下更稳，不会自动跑）">🧹 腾显存</button>
             <button type="button" class="sct-comfy-btn sct-bk-quit">✖ 关闭（不生成）</button>
             <span class="sct-bk-hint">${isVideo ? '生成期间别关页面；关了就等它跑完，文件会落在 ComfyUI 的 output/video/SCT_H3' : '编辑器会让它按指令改图，原图不动'}</span>
           </div>
@@ -5350,6 +5385,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const tag = overlay.querySelector('.sct-bk-srctag');
       if (tag) tag.textContent = `源图：相册选图 ${f.name}`;
     });
+
+    bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
 
     bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
       const ta = overlay.querySelector('.sct-bk-text');
