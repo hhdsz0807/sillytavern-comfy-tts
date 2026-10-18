@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.6.2';
+  const SCT_BUILD = '2.7.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -175,6 +175,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     comfyRewriteProfile: '',           // 连接配置 id（酒馆「连接配置」里那份 API 配置）
     comfyRewritePreset: '',            // 对话预设名（Chat Completion 预设）
     comfyRewriteModel: '',             // 聊天补全的模型名
+    // 走「独立 API」而不是酒馆配置文件时用的地址/Key/模型（预设仍用酒馆已有的，只借它的采样参数）
+    comfyRewriteMode: 'tavern',        // 'tavern' = 走酒馆主模型 | 'api' = 走独立 API
+    comfyRewriteApiUrl: '',
+    comfyRewriteApiKey: '',
+    comfyRewriteApiModel: '',
+    comfyRewriteMaxTokens: 1600,
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -5579,6 +5585,46 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
+  // 走「独立 API」：直接向 OpenAI 兼容的 /chat/completions 发图 + 指令。
+  // 好处：不动酒馆的连接配置，模型随便填；代价：酒馆预设里的提示词模板用不上，
+  //       只会借用该预设的采样参数（temperature / top_p）。
+  async function callExternalVisionApi(opts) {
+    const url = String(opts.url || '').trim();
+    if (!url) throw new Error('还没填 API 地址');
+    const model = String(opts.model || '').trim();
+    if (!model) throw new Error('还没填模型名');
+    const body = {
+      model,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: String(opts.prompt || '') },
+          { type: 'image_url', image_url: { url: String(opts.dataUrl || '') } }
+        ]
+      }],
+      max_tokens: Math.max(256, Math.min(8000, parseInt(opts.maxTokens, 10) || 1600))
+    };
+    if (Number.isFinite(opts.temperature)) body.temperature = opts.temperature;
+    if (Number.isFinite(opts.topP)) body.top_p = opts.topP;
+    const headers = { 'Content-Type': 'application/json' };
+    if (opts.key) headers.Authorization = 'Bearer ' + String(opts.key).trim();
+    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    const txt = await res.text();
+    let data = null;
+    try { data = JSON.parse(txt); } catch (_) {}
+    if (!res.ok) {
+      const msg = data?.error?.message || data?.message || txt.slice(0, 200) || ('HTTP ' + res.status);
+      throw new Error('独立 API 返回 ' + res.status + '：' + msg);
+    }
+    const c = data?.choices?.[0]?.message?.content;
+    let out = '';
+    if (typeof c === 'string') out = c;
+    else if (Array.isArray(c)) out = c.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
+    out = String(out || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (!out) throw new Error('独立 API 没返回内容');
+    return out;
+  }
+
   async function rewriteVideoPromptByMainModel(dialog) {
     const ctx = getSTContext();
     const ta = dialog.querySelector('.sct-bk-text');
@@ -5627,6 +5673,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         draft ? `\n【初稿（是之前没看图时写的，凡与图不符一律以图为准）】\n${draft}` : ''
       ].filter(Boolean).join('\n');
 
+      const modeSel = dialog.querySelector('.sct-bk-rewrite-mode');
+      const rewriteMode = String(modeSel?.value || getSettings().comfyRewriteMode || 'tavern');
       const profileSel = dialog.querySelector('.sct-bk-profile');
       const presetSel = dialog.querySelector('.sct-bk-preset');
       const modelSel = dialog.querySelector('.sct-bk-model');
@@ -5635,17 +5683,39 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const wantPreset = String(presetSel?.value || '').trim();
       // 手填的模型 ID 优先（解决"清单里没有那个模型"）
       const wantModel = String(modelIdEl?.value || modelSel?.value || '').trim();
-      saveSettings({ comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset, comfyRewriteModel: wantModel });
+      saveSettings({
+        comfyRewriteMode: rewriteMode,
+        comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset, comfyRewriteModel: wantModel
+      });
 
-      const reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset, model: wantModel }, () =>
-        ctx.generateQuietPrompt({
-          quietPrompt: prompt,
-          quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
-          quietToLoud: false,
-          removeReasoning: true,
-          responseLength: 1600
-        })
-      );
+      let reply = '';
+      if (rewriteMode === 'api') {
+        // ★ 独立 API：地址/Key/模型自己填（留空就用「AI 辅助」那套），完全不动酒馆的连接配置
+        const cur = getSettings();
+        const apiUrl = String(dialog.querySelector('.sct-bk-api-url')?.value || '').trim() || String(cur.comfyAiAssistEndpoint || '');
+        const apiKey = String(dialog.querySelector('.sct-bk-api-key')?.value || '').trim() || String(cur.comfyAiAssistKey || '');
+        const apiModel = String(dialog.querySelector('.sct-bk-api-model')?.value || '').trim() || String(cur.comfyAiAssistModel || '');
+        saveSettings({ comfyRewriteApiUrl: apiUrl, comfyRewriteApiKey: apiKey, comfyRewriteApiModel: apiModel });
+        // 预设只借它的采样参数（提示词模板属于酒馆内部管线，外部接口用不上）
+        let pset = {};
+        try { pset = (wantPreset && ctx.getPresetManager?.('openai')?.getPresetSettings?.(wantPreset)) || {}; } catch (_) {}
+        reply = await callExternalVisionApi({
+          url: apiUrl, key: apiKey, model: apiModel, prompt, dataUrl,
+          temperature: Number(pset?.temperature),
+          topP: Number(pset?.top_p),
+          maxTokens: cur.comfyRewriteMaxTokens
+        });
+      } else {
+        reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset, model: wantModel }, () =>
+          ctx.generateQuietPrompt({
+            quietPrompt: prompt,
+            quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
+            quietToLoud: false,
+            removeReasoning: true,
+            responseLength: 1600
+          })
+        );
+      }
 
       const six = parseSixSectionPrompt(reply);
       if (!six) {
@@ -5820,6 +5890,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     const modelInfo = isVideo ? listChatModels(selectedProfile ? selectedProfile.model : '') : { names: [], current: '' };
     const savedPreset = String(s.comfyRewritePreset || '');
     const savedModel = String(s.comfyRewriteModel || '');
+    // 看图重写走哪：'tavern' 走酒馆主模型；'api' 走独立 API（地址/Key/模型自己填，留空复用「AI 辅助」那套）
+    const rewriteMode = String(s.comfyRewriteMode || 'tavern');
+    const apiPrefill = {
+      url: String(s.comfyRewriteApiUrl || s.comfyAiAssistEndpoint || ''),
+      key: String(s.comfyRewriteApiKey || s.comfyAiAssistKey || ''),
+      model: String(s.comfyRewriteApiModel || s.comfyAiAssistModel || '')
+    };
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
@@ -5841,8 +5918,20 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
             <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图 + <b>这条消息的正文</b> + 当前角色卡与对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
             <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
-            ${isVideo ? `<div class="sct-bk-two" style="margin-top:4px;">
-              <div class="sct-setting-col">
+            ${isVideo ? `<div class="sct-setting-col" style="margin-top:4px;">
+              <label>🧠 看图重写走哪个接口</label>
+              <select class="text_pole sct-bk-rewrite-mode">
+                <option value="tavern" ${rewriteMode !== 'api' ? 'selected' : ''}>走酒馆主模型（预设的提示词模板完整生效；需要模型能看图）</option>
+                <option value="api" ${rewriteMode === 'api' ? 'selected' : ''}>走独立 API（自己填地址/Key/模型；不动酒馆配置，预设只借采样参数）</option>
+              </select>
+              <div class="sct-bk-api-fields" style="display:${rewriteMode === 'api' ? '' : 'none'}; margin-top:6px;">
+                <input type="text" class="text_pole sct-bk-api-url" placeholder="API 地址（OpenAI 兼容 …/v1/chat/completions）" value="${escapeHtml(apiPrefill.url)}" />
+                <input type="password" class="text_pole sct-bk-api-key" placeholder="API Key（Bearer）" value="${escapeHtml(apiPrefill.key)}" style="margin-top:4px;" />
+                <input type="text" class="text_pole sct-bk-api-model" placeholder="模型名（要能看图，如 gpt-4o / qwen-vl-max）" value="${escapeHtml(apiPrefill.model)}" style="margin-top:4px;" />
+              </div>
+            </div>
+            <div class="sct-bk-two" style="margin-top:4px;">
+              <div class="sct-setting-col sct-bk-profile-col">
                 <label>🧠 重写用「连接配置」（酒馆里保存的 API 配置）</label>
                 <select class="text_pole sct-bk-profile">
                   <option value="">（跟随酒馆当前${profileInfo.current ? `：${escapeHtml((profileInfo.list.find((p) => p.id === profileInfo.current) || {}).name || profileInfo.current)}` : ''}）</option>
@@ -5963,6 +6052,18 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
     bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
+
+    // 切「走酒馆主模型 / 走独立 API」：显示对应输入（独立 API 模式下不需要连接配置）
+    const syncRewriteMode = () => {
+      const mode = overlay.querySelector('.sct-bk-rewrite-mode')?.value || 'tavern';
+      const apiBox = overlay.querySelector('.sct-bk-api-fields');
+      const profCol = overlay.querySelector('.sct-bk-profile-col');
+      if (apiBox) apiBox.style.display = mode === 'api' ? '' : 'none';
+      if (profCol) profCol.style.display = mode === 'api' ? 'none' : '';
+      try { saveSettings({ comfyRewriteMode: mode }); } catch (_) {}
+    };
+    overlay.querySelector('.sct-bk-rewrite-mode')?.addEventListener('change', syncRewriteMode);
+    syncRewriteMode();
 
     // 选了别的「连接配置」时，把模型下拉刷新成该配置自带的模型 + 当前已知清单
     overlay.querySelector('.sct-bk-profile')?.addEventListener('change', (e) => {
