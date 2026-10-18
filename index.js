@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.12.0';
+  const SCT_BUILD = '2.12.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5441,14 +5441,30 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return SIX_SECTION_KEYS.map((k) => `${k}:\n${parts[k] || ''}`).join('\n\n');
   }
 
+  // HTML 片段 → 纯文本（切段用）
+  function htmlToPlainText(html) {
+    try {
+      const d = document.createElement('div');
+      d.innerHTML = String(html || '');
+      return String(d.textContent || '').replace(/\s+/g, ' ').trim();
+    } catch (_) {
+      return String(html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+
   // 从正文里抓「角色说的话」：中文引号「」『』“” 和英文双引号都认，最多取 3 句
   function extractDialogueLines(anchor) {
     let t = '';
-    try {
-      const mes = anchor?.closest?.('.mes');
-      const box = mes?.querySelector?.('.mes_text');
-      t = String(box?.innerText || box?.textContent || '');
-    } catch (_) {}
+    // ★ 只认「这张图上面那段」正文：图片后面的文字属于下一张图
+    if (typeof anchor?.__sctScriptText === 'string') {
+      t = anchor.__sctScriptText;
+    } else {
+      try {
+        const mes = anchor?.closest?.('.mes');
+        const box = mes?.querySelector?.('.mes_text');
+        t = String(box?.innerText || box?.textContent || '');
+      } catch (_) {}
+    }
     if (!t) return [];
     t = t.replace(/image###[\s\S]*?###/g, ' ').replace(/<video>[\s\S]*?<\/video>/gi, ' ')
       .replace(/🎬\s*视频提示词已就绪/g, ' ').trim();
@@ -5470,6 +5486,21 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   // 抓「这条消息」的正文：作为【这一幕的正文】显式塞进重写要求里，
   // 免得聊天太长、上下文被截断时模型看不到图片前面的剧情
   function extractSceneText(anchor) {
+    // ★ 只取「这张图上面那段」正文（图片后面的内容属于下一张图）
+    if (typeof anchor?.__sctScriptText === 'string') {
+      let t = String(anchor.__sctScriptText || '');
+      t = t
+        .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
+        .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
+        .replace(/video###[\s\S]*?###/gi, ' ')
+        .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
+        .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
+        .replace(/image###[\s\S]*?###/gi, ' ')
+        .replace(/🎬\s*视频提示词已就绪/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
+    }
     try {
       const mes = anchor?.closest?.('.mes');
       const box = mes?.querySelector?.('.mes_text');
@@ -7150,12 +7181,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const tagRegex = /(?:<pre>\s*)?(?:<code>)?\s*(?:<image>([\s\S]*?)<\/image>|&lt;image&gt;([\s\S]*?)&lt;\/image&gt;|<img_prompt>([\s\S]*?)<\/img_prompt>|&lt;img_prompt&gt;([\s\S]*?)&lt;\/img_prompt&gt;|(?:<img[^>]*>\s*)?image###([\s\S]*?)###(?:\s*<\/image>)?)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
       let match;
       const promptsToDraw = [];
+      // ★ 按图片位置切段：每张图只吃「它上面那段」正文（上一张图之后 → 这张图之前）。
+      //   图片后面的文字属于下一张图，不能算到这张头上。
+      let lastTagEnd = 0;
 
       while ((match = tagRegex.exec(textHtml)) !== null) {
         const rawInner = match[1] || match[2] || match[3] || match[4] || match[5] || '';
         const cleanPrompt = parseImageTagContent(rawInner);
+        const segHtml = textHtml.slice(lastTagEnd, match.index);
+        lastTagEnd = match.index + match[0].length;
         if (cleanPrompt) {
-          promptsToDraw.push({ raw: match[0], prompt: cleanPrompt });
+          promptsToDraw.push({ raw: match[0], prompt: cleanPrompt, script: htmlToPlainText(segHtml) });
         }
       }
 
@@ -7197,6 +7233,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           cardContainer.dataset.sctTaskKey = taskKey;
           cardContainer.dataset.sctMesId = String(mesId);
           cardContainer.dataset.sctSlotIdx = String(idx);
+          // 这张图「上面那段」正文（台词/剧情只认这一段）
+          cardContainer.__sctScriptText = String(item.script || '');
           // 🎬 聊天模型顺带写好的视频提示词（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
           const vpFromAi = (videoPrompts.byImage || {})[idx] || '';
           cardContainer.__sctVideoPrompt = vpFromAi || getChatMessageVideoPrompt(mesId, idx) || '';
