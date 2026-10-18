@@ -28,7 +28,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.8.1';
+  const SCT_BUILD = '2.9.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -41,15 +41,34 @@
   //    交给主模型的好处：它已经知道剧情与画面，不用另接一个 AI 接口，也不会跑偏
   //    （代价：每次回复会长一些、多花 token，所以给了开关与精简/完整两档）
   // ---------------------------------------------------------------------------
-  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 最重要 · 绝对不许自己定镜头】你写这段时**还没看到生成出来的图**，所以**绝不能规定景别与机位**：不许出现 medium shot / close-up / wide shot / full body / upper body / portrait / camera orbits / zoom in / dutch angle / low angle / high angle / side view / from behind 这类镜头词 —— 一旦写了，出片就会"换角度、重新构图"。整段只允许描述**画面内部的微动**。\nsummary 与 detailed_description 里都必须写死这句（原样照抄）: "The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed."\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，同时写死手部任务锁（哪只手拿什么、全程不换手）、上面那句"构图与参考图完全一致"，以及禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
-  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后**只写一个 [Shot 1]，不写时间戳、不转场、不写景别**：只写画面内部的微动（呼吸起伏、一次眨眼、头发与衣角轻飘、光影闪动），并写死 ONE single unbroken continuous shot / NO camera cut / NO angle change / NO re-framing / NO scene change。\n`;
-  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；**但每个镜头都不许改变机位与景别**（只允许画面内部的微动与节奏变化），每个镜头都要写 Hand assignment（右手做什么、左手做什么、全程不换手），镜头与动作数量要和视频时长匹配（6 秒最多 2 个动作）。\n`;
-  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。\n`;
+  const VIDEO_INSTRUCTION_HEAD = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 镜头怎么处理】第一帧的构图、人物长相、服装、场景必须与参考图 <Picture 1> 一致（不许换人、换景、换画风）；但**镜头不用全程静止**：可以跟着动作推/拉/摇/跟，也可以在同一个场景里换景别。禁止的是"无理由跳到另一个地方 / 换一套打光 / 突然换成另一个机位再切回来"。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
+  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]（3~6 秒片就一镜到底，不写时间戳）：写清这个镜头里人物做什么、镜头怎么动（例如 slight push-in / gentle follow），动作不要塞太多；有台词就按上面的规则把台词写进这一镜。\n`;
+  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，再按镜头写：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；10~15 秒建议 2~3 个镜头，按正文顺序推进动作，每个镜头都写清机位/运镜（推拉摇跟、景别切换都行）与 Hand assignment。\n`;
+  const VIDEO_INSTRUCTION_SHOT_FREE = `5. detailed_description 先写一句全片风格声明，然后**按正文自由发挥**：可以设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），把正文里的动作、情绪和台词都演出来；镜头切换要跟着剧情走，不要无理由乱切；仍然是同一个角色、同一个场景设定、同一套画风。\n`;
+  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；**角色说的话要在这一段的音轨里有交代**（声音特质、语气、是否听清）；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。\n`;
 
   function buildVideoInstruction(mode) {
-    const compact = mode !== 'full';
-    return `\n\n${VIDEO_INSTRUCTION_HEAD}${compact ? VIDEO_INSTRUCTION_SHOT_SINGLE : VIDEO_INSTRUCTION_SHOT_MULTI}${VIDEO_INSTRUCTION_TAIL}`
-      + `【长度与语言】整段${compact ? '控制在 350 个英文单词以内（精简版）' : '控制在 900 个英文单词以内（完整版，允许多镜头与转场）'}；只写英文，不要解释、不要 markdown 围栏。`;
+    const m = String(mode || 'compact');
+    const shot = m === 'free' ? VIDEO_INSTRUCTION_SHOT_FREE
+      : (m === 'full' ? VIDEO_INSTRUCTION_SHOT_MULTI : VIDEO_INSTRUCTION_SHOT_SINGLE);
+    const len = m === 'free' ? '控制在 700 个英文单词以内（自由发挥版，允许 3~5 镜与运镜）'
+      : (m === 'full' ? '控制在 900 个英文单词以内（完整版，允许多镜头与转场）' : '控制在 350 个英文单词以内（精简版）');
+    return `\n\n${VIDEO_INSTRUCTION_HEAD}${shot}${VIDEO_INSTRUCTION_TAIL}【长度与语言】整段${len}；只写英文，不要解释、不要 markdown 围栏。`;
+  }
+
+  /** 给「看图重写」用的同一套镜头/台词规则（按模式取） */
+  function videoShotRulesForRewrite(mode) {
+    const m = String(mode || 'compact');
+    if (m === 'free') {
+      return '镜头：可以按剧情自由设计 3~5 个镜头与运镜（推拉摇移、跟拍、景别切换、慢动作都行），切换要跟着剧情走；但始终是同一个角色、同一个场景设定、同一套 2D 赛璐璐画风。'
+        + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement, the line is clearly heard in the audio。';
+    }
+    if (m === 'full') {
+      return '镜头：首帧与参考图一致；10~15 秒建议 2~3 个镜头，允许推拉摇跟，但不要无理由跳到另一个场景。'
+        + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement。';
+    }
+    return '镜头：第一帧构图与参考图一致；镜头可以做轻微推近或跟随，但不要跳切、不要换机位。'
+      + '\n台词：正文里角色说了话，就把原句用双引号写进这一镜（语言跟正文一致），并写明 she says it aloud with natural lip movement；没有台词不要编。';
   }
 
   /** 最终注入 AI 上下文的自动配图规范 = 生图规范 +（可选）视频规范 */
@@ -148,7 +167,7 @@
 <Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
 
 summary:
-[reference generation] The target video is a single unbroken flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>. The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed. She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
+[reference generation] The target video is a flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>: the first frame matches the reference image, then the camera follows the action (gentle push-in and follow, no unmotivated cut). She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
 
 retention_analysis:
 <Subject 1> (appears in [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
@@ -156,10 +175,10 @@ retention_analysis:
 <Subject 2> (appears in [Shot 1]): fully_preserved - the scenery stays consistent.
 
 detailed_description:
-The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. Framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1>; the camera never moves and the shot is never re-framed. ONE single unbroken continuous shot: no camera cut, no angle change, no new action, no scene change. [Shot 1] The girl sits still and only micro-motion happens - slow breathing, one soft blink, hair and hem swaying faintly, gentle light flickering. Hand assignment: both hands rest still and never move. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
+The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. The first frame matches the reference image <Picture 1>; afterwards the camera follows the action with a gentle push-in and a slow pan, never an unmotivated cut or scene change. [Shot 1] The girl starts in the pose from <Picture 1> and moves naturally: she turns slightly, breathes, blinks, hair and hem swaying. Hand assignment: both hands stay consistent and never swap tasks. If the scene contains a spoken line, she says it aloud with natural lip movement and the line is clearly heard in the audio. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
 
 overall_soundscape:
-A quiet room tone with faint ambience, strictly action-synced to the few visible motions.
+A quiet room tone with faint ambience, strictly action-synced: footsteps, cloth rustle and breathing land exactly on the matching motion. Any spoken line is heard clearly in the foreground, with an intimate close-mic voice.
 
 non_diegetic_music:
 A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note.`,
@@ -5696,11 +5715,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         '你现在扮演「视频提示词助手」。下面这张图就是这条消息里要拿去做视频的那张画面，请你**看着这张图**，写一份 MiniMax H3 用的六段式英文提示词。',
         '硬性要求：',
         '1) 六段齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:',
-        '2) ★最重要：镜头、角度、景别、构图、人物姿势必须与你**看到的这张图完全一致**，不许自己规定景别或镜头运动（不要 medium shot / close-up / wide shot / camera orbits / zoom 这类词）；只描述画面内部的微动（呼吸、眨眼、头发衣摆轻飘、光影闪动）。summary 与 detailed_description 里都要写死这句：The camera framing, angle, crop, composition, pose and background stay exactly the same as the reference image <Picture 1> for the entire video; the camera never moves and the shot is never re-framed.',
-        '3) 人物外观（发色、瞳色、服装、配饰、姿势、背景）必须按你**实际看到的这张图**写；图里看不清或你不确定的部分就写 "as shown in <Picture 1>"，绝不编造。',
-        '4) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
-        '5) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
-        '6) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。',
+        '2) ★最重要：人物长相、服装、场景、画风必须与你**看到的这张图**完全一致，不许换人 / 换景 / 换画风。',
+        `3) ${videoShotRulesForRewrite(getSettings().comfyVideoPromptMode)}`,
+        '4) 人物外观（发色、瞳色、服装、配饰、姿势、背景）必须按你**实际看到的这张图**写；图里看不清或你不确定的部分就写 "as shown in <Picture 1>"，绝不编造。',
+        '5) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
+        '6) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
+        '7) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。',
         sceneText
           ? `\n【这一幕的正文（酒馆里这条消息的文字，用来说明剧情与动作；画面细节仍以图为准）】\n${sceneText}`
           : '',
@@ -10093,9 +10113,10 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
             <div class="sct-setting-row">
               <label for="sct-cfg-video-prompt-mode">视频提示词详略</label>
-              <select id="sct-cfg-video-prompt-mode" class="text_pole" style="max-width:260px;">
-                <option value="compact" ${(s.comfyVideoPromptMode || 'compact') !== 'full' ? 'selected' : ''}>精简版：单镜头微动（≤350 词 · 推荐）</option>
-                <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：允许多镜头与转场（≤900 词）</option>
+              <select id="sct-cfg-video-prompt-mode" class="text_pole" style="max-width:300px;">
+                <option value="compact" ${(s.comfyVideoPromptMode || 'compact') === 'compact' ? 'selected' : ''}>精简版：1 镜 + 轻微运镜（≤350 词 · 3~6 秒）</option>
+                <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：2~3 镜、允许运镜（≤900 词 · 10~15 秒）</option>
+                <option value="free" ${s.comfyVideoPromptMode === 'free' ? 'selected' : ''}>自由发挥：按正文设计 3~5 镜 + 运镜 + 台词（≤700 词 · 推荐 15 秒）</option>
               </select>
             </div>
             <div class="sct-hint">开启后：模型每插入一个 <code>&lt;image&gt;</code> 标签，就在后面补一个 <code>&lt;video&gt;…&lt;/video&gt;</code>（第 N 个视频标签配第 N 个图标签，正文里会显示成一枚「🎬 视频提示词已就绪」小徽章）。<br>点图片卡片上的「🎬 视频」，弹窗会**自动填进模型写好的那份**；想临时换就当场改，改完会记成新的默认。</div>
@@ -11097,9 +11118,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     container.querySelector('#sct-cfg-video-prompt-mode')?.addEventListener('change', (e) => {
       saveSettings({ comfyVideoPromptMode: e.target.value });
       refreshInstPreview();
-      showToast(e.target.value === 'full'
-        ? '视频提示词换成「完整版」：允许多镜头与转场（更长、更贵）'
-        : '视频提示词换成「精简版」：单镜头微动、最稳最省', 'info');
+      const m = e.target.value;
+      showToast(m === 'free'
+        ? '视频提示词换成「自由发挥」：按正文设计 3~5 镜 + 运镜 + 台词（适合 15 秒）'
+        : (m === 'full'
+          ? '视频提示词换成「完整版」：2~3 镜、允许运镜（10~15 秒）'
+          : '视频提示词换成「精简版」：1 镜 + 轻微运镜（3~6 秒）'), 'info');
     });
 
     // 探查 ComfyUI 资产
