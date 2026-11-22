@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.2.3';
+  const SCT_BUILD = '3.3.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -33,9 +33,49 @@
 
   const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **主体必须是女性角色（硬性规则）**：插图主体一律为女性角色（1girl）。**若当前情景中只有男性角色（只有 1boy、没有女性出场）→ 不要生成任何生图标签，直接跳过配图**。\n3. **男性只作为局部肢体出现（重要）**：当情景里同时有男女双方时，**以 1girl 作为唯一的完整主体**，男方**只允许以局部肢体 / 背影 / 无正面脸的形式出现**（如 male hand, hand on 1girl's shoulder, male arm, cropped male body, faceless male, seen from behind），**绝对严禁把 1boy 完整画出来**（不给男性正面五官、不画男性全身）。\n4. **单主体与防污染规则**：**除非男女双方发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个女性角色主体**（1girl, solo）！英文 tag 必须完全聚焦于该角色，**绝对严禁在图中混入其他角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止误生其他角色的尾巴、发色或配饰）！\n5. **人数上限**：仅当情节中双方存在**直接身体接触或明确互动动作**时，才允许在 tag 里出现男方（且男方仅为局部肢体），并且必须明确写出具体互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n6. **标签格式**：<image>image###sfw/nsfw, 1girl, solo(常规单人) 或 1girl, 1boy(仅在有接触时,且男方只是局部肢体), 人物名称(女方必填; 男方写名字或直接省略), 动作与特征描述(有互动必须写明具体动作 + 男方的局部肢体描述), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【男女同场示例（女方是唯一完整主体，男方只露局部肢体）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1girl sitting on bench, male hand holding 1girl's hand, male arm around 1girl's waist, cropped male body, faceless male, romantic garden bench, sunset, warm cinematic lighting###</image>\n【只有男性的情景 → 不出图】：例如正文只有 1boy 独处、或对话对象尚未出场时，**不要插入任何 <image> 标签**。\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
-  /** 最终注入 AI 上下文的自动配图规范 */
+  // ---------------------------------------------------------------------------
+  // 🎬 图生视频：六段式提示词（MiniMax H3 硬规则）
+  //    段名必须带冒号、顺序固定；summary 以 [reference generation] 开头
+  // ---------------------------------------------------------------------------
+  const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
+
+  const VIDEO_RULES_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:
+【★★ 首帧锁】<Picture 1> 既是身份锚也是首帧。detailed_description 开头必须写 the first frame must be indistinguishable from <Picture 1>；[Shot 1] 只写「画面就是参考图 + 一个微动」，绝不引入新姿势、不换机位、不换场景。
+【★★ 四把锁（缺一不可）】
+1 首帧锁：见上。
+2 COSTUME LOCK：逐件点名服装（衬衫/领结/裙子/鞋/配饰），并明确哪块裸哪块穿，写死 No garment is removed, pulled down, pulled up further, replaced or added。
+3 BACKGROUND LOCK：逐项点名背景（树/墙/路/花瓣/光向/色温），写死 the camera never reveals any part of the place that is not visible in <Picture 1>。
+4 FRAME LOCK：no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark。
+【其他硬性要求】
+· Exactly one woman on screen（正面句）；no mirror, no reflection。
+· 台词：正文里角色说了话，就把那句台词原样写进对应镜头，格式 <Subject 1> says <d>[Chinese] 台词</d>；台词写 8–10 个汉字（3 字最容易跑成英文）；每句台词都要单独写一次 <Subject N> says，不能只写一次。
+· 台词块里只放 <d> 行，不要在旁边写中文说明（会被当台词念）。
+· [Shot 1] 不带时间戳；第 2 镜起写 At 00:03.000 - 00:06.500。
+`;
+
+  const VIDEO_RULES_SHOT = {
+    compact: `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]：只写「画面就是参考图 + 一个微动」（眨眼/呼吸/头发轻摆/光影微变），不写走路、转身、换姿势。控制在 350 个英文单词以内。`,
+    full: `5. detailed_description 先写一句全片风格声明，然后写 2~3 个镜头：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 At MM:SS.mmm；每镜标清 景别/机位/运镜/动作/台词/音效。第一镜必须与参考图构图一致。控制在 900 个英文单词以内。`,
+    free: `5. detailed_description 先写一句全片风格声明，然后按正文当剧本拆成 2~5 个镜头：每镜写 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 角色动作 + 台词 + 音效。分镜、镜头、动作、台词全部由你根据正文设计。控制在 700 个英文单词以内。`,
+  };
+
+  const VIDEO_RULES_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；角色说的话要在这一段音轨里有交代。
+7. non_diegetic_music 写 BPM + 乐器 + 收尾方式。
+8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。
+`;
+
+  /** 生成六段式写作规则（按详略档位） */
+  function buildVideoRules(mode) {
+    const m = String(mode || 'free');
+    const shot = VIDEO_RULES_SHOT[m] || VIDEO_RULES_SHOT.free;
+    return `${VIDEO_RULES_HEAD}${shot}${VIDEO_RULES_TAIL}`;
+  }
+
+  /** 最终注入 AI 上下文的自动配图规范 = 生图规范 +（可选）视频规范 */
   function composedInstructionText(s) {
-    return String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
+    const base = String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
+    if (!s || !s.comfyVideoAutoPrompt) return base;
+    return `${base}\n\n${VIDEO_TAG_INTRO}${buildVideoRules(s.comfyVideoPromptMode)}`;
   }
 
   // 默认配置
@@ -147,6 +187,20 @@
         alwaysOn: false
       }
     ],
+
+    // 🎬 图生视频（RunningHub 云端）
+    // 参考图 + 六段提示词 → 云端 H3 工作流出片；六段提示词可由聊天模型在写生图标签时一起生成
+    comfyVideoEnabled: true,
+    comfyVideoBackend: 'http://127.0.0.1:8899',   // 本机 h3swap-ui 后端
+    comfyVideoAccIndex: 2,                        // 用哪个账号（2/3 是免费币，0 是付费币）
+    comfyVideoSeconds: 5,                         // 5 秒 ≈ 70-90 币；15 秒 ≈ 215-260 币
+    comfyVideoAspect: '16:9 (Widescreen)',
+    comfyVideoMegapixels: 0.92,
+    comfyVideoSteps: 12,
+    comfyVideoAutoPrompt: true,                   // 让聊天模型在写生图标签时顺手写六段式
+    comfyVideoPromptMode: 'free',                 // 'compact' | 'full' | 'free'
+    comfyVideoPrompt: '',                         // 默认六段式模板（留空用内置）
+    comfyVideoDeleteCloud: true,                  // 下载后删云端任务
 
     // 自动配图指令注入
     // ★ 默认关闭:由用户自己用「世界书」挂提示词,插件不往 AI 上下文里塞任何东西
@@ -4342,6 +4396,492 @@
   const cardStateMap = new Map();
 
 
+  /* ==========================================================================
+     🎬 图生视频（RunningHub 云端）
+     --------------------------------------------------------------------------
+     链路：参考图 → 上传到本机 h3swap-ui 后端 → POST /api/mm/run → 轮询 /api/status
+           → 后端下载到 D:\h3工作台\金鱼\output\ → 前端用 /h3file 播放
+     六段提示词：可由聊天模型在写生图标签时一起生成（<video>…</video>），也可手写
+     ========================================================================== */
+
+  /** 从消息 DOM 里摘出 <video>…</video> 六段式（按位置配对到第 N 张图） */
+  function extractVideoPrompts(textEl) {
+    const list = [];
+    const byImage = {};
+    try {
+      const html = textEl.innerHTML || '';
+      const re = /(?:<pre>\s*)?(?:<code>)?\s*(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const raw = m[1] || m[2] || m[3] || '';
+        const txt = String(raw)
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+          .replace(/<[^>]+>/g, '')
+          .trim();
+        if (txt) list.push(txt);
+      }
+      // 按位置配对：第 N 个 video 标签 → 第 N 张图
+      list.forEach((v, i) => { byImage[i] = v; });
+    } catch (_) {}
+    return { list, byImage };
+  }
+
+  /** 把 <video> 标签从正文里换成小徽章（不污染正文） */
+  function replaceVideoTagsWithBadge(textEl) {
+    try {
+      let html = textEl.innerHTML || '';
+      const re = /(?:<pre>\s*)?(?:<code>)?\s*(?:<video>[\s\S]*?<\/video>|&lt;video&gt;[\s\S]*?&lt;\/video&gt;|video###[\s\S]*?###)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
+      if (!re.test(html)) return;
+      html = html.replace(re, '<span class="sct-video-chip" title="视频提示词已就绪，点图片卡片的 🎬 视频 使用">🎬 视频提示词已就绪</span>');
+      textEl.innerHTML = html;
+    } catch (_) {}
+  }
+
+  /** 取这张图对应的六段式（优先 AI 写的，其次消息 extra 里存的） */
+  function getVideoPromptFor(container, mesId, slotIdx) {
+    const fromDom = String(container?.__sctVideoPrompt || '').trim();
+    if (fromDom) return fromDom;
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (ctx && ctx.chat && !isNaN(numId) && ctx.chat[numId]) {
+        const slot = ctx.chat[numId].extra?.sct_images?.[slotIdx];
+        if (slot && typeof slot.videoPrompt === 'string') return slot.videoPrompt.trim();
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  /** 把六段式存进消息 extra（刷新后还在） */
+  function saveVideoPromptFor(mesId, slotIdx, videoPrompt) {
+    try {
+      const ctx = getSTContext();
+      const numId = parseInt(mesId, 10);
+      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return;
+      if (!ctx.chat[numId].extra) ctx.chat[numId].extra = {};
+      if (!ctx.chat[numId].extra.sct_images) ctx.chat[numId].extra.sct_images = {};
+      if (!ctx.chat[numId].extra.sct_images[slotIdx]) ctx.chat[numId].extra.sct_images[slotIdx] = {};
+      ctx.chat[numId].extra.sct_images[slotIdx].videoPrompt = String(videoPrompt || '');
+      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
+    } catch (_) {}
+  }
+
+  /** 从 DOM 元素反查酒馆消息 id */
+  function mesIdOf(el) {
+    return el?.closest?.('.mes')?.getAttribute('mesid') || el?.dataset?.sctMesId || '';
+  }
+
+  /** 后端地址（去掉末尾斜杠） */
+  function getVideoBackend() {
+    const s = getSettings();
+    let h = String(s.comfyVideoBackend || 'http://127.0.0.1:8899').trim().replace(/\/+$/, '');
+    if (!/^https?:\/\//i.test(h)) h = 'http://' + h;
+    return h;
+  }
+
+  /** 把图片 URL/Blob 转成 Blob（上传用） */
+  async function videoImageToBlob(source) {
+    if (!source) throw new Error('没有参考图');
+    if (source instanceof Blob) return source;
+    const url = String(source);
+    try {
+      const res = await fetch(url, { mode: 'cors' });
+      if (res.ok) {
+        const b = await res.blob();
+        if (b && b.size > 0) return b;
+      }
+    } catch (_) {}
+    return await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        try {
+          const cv = document.createElement('canvas');
+          cv.width = img.naturalWidth || img.width;
+          cv.height = img.naturalHeight || img.height;
+          cv.getContext('2d').drawImage(img, 0, 0);
+          cv.toBlob((b) => (b ? resolve(b) : reject(new Error('参考图转 Blob 失败'))), 'image/png');
+        } catch (e) { reject(new Error('参考图无法读取：' + e.message)); }
+      };
+      img.onerror = () => reject(new Error('参考图加载失败'));
+      img.src = url;
+    });
+  }
+
+  /** 上传参考图到后端，返回后端认识的文件名 */
+  async function uploadVideoRefImage(source) {
+    const backend = getVideoBackend();
+    const blob = await videoImageToBlob(source);
+    const ext = String(blob.type || '').includes('jpeg') ? '.jpg' : '.png';
+    const name = `sct_vid_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${ext}`;
+    const url = `${backend}/api/upload?name=${encodeURIComponent(name)}&kind=image&panel=${encodeURIComponent('金鱼')}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: blob,
+    });
+    if (!res.ok) throw new Error(`上传参考图失败 HTTP ${res.status}`);
+    const data = await res.json().catch(() => ({}));
+    if (!data || !data.name) throw new Error('后端未返回文件名：' + JSON.stringify(data).slice(0, 200));
+    return data.name;
+  }
+
+  /** 提交图生视频任务，返回 taskId */
+  async function submitVideoTask(refImageName, videoPrompt, opts = {}) {
+    const s = getSettings();
+    const backend = getVideoBackend();
+    const body = {
+      accIndex: Number.isInteger(opts.accIndex) ? opts.accIndex : (parseInt(s.comfyVideoAccIndex, 10) || 2),
+      images: [refImageName],
+      videos: [null],
+      audios: [null, null, null],
+      prompt: String(videoPrompt || ''),
+      megapixels: parseFloat(s.comfyVideoMegapixels) || 0.92,
+      aspect: s.comfyVideoAspect || '16:9 (Widescreen)',
+      seconds: parseFloat(s.comfyVideoSeconds) || 5,
+      steps: parseInt(s.comfyVideoSteps, 10) || 12,
+      twoPass: false,
+      extraLoras: [],
+      deleteCloud: s.comfyVideoDeleteCloud !== false,
+    };
+    const res = await fetch(`${backend}/api/mm/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || `提交失败 HTTP ${res.status}`);
+    }
+    const taskId = data.taskId || data.id;
+    if (!taskId) throw new Error('后端未返回 taskId：' + JSON.stringify(data).slice(0, 200));
+    return { taskId, raw: data };
+  }
+
+  /** 轮询任务状态，直到 done 或超时 */
+  async function pollVideoTask(taskId, onProgress, timeoutMs = 60 * 60 * 1000) {
+    const backend = getVideoBackend();
+    const t0 = Date.now();
+    const since = () => {
+      const sec = Math.round((Date.now() - t0) / 1000);
+      return sec < 90 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
+    };
+    while (Date.now() - t0 < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 5000));
+      let data = null;
+      try {
+        const res = await fetch(`${backend}/api/status?id=${encodeURIComponent(taskId)}`);
+        if (!res.ok) continue;
+        data = await res.json();
+      } catch (_) { continue; }
+      if (!data) continue;
+      const state = String(data.state || '');
+      if (state === 'pending') {
+        if (onProgress) onProgress(`⏳ 云端排队中 · 已用 ${since()}`);
+        continue;
+      }
+      if (state === 'running') {
+        if (onProgress) onProgress(`🎬 云端生成中 · 已用 ${since()}`);
+        continue;
+      }
+      if (state === 'done') {
+        if (data.status === 'error') {
+          throw new Error(data.message || '云端任务失败');
+        }
+        return data;
+      }
+      if (onProgress) onProgress(`⏳ 状态 ${state || '未知'} · 已用 ${since()}`);
+    }
+    throw new Error(`等待超时（${Math.round(timeoutMs / 60000)} 分钟）`);
+  }
+
+  /** 渲染视频卡（<video> 播放 + 下载） */
+  function renderVideoCard(container, items, promptText, opts = {}) {
+    const list = (items || []).filter((it) => it && it.url);
+    if (!list.length) return;
+    const backend = getVideoBackend();
+    const one = (it, i) => {
+      const src = String(it.url).startsWith('http') ? it.url : backend + it.url;
+      return `
+      <div class="sct-video-block">
+        ${it.pass ? `<div class="sct-video-label">${escapeHtml(it.pass)}</div>` : ''}
+        <video class="sct-video" controls playsinline preload="metadata" src="${escapeHtml(src)}"></video>
+        <div class="sct-video-bar">
+          <a class="sct-comfy-btn" href="${escapeHtml(src)}" download="sct_video_${i + 1}.mp4" target="_blank" rel="noopener">⬇️ 保存到手机</a>
+          <span class="sct-video-hint">播放卡住就先下载再看</span>
+        </div>
+      </div>`;
+    };
+    container.innerHTML = `
+      <div class="sct-comfy-card sct-video-card">
+        <div class="sct-comfy-card-header">
+          <div class="sct-title"><span>🎬</span><span>图生视频</span></div>
+          <div class="sct-prompt-preview" title="${encodeURIComponent(String(promptText || ''))}">${escapeHtml(String(promptText || '').slice(0, 40))}…</div>
+        </div>
+        ${opts.note ? `<div class="sct-video-note">${escapeHtml(opts.note)}</div>` : ''}
+        <div class="sct-video-list">${list.map(one).join('')}</div>
+        <div class="sct-comfy-footer">
+          <button type="button" class="sct-comfy-btn sct-video-again">🎬 再做一条</button>
+          <button type="button" class="sct-comfy-btn sct-btn-danger sct-video-close">✕ 关掉这张卡</button>
+        </div>
+      </div>`;
+    container.querySelector('.sct-video-close')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      container.remove();
+    });
+    container.querySelector('.sct-video-again')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openVideoDialog(container, container.__sctSourceUrl || '');
+    });
+  }
+
+  let sctVideoDialogEl = null;
+
+  function closeVideoDialog() {
+    const el = sctVideoDialogEl;
+    sctVideoDialogEl = null;
+    if (!el) return;
+    try {
+      if (el.__sctEsc) document.removeEventListener('keydown', el.__sctEsc, true);
+    } catch (_) {}
+    try { if (typeof el.close === 'function' && el.open) el.close(); } catch (_) {}
+    if (el.isConnected) el.remove();
+  }
+
+  /** 内置六段式模板（用户没填默认模板时用） */
+  function buildVideoTemplate() {
+    return `subject_definitions:
+<Picture 1> is the identity anchor AND the first frame; it fixes her face, hair, eye colour and body proportions.
+<Subject 1> is the girl in <Picture 1>, drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere.
+<Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
+
+summary:
+[reference generation] The target video is a flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>: the first frame must be indistinguishable from <Picture 1>, then she makes one tiny motion only. Exactly one woman on screen. No garment is removed, pulled down, pulled up further, replaced or added.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1] through [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
+<Picture 1> (identity anchor): fully_preserved - its views guide proportions, features and costume.
+<Subject 2> (appears in [Shot 1] through [Shot 1]): fully_preserved - the scenery stays consistent.
+
+detailed_description:
+The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. The first frame must be indistinguishable from <Picture 1>. [Shot 1] The frame is exactly the reference image plus one micro-motion: she blinks slowly and her hair sways slightly. No new pose, no camera move, no scene change. COSTUME LOCK: every garment stays exactly as in <Picture 1>; no garment is removed, pulled down, pulled up further, replaced or added. BACKGROUND LOCK: the camera never reveals any part of the place that is not visible in <Picture 1>. FRAME LOCK: no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark. Exactly one woman on screen; no mirror, no reflection.
+
+overall_soundscape:
+A quiet room tone with faint ambience, strictly action-synced: soft breathing and a light cloth rustle land exactly on the matching motion.
+
+non_diegetic_music:
+A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note.`;
+  }
+
+  /** 🎬 视频弹窗：确认参考图 + 编辑六段提示词 + 选时长 → 提交 */
+  function openVideoDialog(anchor, sourceUrl) {
+    closeVideoDialog();
+    const s = getSettings();
+    const mesId = mesIdOf(anchor);
+    const slotIdx = String(anchor?.dataset?.sctSlotIdx ?? '0');
+    const savedPrompt = getVideoPromptFor(anchor, mesId, slotIdx);
+    const defaultPrompt = String(s.comfyVideoPrompt || '').trim();
+    const prefill = savedPrompt || defaultPrompt;
+    const fromAi = !!savedPrompt;
+
+    const canUseDialog = typeof window.HTMLDialogElement !== 'undefined'
+      && typeof document.createElement('dialog').showModal === 'function';
+    const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
+    overlay.className = canUseDialog ? 'sct-video-dialog' : 'sct-video-dialog sct-video-fallback';
+    overlay.__sctAnchor = anchor;
+    overlay.__sctSource = sourceUrl || '';
+
+    const secondsOpts = [5, 10, 15].map((v) =>
+      `<option value="${v}" ${v === (parseInt(s.comfyVideoSeconds, 10) || 5) ? 'selected' : ''}>${v} 秒（${v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币'}）</option>`
+    ).join('');
+
+    overlay.innerHTML = `
+      <div class="sct-video-modal">
+        <div class="sct-video-head">
+          <span class="sct-video-title">🎬 图生视频（RunningHub 云端）</span>
+          <button type="button" class="sct-video-x sct-video-quit" title="关闭">✕ 关闭</button>
+        </div>
+        <div class="sct-video-body">
+          <div class="sct-video-srcrow">
+            <img class="sct-video-preview" src="${escapeHtml(sourceUrl || '')}" alt="参考图" />
+            <div class="sct-video-srcside">
+              <div class="sct-video-srctag">参考图：${sourceUrl ? '当前卡片这张' : '还没选'}</div>
+              <button type="button" class="sct-comfy-btn sct-video-pick">📁 从手机相册选一张</button>
+              <input type="file" accept="image/*" class="sct-video-file" style="display:none;" />
+              <div class="sct-video-hint">参考图会先上传到本机后端，再交给云端工作流</div>
+            </div>
+          </div>
+
+          <div class="sct-setting-col">
+            <label>六段提示词（英文 · 段名照抄 · 顺序固定）</label>
+            <div class="sct-video-hint" style="margin:2px 0 4px;">
+              ${fromAi ? '✅ 已填入聊天模型写好的那份（可直接改）' : (defaultPrompt ? '已填入设置里的默认模板（可直接改）' : '⚠️ 还没写六段式 —— 点下面的「📋 填入模板」或让聊天模型生成')}
+            </div>
+            <textarea class="text_pole sct-video-text" rows="12">${escapeHtml(prefill)}</textarea>
+            <div class="sct-video-fillrow">
+              <button type="button" class="sct-comfy-btn sct-video-fill">📋 填入模板</button>
+              <button type="button" class="sct-comfy-btn sct-video-copy">📋 复制当前提示词</button>
+            </div>
+          </div>
+
+          <div class="sct-video-two">
+            <div class="sct-setting-col">
+              <label>时长</label>
+              <select class="text_pole sct-video-seconds">${secondsOpts}</select>
+            </div>
+            <div class="sct-setting-col">
+              <label>账号</label>
+              <select class="text_pole sct-video-acc">
+                <option value="2" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 2 ? 'selected' : ''}>#2 免费币</option>
+                <option value="3" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 3 ? 'selected' : ''}>#3 免费币</option>
+                <option value="0" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 0 ? 'selected' : ''}>#0 付费币（无水印）</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="sct-video-foot">
+            <button type="button" class="sct-comfy-btn sct-video-go">🚀 开始生成</button>
+            <button type="button" class="sct-comfy-btn sct-video-quit">✖ 关闭（不生成）</button>
+            <span class="sct-video-hint">生成期间别关页面；5 秒片约 3-5 分钟</span>
+          </div>
+        </div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+    sctVideoDialogEl = overlay;
+    if (canUseDialog) {
+      try { overlay.showModal(); } catch (_) { overlay.classList.add('sct-video-fallback'); }
+    } else {
+      overlay.classList.add('sct-video-fallback');
+    }
+    overlay.addEventListener('close', () => {
+      if (sctVideoDialogEl === overlay) {
+        sctVideoDialogEl = null;
+        if (overlay.isConnected) overlay.remove();
+      }
+    });
+
+    overlay.querySelectorAll('.sct-video-quit').forEach((btn) => {
+      btn.addEventListener('click', (e) => { e.preventDefault(); closeVideoDialog(); });
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeVideoDialog(); });
+    const escHandler = (e) => { if (e.key === 'Escape') closeVideoDialog(); };
+    document.addEventListener('keydown', escHandler, true);
+    overlay.__sctEsc = escHandler;
+
+    const fileInput = overlay.querySelector('.sct-video-file');
+    overlay.querySelector('.sct-video-pick')?.addEventListener('click', () => fileInput?.click());
+    fileInput?.addEventListener('change', () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      overlay.__sctSource = f;
+      const img = overlay.querySelector('.sct-video-preview');
+      if (img) { img.style.display = ''; img.src = URL.createObjectURL(f); }
+      const tag = overlay.querySelector('.sct-video-srctag');
+      if (tag) tag.textContent = `参考图：相册选图 ${f.name}`;
+    });
+
+    overlay.querySelector('.sct-video-fill')?.addEventListener('click', () => {
+      const ta = overlay.querySelector('.sct-video-text');
+      if (ta) {
+        ta.value = String(getSettings().comfyVideoPrompt || '').trim() || buildVideoTemplate();
+        showToast('已填入模板，可以继续手改', 'info');
+      }
+    });
+    overlay.querySelector('.sct-video-copy')?.addEventListener('click', () => {
+      const ta = overlay.querySelector('.sct-video-text');
+      const txt = String(ta?.value || '');
+      if (!txt) { showToast('提示词是空的', 'warning'); return; }
+      navigator.clipboard.writeText(txt).then(() => showToast('已复制', 'success')).catch(() => showToast('复制失败', 'warning'));
+    });
+
+    overlay.querySelector('.sct-video-go')?.addEventListener('click', async () => {
+      const ta = overlay.querySelector('.sct-video-text');
+      const text = String(ta?.value || '').trim();
+      if (!text) { showToast('先写六段提示词', 'warning'); return; }
+      const src = overlay.__sctSource;
+      if (!src) { showToast('还没有参考图', 'warning'); return; }
+      const seconds = parseFloat(overlay.querySelector('.sct-video-seconds')?.value) || 5;
+      const accIndex = parseInt(overlay.querySelector('.sct-video-acc')?.value, 10);
+      saveSettings({
+        comfyVideoSeconds: seconds,
+        comfyVideoAccIndex: Number.isInteger(accIndex) ? accIndex : 2,
+      });
+      if (mesId) saveVideoPromptFor(mesId, slotIdx, text);
+      closeVideoDialog();
+      const cardEl = document.createElement('div');
+      cardEl.className = 'sct-comfy-card-container sct-video-card-container';
+      cardEl.setAttribute('aria-hidden', 'true');
+      cardEl.setAttribute('translate', 'no');
+      ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
+        .forEach((evt) => cardEl.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
+      (anchor.parentElement || anchor).insertBefore(cardEl, anchor.nextSibling);
+      cardEl.__sctSourceUrl = typeof src === 'string' ? src : '';
+      await triggerVideoGeneration(src, text, cardEl, { seconds, accIndex });
+    });
+  }
+
+  /** 主流程：参考图 + 六段提示词 → 出片 */
+  async function triggerVideoGeneration(source, videoPrompt, container, opts = {}) {
+    const s = getSettings();
+    if (!s.comfyVideoEnabled) {
+      showToast('图生视频功能未开启', 'warning');
+      return false;
+    }
+    const prompt = String(videoPrompt || '').trim();
+    if (!prompt) {
+      showToast('六段提示词是空的', 'warning');
+      return false;
+    }
+    const seconds = parseFloat(opts.seconds) || parseFloat(s.comfyVideoSeconds) || 5;
+    const costHint = seconds <= 5 ? '约 70-90 币' : (seconds <= 10 ? '约 150-180 币' : '约 215-260 币');
+
+    renderLoadingCard(container, prompt, `📤 正在上传参考图…`, null);
+    let refName = '';
+    try {
+      refName = await uploadVideoRefImage(source);
+    } catch (e) {
+      renderErrorCard(container, prompt, '参考图上传失败：' + e.message);
+      return false;
+    }
+
+    renderLoadingCard(container, prompt, `🎬 正在提交云端任务（${seconds} 秒 · ${costHint}）…`, null);
+    let taskId = '';
+    try {
+      const r = await submitVideoTask(refName, prompt, opts);
+      taskId = r.taskId;
+    } catch (e) {
+      renderErrorCard(container, prompt, '提交失败：' + e.message);
+      return false;
+    }
+
+    try {
+      const result = await pollVideoTask(taskId, (t) => {
+        renderLoadingCard(container, prompt, `${t}\n（${seconds} 秒片 · ${costHint}）`, null);
+      });
+      const items = (result.items || []).map((it) => ({
+        url: it.url,
+        pass: it.pass || '',
+        filename: it.filename || '',
+      }));
+      if (!items.length) {
+        renderErrorCard(container, prompt, '跑完了但没拿到视频文件');
+        return false;
+      }
+      const coins = Number(result.coins) || 0;
+      renderVideoCard(container, items, prompt, {
+        note: `✅ 出片完成${coins ? ` · 扣 ${coins} 币` : ''}${result.deleted ? ' · 云端已删' : ''}`,
+      });
+      showToast(`视频生成完成${coins ? `（扣 ${coins} 币）` : ''}`, 'success');
+      return true;
+    } catch (e) {
+      renderErrorCard(container, prompt, e.message);
+      return false;
+    }
+  }
+
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
     // 按文件名去重兜底：即使上游重复塞入同一张图(哪怕时间戳不同)，也绝不会出现"同一张图连翻好几页"
@@ -4400,12 +4940,14 @@
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
+            <button type="button" class="sct-comfy-btn sct-video-btn" title="用当前这张图当参考图，云端出带音频短视频（5 秒约 70-90 币）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">点击放大</span>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
+            <button type="button" class="sct-comfy-btn sct-video-btn" title="用当前这张图当参考图，云端出带音频短视频（5 秒约 70-90 币）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
@@ -4593,6 +5135,13 @@
         });
       });
     }
+
+    // 🎬 视频：拿当前这张当参考图，云端出片
+    container.querySelector('.sct-video-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openVideoDialog(container, currentSrc);
+    });
 
     // 清空本槽位全部图片
     const clearSlotBtn = container.querySelector('.sct-clear-slot-btn');
@@ -5496,6 +6045,10 @@
       return genId;
     })();
 
+    // 0. 先把 <video> 六段式摘出来（聊天模型在生图标签后面顺带写的），正文里换成小徽章
+    const videoPrompts = extractVideoPrompts(textEl);
+    replaceVideoTagsWithBadge(textEl);
+
     // 1. 扫描并替换生图标签 (同时完全兼容纯文本 image###...###、带标签 <image>...</image>、Markdown 代码包裹等多种形态)
     const textHtml = textEl.innerHTML;
     if (textHtml.includes('image###') || textHtml.includes('<image') || textHtml.includes('&lt;image') || textHtml.includes('img_prompt')) {
@@ -5554,6 +6107,12 @@
           cardContainer.dataset.sctTaskKey = taskKey;
           cardContainer.dataset.sctMesId = String(mesId);
           cardContainer.dataset.sctSlotIdx = String(idx);
+          // 🎬 聊天模型顺带写好的六段式（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
+          const vpFromAi = (videoPrompts.byImage || {})[idx] || '';
+          cardContainer.__sctVideoPrompt = vpFromAi || getVideoPromptFor(cardContainer, mesId, idx) || '';
+          if (vpFromAi && vpFromAi !== getVideoPromptFor(cardContainer, mesId, idx)) {
+            saveVideoPromptFor(mesId, idx, vpFromAi);
+          }
           // 这张图「上面那段」正文（台词/剧情只认这一段）
           cardContainer.__sctScriptText = String(item.script || '');
           cardContainer.setAttribute('aria-hidden', 'true');
@@ -8033,7 +8592,90 @@
             </div><!-- /③ C 站对照表 -->
           </div>
 
-          <!-- 板块 5: 自动配图指令与消息交互 -->
+          <!-- 板块 5: 图生视频（RunningHub 云端） -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>🎬</span>
+              <span>图生视频（RunningHub 云端）</span>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-video-enabled">启用图生视频功能</label>
+              <input type="checkbox" id="sct-cfg-video-enabled" ${s.comfyVideoEnabled ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-video-backend">本机后端地址（h3swap-ui）</label>
+              <input type="text" id="sct-cfg-video-backend" class="text_pole" placeholder="http://127.0.0.1:8899" value="${escapeHtml(s.comfyVideoBackend || 'http://127.0.0.1:8899')}" />
+              <div class="sct-hint">参考图先上传到这个后端，再由它提交给 RunningHub 云端。后端没起会报「上传参考图失败」。</div>
+            </div>
+
+            <div class="sct-video-two">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-acc">默认账号</label>
+                <select id="sct-cfg-video-acc" class="text_pole">
+                  <option value="2" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 2 ? 'selected' : ''}>#2 免费币（带水印）</option>
+                  <option value="3" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 3 ? 'selected' : ''}>#3 免费币（带水印）</option>
+                  <option value="0" ${(parseInt(s.comfyVideoAccIndex, 10) || 2) === 0 ? 'selected' : ''}>#0 付费币（无水印）</option>
+                </select>
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-seconds">默认时长</label>
+                <select id="sct-cfg-video-seconds" class="text_pole">
+                  ${[5, 10, 15].map(v => `<option value="${v}" ${(parseInt(s.comfyVideoSeconds, 10) || 5) === v ? 'selected' : ''}>${v} 秒（${v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币'}）</option>`).join('')}
+                </select>
+              </div>
+            </div>
+
+            <div class="sct-video-two">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-aspect">画面比例</label>
+                <select id="sct-cfg-video-aspect" class="text_pole">
+                  ${['16:9 (Widescreen)', '9:16 (Portrait Widescreen)', '1:1 (Square)', '4:3 (Standard)', '3:4 (Portrait Standard)'].map(v => `<option value="${escapeHtml(v)}" ${(s.comfyVideoAspect || '16:9 (Widescreen)') === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-mp">像素（0.92 MP 默认）</label>
+                <input type="number" id="sct-cfg-video-mp" class="text_pole" min="0.1" max="2" step="0.01" value="${parseFloat(s.comfyVideoMegapixels) || 0.92}" />
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-video-steps">步数</label>
+                <input type="number" id="sct-cfg-video-steps" class="text_pole" min="4" max="40" value="${parseInt(s.comfyVideoSteps, 10) || 12}" />
+              </div>
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-video-delcloud">下载后删云端任务 <span style="opacity:.6; font-size:11px;">(省云端存储；文件已下到本地)</span></label>
+              <input type="checkbox" id="sct-cfg-video-delcloud" ${s.comfyVideoDeleteCloud !== false ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-row">
+              <label for="sct-cfg-video-autoprompt">🎬 让聊天模型在写生图标签时，顺手写六段式视频提示词 <span style="opacity:.6; font-size:11px;">(会在生图标签后追加 &lt;video&gt;…&lt;/video&gt;；会明显加长每条回复)</span></label>
+              <input type="checkbox" id="sct-cfg-video-autoprompt" ${s.comfyVideoAutoPrompt ? 'checked' : ''} />
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-video-mode">六段式详略</label>
+              <select id="sct-cfg-video-mode" class="text_pole" style="max-width:320px;">
+                <option value="compact" ${(s.comfyVideoPromptMode || 'free') === 'compact' ? 'selected' : ''}>精简版：1 镜 + 微动（≤350 词 · 5 秒）</option>
+                <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：2~3 镜（≤900 词 · 10~15 秒）</option>
+                <option value="free" ${(s.comfyVideoPromptMode || 'free') === 'free' ? 'selected' : ''}>自由发挥：按正文拆 2~5 镜（≤700 词 · 推荐）</option>
+              </select>
+            </div>
+
+            <div class="sct-setting-col">
+              <label for="sct-cfg-video-prompt">默认六段式模板（留空 = 用内置模板）</label>
+              <textarea id="sct-cfg-video-prompt" class="text_pole" rows="6" placeholder="留空就行：点 🎬 弹窗里的「📋 填入模板」会用内置模板">${escapeHtml(s.comfyVideoPrompt || '')}</textarea>
+            </div>
+
+            <div class="sct-hint">
+              <b>用法</b>：图片卡片底栏点「🎬 视频」→ 确认参考图 → 六段提示词（聊天模型写好的会自动填入）→ 选时长 → 开始生成。<br>
+              <b>成本</b>：5 秒约 70-90 币，15 秒约 215-260 币。免费币账号出片带「RunningHub AI生成」水印，付费币无水印。<br>
+              <b>四把锁</b>：六段式里必须写首帧锁 / COSTUME LOCK / BACKGROUND LOCK / FRAME LOCK，否则衣服会被脱、背景会被重排、首帧会漂移。
+            </div>
+          </div>
+
+          <!-- 板块 6: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🤖</span>
@@ -8401,6 +9043,30 @@
       saveSettings({ comfyVae: e.target.value });
       showToast(`已指定外部 VAE:${e.target.value}(下次出图生效)`, 'success');
     });
+
+    // 🎬 图生视频设置
+    container.querySelector('#sct-cfg-video-enabled')?.addEventListener('change', (e) => saveSettings({ comfyVideoEnabled: e.target.checked }));
+    container.querySelector('#sct-cfg-video-backend')?.addEventListener('change', (e) => saveSettings({ comfyVideoBackend: String(e.target.value || '').trim() }));
+    container.querySelector('#sct-cfg-video-acc')?.addEventListener('change', (e) => saveSettings({ comfyVideoAccIndex: parseInt(e.target.value, 10) || 2 }));
+    container.querySelector('#sct-cfg-video-seconds')?.addEventListener('change', (e) => saveSettings({ comfyVideoSeconds: parseFloat(e.target.value) || 5 }));
+    container.querySelector('#sct-cfg-video-aspect')?.addEventListener('change', (e) => saveSettings({ comfyVideoAspect: e.target.value }));
+    container.querySelector('#sct-cfg-video-mp')?.addEventListener('change', (e) => saveSettings({ comfyVideoMegapixels: parseFloat(e.target.value) || 0.92 }));
+    container.querySelector('#sct-cfg-video-steps')?.addEventListener('change', (e) => saveSettings({ comfyVideoSteps: parseInt(e.target.value, 10) || 12 }));
+    container.querySelector('#sct-cfg-video-delcloud')?.addEventListener('change', (e) => saveSettings({ comfyVideoDeleteCloud: e.target.checked }));
+    container.querySelector('#sct-cfg-video-autoprompt')?.addEventListener('change', (e) => {
+      saveSettings({ comfyVideoAutoPrompt: e.target.checked });
+      updateExtensionPrompt();
+      const preview = container.querySelector('#sct-inst-preview');
+      if (preview) preview.textContent = composedInstructionText(getSettings());
+      showToast(e.target.checked ? '已开启：聊天模型会顺手写六段式（回复会变长）' : '已关闭：不再让聊天模型写六段式', 'info');
+    });
+    container.querySelector('#sct-cfg-video-mode')?.addEventListener('change', (e) => {
+      saveSettings({ comfyVideoPromptMode: e.target.value });
+      updateExtensionPrompt();
+      const preview = container.querySelector('#sct-inst-preview');
+      if (preview) preview.textContent = composedInstructionText(getSettings());
+    });
+    container.querySelector('#sct-cfg-video-prompt')?.addEventListener('change', (e) => saveSettings({ comfyVideoPrompt: e.target.value }));
 
     // 🎨 画风控制：点芯片切换，实时更新预览
     container.querySelectorAll('.sct-style-chip').forEach((btn) => {
