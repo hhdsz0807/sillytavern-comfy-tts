@@ -1,12 +1,12 @@
 {
   "display_name": "ComfyUI 绘图",
   "name": "sillytavern-comfy-tts",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "author": "DSH & SillyTavern",
-  "description": "酒馆专属 ComfyUI 智能生图插件。支持自动识别 <image> 标签、多图横向轮播、全屏大图预览、多 LoRA 链式激活、高清潜空间放大，以及 Qwen-Image 2.1 图像编辑（含第二张参考图做角色替换 / 换装 / 双人合片）。",
+  "description": "酒馆专属 ComfyUI 智能生图插件。支持自动识别 <image> 标签、多图横向轮播、全屏大图预览、多 LoRA 链式激活、高清潜空间放大（Hires Fix）、外部 VAE。",
   "type": "extension",
   "loading_order": 60,
-  "js": "index.js?ver=3.0.0",
-  "css": "style.css?ver=3.0.0",
+  "js": "index.js?ver=3.1.0",
+  "css": "style.css?ver=3.1.0",
   "homePage": "https://github.com/hhdsz0807/sillytavern-comfy-tts"
 }

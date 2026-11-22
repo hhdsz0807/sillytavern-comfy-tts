@@ -12,11 +12,8 @@
  *    - 自动识别正文 `<image>image###sfw, tag###</image>` 标签自动后台异步出图，手势多图轮播卡片、全屏大图灯箱预览；
  *    - 自动配图指令注入与一键复制；消息栏「🎨」快捷绘图与 /comfy 斜杠命令。
  *
- * 2. 图像编辑 (Qwen-Image 2.1)：
- *    - 图片卡片底栏「✏️ 编辑」→ 源图 + 中文指令 → 本机 Qwen-Image 2.1 工作流改图；
- *    - 支持挂第二张参考图（角色替换 / 换装 / 双人合片 / 只改画风）。
- *
- * 说明：MOSS 文生图、TTS 语音朗读、MiniMax H3 图生视频三块功能已移除。
+ * 说明：MOSS 文生图、TTS 语音朗读、MiniMax H3 图生视频、Qwen-Image 图像编辑
+ *       四块功能已移除，插件只保留 SDXL 文生图这一条链路。
  */
 
 (function () {
@@ -28,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.0.0';
+  const SCT_BUILD = '3.1.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -105,11 +102,6 @@
     comfyLocalCacheEnabled: true,
     comfyLocalCacheMaxMB: 800,         // 本地图库容量上限(MB),超出自动删最旧的
 
-    // 图像编辑(卡片上的 ✏️ 按钮)：本机 Qwen-Image 2.1 编辑工作流
-    // ★ 实测：cfg=1.0 时模型几乎不改图（像素差≈1，头发颜色不变）；cfg≈4 才会真的按指令改
-    comfyEditSteps: 30,
-    comfyEditCfg: 4.0,
-    comfyEditMegapixels: 1.0,
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -264,13 +256,13 @@
           }
           delete extSettings[MODULE_NAME].comfyGlobalLoraNegatives;
         }
-        // ★ v3.0.0：MOSS 文生图 / TTS 语音朗读 / MiniMax H3 图生视频 三块功能已移除，
-        //   把老配置里对应的设置键一次性清掉（只删这些键，其它配置一律不动）
+        // ★ v3.0.0：MOSS 文生图 / TTS 语音朗读 / MiniMax H3 图生视频 / Qwen 图像编辑
+        //   四块功能已移除，把老配置里对应的设置键一次性清掉（只删这些键，其它配置一律不动）
         const prunedVer = extSettings[MODULE_NAME].removedFeatureVersion || 1;
         if (prunedVer < 3) {
           const store = extSettings[MODULE_NAME];
           Object.keys(store).forEach((k) => {
-            if (/^(comfyMoss|comfyVideo|comfyH3|comfyRewrite|tts)/.test(k)
+            if (/^(comfyMoss|comfyVideo|comfyH3|comfyRewrite|comfyEdit|tts)/.test(k)
               || k === 'comfyTxt2ImgBackend') {
               delete store[k];
             }
@@ -4276,263 +4268,6 @@
 
   const cardStateMap = new Map();
 
-  /* ==========================================================================
-     🧩 图像编辑后端：Qwen-Image 2.1
-     --------------------------------------------------------------------------
-     · 工作流是「API 格式的固定图」，从本机 ComfyUI 真实跑通的提交里导出；
-       运行时只改写 提示词 / 源图 / 种子 / 步数 / 尺寸 几个字段，绝不在浏览器里重拼节点。
-     · 源图先 POST /upload/image 传进 ComfyUI 的 input 目录，再把文件名塞进 LoadImage。
-     · 结果卡写进酒馆消息 extra，刷新 / 切聊天后照样能找回来。
-     ========================================================================== */
-
-
-  const SCT_WF_QWEN = {"13":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"9:16 (Portrait Widescreen)","megapixels":1.5,"multiple":32}},"475":{"class_type":"LoadImage","inputs":{"image":""}},"476":{"class_type":"UNETLoader","inputs":{"unet_name":"Qwen\\qwen_image_2.1_int8_convrot.safetensors","weight_dtype":"default"}},"477":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_8b_int8_convrot.safetensors","device":"default","type":"qwen_image"}},"478":{"class_type":"VAELoader","inputs":{"vae_name":"qwen_image_2.1_vae_bf16.safetensors"}},"479":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":["13",1],"width":["13",0]}},"480":{"class_type":"VAEDecode","inputs":{"samples":["481",0],"vae":["478",0]}},"481":{"class_type":"KSampler","inputs":{"cfg":1.0,"denoise":1.0,"latent_image":["482",0],"model":["483",0],"negative":["497",1],"positive":["497",0],"sampler_name":"euler","scheduler":"simple","seed":["502",0],"steps":30}},"482":{"class_type":"ComfySwitchNode","inputs":{"on_false":["497",2],"on_true":["479",0],"switch":false}},"483":{"class_type":"QwenImage21Cache","inputs":{"device":"auto","dtype":"default","model":["476",0]}},"487":{"class_type":"SaveImage","inputs":{"filename_prefix":"QW21-%date:yyyyMMddhhmmss%","images":["480",0]}},"497":{"class_type":"TextEncodeQwenImage21","inputs":{"clip":["477",0],"images.image_1":["532",0],"negative_prompt":"","prompt":["571",0],"resolution":0,"vae":["478",0]}},"502":{"class_type":"Seed (rgthree)","inputs":{"seed":-1}},"532":{"class_type":"ImageScaleToTotalPixels","inputs":{"image":["475",0],"megapixels":1.5,"resolution_steps":32,"upscale_method":"lanczos"}},"571":{"class_type":"PrimitiveStringMultiline","inputs":{"value":""}}};
-
-
-  // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
-  // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
-  const SCT_WF_PATCH = {
-    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487', encoder: '497' }
-  };
-
-
-  let sctBackendDialogEl = null;
-  let sctBackendDialogEsc = null;
-  let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
-  let sctBackendDialogRef2 = null;        // 编辑弹窗的「第二张参考图」（URL / File，可选）
-
-
-  function cloneWorkflow(tpl) {
-    return JSON.parse(JSON.stringify(tpl));
-  }
-
-  function mesIdOf(el) {
-    return el?.closest?.('.mes')?.getAttribute('mesid') || el?.dataset?.sctMesId || '';
-  }
-
-  // 把任意图片源(URL / Blob / File)统一成 Blob，供上传 ComfyUI 用
-  async function toImageBlob(source) {
-    if (!source) throw new Error('没有可用的源图');
-    if (source instanceof Blob) return source;
-    const url = String(source);
-    try {
-      const res = await fetch(url, { mode: 'cors' });
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob && blob.size > 0) return blob;
-      }
-    } catch (_) { /* 跨域或离线时退回 canvas 重绘 */ }
-    return await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const cv = document.createElement('canvas');
-          cv.width = img.naturalWidth || img.width;
-          cv.height = img.naturalHeight || img.height;
-          cv.getContext('2d').drawImage(img, 0, 0);
-          cv.toBlob((b) => (b ? resolve(b) : reject(new Error('源图转 Blob 失败'))), 'image/png');
-        } catch (err) {
-          reject(new Error('源图无法读取（跨域/已被删除）：' + err.message));
-        }
-      };
-      img.onerror = () => reject(new Error('源图加载失败（文件可能已被删除）'));
-      img.src = url;
-    });
-  }
-
-  // 上传源图到 ComfyUI 的 input 目录，返回可直接喂给 LoadImage 的文件名
-  async function prepareComfySourceImage(source) {
-    const host = getCleanComfyHost();
-    const blob = await toImageBlob(source);
-    const isJpg = String(blob.type || '').includes('jpeg');
-    const name = `sct_src_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.${isJpg ? 'jpg' : 'png'}`;
-    return await uploadComfyInputImage(host, blob, name, '');
-  }
-
-  // 从 /history 任务里收集输出（图片走 images）
-  function collectComfyApiOutputs(task, host) {
-    const images = [];
-    const byNode = {};
-    const outputs = (task && task.outputs) || {};
-    Object.keys(outputs).forEach((nid) => {
-      const out = outputs[nid] || {};
-      const mine = { images: [] };
-      Object.keys(out).forEach((key) => {
-        const arr = out[key];
-        if (!Array.isArray(arr)) return;
-        arr.forEach((item) => {
-          if (!item || !item.filename) return;
-          const url = `${host}/view?filename=${encodeURIComponent(item.filename)}` +
-            `&subfolder=${encodeURIComponent(item.subfolder || '')}` +
-            `&type=${encodeURIComponent(item.type || 'output')}`;
-          images.push(url);
-          mine.images.push(url);
-        });
-      });
-      if (mine.images.length) byNode[String(nid)] = mine;
-    });
-    return { images, byNode };
-  }
-
-  // 提交 API 工作流 + 轮询结果（options: {timeoutMs, onProgress}）
-  async function submitComfyApiPrompt(promptObj, options = {}) {
-    const host = getCleanComfyHost();
-    const timeoutMs = options.timeoutMs || 15 * 60 * 1000;
-    const clientId = 'sct_bk_' + Math.random().toString(36).slice(2, 10);
-    const t0 = Date.now();
-    const since = () => {
-      const sec = Math.round((Date.now() - t0) / 1000);
-      return sec < 90 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
-    };
-
-    let ws = null;
-    try {
-      ws = new WebSocket(host.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`);
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (!msg || !msg.type) return;
-          const d = msg.data || {};
-          if (msg.type === 'progress' && options.onProgress) {
-            const { value, max } = d;
-            const pct = max ? Math.round((value / max) * 100) : 0;
-            options.onProgress(`⏳ 采样中 ${value}/${max} 步 (${pct}%) · 已用 ${since()}`);
-          } else if (msg.type === 'executing' && d.node && options.onProgress) {
-            options.onProgress(`⚙️ 正在执行节点 ${d.node}… · 已用 ${since()}`);
-          }
-        } catch (_) {}
-      };
-    } catch (_) {}
-
-    let promptId = '';
-    try {
-      const res = await fetch(`${host}/prompt`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptObj, client_id: clientId })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.prompt_id) {
-        const detail = data?.error?.message
-          || (data?.node_errors ? JSON.stringify(data.node_errors).slice(0, 400) : '')
-          || `HTTP ${res.status}`;
-        throw new Error('提交失败：' + detail);
-      }
-      promptId = data.prompt_id;
-    } catch (e) {
-      if (ws) { try { ws.close(); } catch (_) {} }
-      throw e;
-    }
-
-    if (options.onProgress) options.onProgress('🎨 任务已入队，正在出图…');
-    const pollMs = 2500;
-    while (Date.now() - t0 < timeoutMs) {
-      await new Promise((r) => setTimeout(r, pollMs));
-      let task = null;
-      try {
-        const h = await fetch(`${host}/history/${promptId}`);
-        if (!h.ok) continue;
-        const hd = await h.json();
-        task = hd[promptId];
-      } catch (_) { continue; }
-      if (!task) continue;
-      const statusStr = task.status?.status_str;
-      if (statusStr === 'error') {
-        const err = task.status?.messages?.find((m) => m[0] === 'execution_error')?.[1]?.exception_message;
-        if (ws) { try { ws.close(); } catch (_) {} }
-        throw new Error('ComfyUI 执行报错：' + (err || '详见 ComfyUI 控制台'));
-      }
-      const found = collectComfyApiOutputs(task, host);
-      if (found.images.length > 0) {
-        if (ws) { try { ws.close(); } catch (_) {} }
-        return found;
-      }
-    }
-    if (ws) { try { ws.close(); } catch (_) {} }
-    throw new Error(`等待超时（${Math.round(timeoutMs / 60000)} 分钟）`);
-  }
-
-
-  // 图像编辑：Qwen-Image 2.1（源图 + 中文指令 → 改图）
-  async function triggerComfyQwenEdit(source, instruction, container, taskKey = null, ref2 = null) {
-    const s = getSettings();
-    renderLoadingCard(container, instruction, '📤 正在把源图上传到 ComfyUI…', taskKey);
-    let uploaded = '';
-    try {
-      uploaded = await prepareComfySourceImage(source);
-    } catch (e) {
-      renderErrorCard(container, instruction, '源图上传失败：' + e.message, [], taskKey);
-      return false;
-    }
-    // ➕ 第二张参考图（可选）：多参考图合并/换装
-    let uploaded2 = '';
-    if (ref2) {
-      try {
-        renderLoadingCard(container, instruction, '📤 正在上传第二张参考图…', taskKey);
-        uploaded2 = await prepareComfySourceImage(ref2);
-      } catch (e) {
-        showToast('第二张参考图上传失败，这次只用第一张：' + e.message, 'warning');
-        uploaded2 = '';
-      }
-    }
-    const wf = cloneWorkflow(SCT_WF_QWEN);
-    const P = SCT_WF_PATCH.qwen;
-    wf[P.image].inputs.image = uploaded;
-    // 两张参考图时给模型一句"谁是图一谁是图二"的定位说明，避免它搞反
-    const finalInstruction = uploaded2
-      ? `[Reference images: image 1 = the main character / scene to keep; image 2 = the extra reference (its character and/or its outfit). Do exactly what the instruction says about which element comes from which image; keep the faces and identities of each person from their own image.]\n${String(instruction || '')}`
-      : String(instruction || '');
-    wf[P.prompt].inputs.value = finalInstruction;
-    wf[P.sampler].inputs.steps = Math.min(60, Math.max(4, parseInt(s.comfyEditSteps, 10) || 30));
-    wf[P.sampler].inputs.cfg = Math.min(8, Math.max(1, parseFloat(s.comfyEditCfg) || 4.0));
-    wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
-    wf[P.scale].inputs.megapixels = Math.min(16, Math.max(0.1, parseFloat(s.comfyEditMegapixels) || 1.0));
-    wf[P.save].inputs.filename_prefix = 'SCT_EDIT/QW21_' + uniqueFileStamp() + '_';
-    if (uploaded2) {
-      // ★ Node 497 的 images 是 autogrow（image_1 … image_16）：再加一路 LoadImage→缩放 挂到 image_2
-      wf['640'] = { class_type: 'LoadImage', inputs: { image: uploaded2 } };
-      wf['641'] = {
-        class_type: 'ImageScaleToTotalPixels',
-        inputs: { image: ['640', 0], megapixels: wf[P.scale].inputs.megapixels, resolution_steps: 32, upscale_method: 'lanczos' }
-      };
-      wf[P.encoder].inputs['images.image_2'] = ['641', 0];
-    }
-
-    container.__sctLastParams = {
-      checkpoint: 'Qwen-Image 2.1 int8（编辑工作流）', cfg: wf[P.sampler].inputs.cfg,
-      steps: wf[P.sampler].inputs.steps, sampler: wf[P.sampler].inputs.sampler_name,
-      scheduler: wf[P.sampler].inputs.scheduler, size: `${wf[P.scale].inputs.megapixels} MP`,
-      batch: 1, seed: wf[P.sampler].inputs.seed, vae: 'qwen_image_2.1_vae_bf16',
-      hires: '关', faceFix: '关', styleRef: '关', loras: ['（编辑后端不挂 LoRA）'],
-      positive: finalInstruction, negative: wf['497']?.inputs?.negative_prompt || ''
-    };
-    container.__sctLastWorkflow = wf;
-
-    renderLoadingCard(container, instruction, '✏️ Qwen-Image 2.1 正在按指令改图…', taskKey);
-    try {
-      const out = await submitComfyApiPrompt(wf, {
-        timeoutMs: 30 * 60 * 1000,
-        onProgress: (t) => renderLoadingCard(container, instruction, t, taskKey)
-      });
-      renderCarouselCard(container, out.images, '✏️ ' + instruction, []);
-      const rec = {
-        id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        kind: 'edit', urls: out.images, prompt: '✏️ ' + instruction, at: Date.now()
-      };
-      saveChatBackendCard(container, rec);
-      cacheImagesToPhone(out.images.map((u) => ({ url: u, prompt: '✏️ ' + instruction, loras: [] })))
-        .then(async (r) => {
-          if (r.saved > 0) { await ensurePersistentStorage(); await loadLocalImageUrls(); }
-        }).catch(() => {});
-      showToast('图像编辑完成！', 'success');
-      return true;
-    } catch (e) {
-      renderErrorCard(container, instruction, e.message, [], taskKey);
-      return false;
-    }
-  }
-
 
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
@@ -4578,7 +4313,7 @@
           🧩 ${escapeHtml(String(container.__sctLastParams.checkpoint))} · CFG ${escapeHtml(String(container.__sctLastParams.cfg))} · ${escapeHtml(String(container.__sctLastParams.steps))}步 · ${escapeHtml(String(container.__sctLastParams.sampler))}/${escapeHtml(String(container.__sctLastParams.scheduler))} · VAE ${escapeHtml(String(container.__sctLastParams.vae))}${(container.__sctLastParams.loras || []).length ? ` · LoRA ${escapeHtml(container.__sctLastParams.loras.join(', '))}` : ' · 无 LoRA'}
         </div>` : ''}
         <div class="sct-comfy-viewport" id="vp_${cardId}">
-          <img src="${escapeHtml(currentSrc)}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看 · 长按开启局部重绘" />
+          <img src="${escapeHtml(currentSrc)}" alt="ComfyUI Image ${safeIdx + 1}" title="单击放大查看" />
           <div class="sct-comfy-img-error" style="display:none;"></div>
           ${total > 1 ? `<div class="sct-comfy-counter-badge">${safeIdx + 1} / ${total}</div>` : ''}
         </div>
@@ -4592,14 +4327,12 @@
             <button type="button" class="sct-comfy-btn sct-retry-btn" title="重新生成并追加到轮播末尾">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
-            <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">点击放大</span>
             <button type="button" class="sct-comfy-btn sct-retry-btn">🔄 重新生成</button>
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
-            <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
@@ -4717,13 +4450,6 @@
       });
     }
 
-    // ✏️ 编辑：拿当前显示的这张当源图，交给本机 Qwen-Image 2.1
-    container.querySelector('.sct-bk-edit-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openBackendDialog('edit', container, currentSrc);
-    });
-
     // 只删当前这一张
     const delImgBtn = container.querySelector('.sct-del-img-btn');
     if (delImgBtn) {
@@ -4808,104 +4534,6 @@
   }
 
 
-  // 编辑/视频卡挂在原图卡片后面，同样隔离事件
-  function createBackendCardContainer(anchor, kind) {
-    const el = document.createElement('div');
-    el.className = 'sct-comfy-card-container sct-bk-card-container';
-    el.dataset.sctBackendKind = kind;
-    el.dataset.sctMesId = String(mesIdOf(anchor) || '');
-    el.setAttribute('aria-hidden', 'true');
-    el.setAttribute('translate', 'no');
-    ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
-      .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
-    (anchor.parentElement || anchor).insertBefore(el, anchor.nextSibling);
-    return el;
-  }
-
-  // 这些卡片存进酒馆消息 extra，刷新 / 切聊天后能还原（视频尤其重要：一条要跑 7 分钟）
-  function getChatBackendCards(mesId) {
-    try {
-      const ctx = getSTContext();
-      const numId = parseInt(mesId, 10);
-      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return [];
-      const arr = ctx.chat[numId].extra?.sct_backend_cards;
-      return Array.isArray(arr) ? arr : [];
-    } catch (_) { return []; }
-  }
-
-  function saveChatBackendCard(container, rec) {
-    try {
-      const mesId = mesIdOf(container);
-      const ctx = getSTContext();
-      const numId = parseInt(mesId, 10);
-      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return;
-      const node = ctx.chat[numId];
-      if (!node.extra) node.extra = {};
-      const arr = Array.isArray(node.extra.sct_backend_cards) ? node.extra.sct_backend_cards.slice() : [];
-      const idx = arr.findIndex((x) => x && x.id === rec.id);
-      if (idx >= 0) arr[idx] = rec; else arr.push(rec);
-      node.extra.sct_backend_cards = arr.slice(-12);
-      if (container) container.dataset.sctBkId = rec.id;
-      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
-    } catch (_) {}
-  }
-
-  // 扫描消息时还原这些卡片
-  function renderBackendCardsForMessage(textEl, mesId) {
-    const cards = getChatBackendCards(mesId);
-    if (!cards.length) return;
-    cards.forEach((rec) => {
-      if (!rec || !rec.urls || !rec.urls.length || !rec.id) return;
-      if (textEl.querySelector(`.sct-bk-card-container[data-sct-bk-id="${rec.id}"]`)) return;
-      const el = document.createElement('div');
-      el.className = 'sct-comfy-card-container sct-bk-card-container';
-      el.dataset.sctBkId = rec.id;
-      el.dataset.sctBackendKind = rec.kind || 'edit';
-      el.dataset.sctMesId = String(mesId);
-      el.setAttribute('aria-hidden', 'true');
-      el.setAttribute('translate', 'no');
-      ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
-        .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
-      textEl.appendChild(el);
-      renderCarouselCard(el, rec.urls, rec.prompt || '', []);
-    });
-  }
-
-  // 让 ComfyUI 主动卸载模型 + 释放显存池（POST /free）。
-  // 换模型 / 显存吃紧时点一下更稳；平时不用管，ComfyUI 自己会按需流式装卸。
-  async function freeComfyMemory(notify = true) {
-    const host = getCleanComfyHost();
-    const readFree = async () => {
-      try {
-        const r = await fetch(`${host}/system_stats`);
-        if (!r.ok) return null;
-        const d = await r.json();
-        return (d?.devices?.[0]?.vram_free || 0) / 1073741824;
-      } catch (_) { return null; }
-    };
-    const before = await readFree();
-    try {
-      const res = await fetch(`${host}/free`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unload_models: true, free_memory: true })
-      });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      await new Promise((r) => setTimeout(r, 1200));
-      const after = await readFree();
-      if (notify) {
-        showToast((after !== null && before !== null)
-          ? `已让 ComfyUI 卸载模型并释放显存：空闲 ${before.toFixed(2)} → ${after.toFixed(2)} GB`
-          : '已让 ComfyUI 卸载模型并释放显存', 'success');
-      }
-      return after;
-    } catch (e) {
-      if (notify) showToast('腾显存失败：' + (e?.message || e), 'warning');
-      return null;
-    }
-  }
-
-
   // HTML 片段 → 纯文本（切段用）
   function htmlToPlainText(html) {
     try {
@@ -4918,57 +4546,13 @@
   }
 
 
-  // ✏️ 编辑弹窗的一键指令预设（省得每次手打）
-  const SCT_EDIT_PRESETS = {
-    swap: '把图一里的人完整替换成图二里的人：脸型、五官、发色发型、瞳色、眉形、肤色、身材、服装、配饰全部严格按图二来。\n图一里那个人的姿势、动作、神态、表情、视线方向、手部位置、构图、镜头角度、光影和背景全部保持与图一完全一致，一个字都不要改。\n只替换人物本身，不要改动场景；不要把图一和图二的脸混在一起，画面里只能有一个人，不能出现第二个人。\n重点：图一的脸和图一的五官特征必须完全消失。',
-    outfit: '只把图二那个人身上的衣服（外套 / 内搭 / 裙子 / 鞋 / 配饰）穿到图一的人身上，衣服的款式、颜色、材质、花纹严格按图二来。\n图一的人的脸、发型、瞳色、身材、姿势、动作、神态、构图、镜头角度、光影、背景全部保持与图一完全一致。\n不要让图二的脸或第二个角色出现在画面里，只取它的服装。',
-    duo: '把图一里的人和图二里的人放进同一个画面：两个人抱在一起（自然的拥抱姿势，身体贴合、手部结构正确）。\n两个人的长相分别严格保持各自参考图的样子，不要互换身份、不要把两张脸混在一起。\n场景、光线、画风统一成图一那样的 2D 日系赛璐璐风格，构图自然，两个人的身体比例正确。\n画面里只有这两个人，不要出现第三个人，不要分屏。',
-    style: '保持画面里的人物、长相、姿势、构图和背景完全不变，只调整画风与光线：改成\n（在这里写你要的风格，例：暖色黄昏逆光、胶片颗粒感、更精致的光影、厚涂质感）。\n人物的身份和五官不要改变，不要换人。'
-  };
-
-
-  /* ------------------------------- 图像编辑对话框 ------------------------------- */
-
-  /* ---------------------------------------------------------------------------
-     卡片按钮的「总部兜底」：在聊天区装一次委托监听（捕获阶段）。
-     不管卡片是哪一次渲染出来的、有没有成功绑上按钮事件、页面更新后 DOM 有没有被重刷，
-     点「✏️ 编辑 / 立即开始生图 / 🔄 重新生成」都能用。
-     --------------------------------------------------------------------------- */
-  function cardCurrentImage(container) {
-    try {
-      const cardId = container?.dataset?.sctCardId;
-      const st = cardId ? cardStateMap.get(cardId) : null;
-      if (st && Array.isArray(st.images) && st.images.length) {
-        const url = st.images[((st.currentIdx % st.images.length) + st.images.length) % st.images.length];
-        return { url: url || '', prompt: st.prompt || '' };
-      }
-    } catch (_) {}
-    // 兜底：直接从 DOM 里读当前显示的那张
-    try {
-      const img = container?.querySelector?.('.sct-comfy-viewport img');
-      const src = img ? String(img.getAttribute('src') || '') : '';
-      return { url: src, prompt: container?.dataset?.sctPrompt || '' };
-    } catch (_) { return { url: '', prompt: '' }; }
-  }
-
-  function openBackendDialogSafe(kind, anchor, sourceUrl) {
-    try {
-      openBackendDialog(kind, anchor, sourceUrl);
-      return true;
-    } catch (e) {
-      console.error('[SCT] 打开弹窗失败：', e);
-      showToast('打开弹窗失败：' + (e?.message || e) + '（详情见控制台）', 'error');
-      return false;
-    }
-  }
-
   function installCardActionDelegate() {
     const chatRoot = document.getElementById('chat');
     if (!chatRoot || chatRoot.__sctActionDelegate) return;
     chatRoot.__sctActionDelegate = true;
     chatRoot.addEventListener('click', (e) => {
       const t = e.target && e.target.closest
-        ? e.target.closest('.sct-bk-edit-btn, .sct-start-draw, .sct-retry-btn')
+        ? e.target.closest('.sct-start-draw, .sct-retry-btn')
         : null;
       if (!t) return;
       const container = t.closest('.sct-comfy-card-container');
@@ -4979,12 +4563,6 @@
       const taskKey = container.dataset.sctTaskKey || null;
       const textEl = container.closest('.mes')?.querySelector('.mes_text');
       try {
-        if (t.classList.contains('sct-bk-edit-btn')) {
-          const { url } = cardCurrentImage(container);
-          if (!url) { showToast('这张卡的图片信息丢了：请点「🔄 重新生成」再来', 'warning'); return; }
-          openBackendDialogSafe('edit', container, url);
-          return;
-        }
         // 立即开始生图 / 重新生成
         if (taskKey) sctDrawingTasks.delete(taskKey);
         triggerComfyDraw(prompt, container, detectActiveLoras(textEl?.textContent || '', prompt), taskKey);
@@ -4994,246 +4572,6 @@
       }
     }, true);
   }
-
-  function closeBackendDialog() {
-    if (sctBackendDialogEsc) {
-      document.removeEventListener('keydown', sctBackendDialogEsc, true);
-      sctBackendDialogEsc = null;
-    }
-    const el = sctBackendDialogEl;
-    sctBackendDialogEl = null;
-    if (!el) return;
-    try { if (typeof el.close === 'function' && el.open) el.close(); } catch (_) {}
-    if (el.isConnected) el.remove();
-  }
-
-  // 手机上页面级 touch 处理会吃掉 click：click + pointerup + touchend 三保险，并防重复触发
-  function bindBackendTap(el, handler) {
-    if (!el) return;
-    let last = 0;
-    const fire = (e) => {
-      const now = Date.now();
-      if (now - last < 350) return;      // 同一个动作只认第一次
-      last = now;
-      try { e.preventDefault(); e.stopPropagation(); } catch (_) {}
-      const r = handler(e);
-      if (r && typeof r.catch === 'function') {
-        r.catch((err) => console.warn('[SCT] 对话框动作失败：', err));
-      }
-    };
-    el.addEventListener('click', fire);
-    el.addEventListener('pointerup', fire);
-    el.addEventListener('touchend', fire, { passive: false });
-  }
-
-  // 兜底：任何「关闭」控件被点到都关掉弹窗（即使个别元素没绑上事件也不至于卡死）
-  document.addEventListener('pointerup', (e) => {
-    try {
-      if (sctBackendDialogEl && e.target && e.target.closest && e.target.closest('.sct-bk-quit')) {
-        closeBackendDialog();
-      }
-    } catch (_) {}
-  }, true);
-
-  function openBackendDialog(kind, anchor, sourceUrl) {
-    closeBackendDialog();
-    const s = getSettings();
-    sctBackendDialogSource = sourceUrl || null;
-
-    // ★ 用原生 <dialog> + showModal()：弹窗被放进浏览器的「顶层(top layer)」，
-    //   无论酒馆 UI / 主题 / 其它插件用什么 z-index 都不可能盖住它。
-    const canUseDialog = typeof window.HTMLDialogElement !== 'undefined'
-      && typeof document.createElement('dialog').showModal === 'function';
-    const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
-    overlay.className = canUseDialog ? 'sct-bk-dialog' : 'sct-bk-dialog sct-bk-fallback';
-    overlay.__sctAnchor = anchor;
-
-    // ➕ 第二张参考图的下拉选项：聊天里其他已出图卡片
-    const ref2Options = (() => {
-      const opts = [];
-      try {
-        document.querySelectorAll('#chat .mes').forEach((mes) => {
-          const rawId = mes.getAttribute('mesid') ?? mes.dataset?.sctMesId ?? '';
-          const mesNo = Number.parseInt(rawId, 10);
-          mes.querySelectorAll('.sct-comfy-card-container').forEach((c) => {
-            if (c === anchor) return;
-            const img = c.querySelector('.sct-comfy-viewport img');
-            const src = img ? String(img.getAttribute('src') || '') : '';
-            if (!src || src.startsWith('data:image/svg')) return;
-            const slot = Number.parseInt(c.dataset.sctSlotIdx || '0', 10) || 0;
-            opts.push(`<option value="${escapeHtml(src)}">🖼 第${Number.isFinite(mesNo) ? mesNo + 1 : '?'}楼 · 第${slot + 1}张</option>`);
-          });
-        });
-      } catch (_) {}
-      return opts.slice(0, 60).join('');
-    })();
-    overlay.innerHTML = `
-      <div class="sct-bk-modal">
-        <div class="sct-bk-head">
-          <span class="sct-bk-title">✏️ Qwen-Image 2.1 图像编辑</span>
-          <button type="button" class="sct-bk-x sct-bk-quit" title="关闭这个窗口">✕ 关闭</button>
-        </div>
-        <div class="sct-bk-body">
-          <div class="sct-bk-srcrow">
-            <img class="sct-bk-preview" src="${escapeHtml(sctBackendDialogSource || '')}" alt="源图" />
-            <div class="sct-bk-srcside">
-              <div class="sct-bk-srctag">源图：${sctBackendDialogSource ? '当前卡片显示的这张' : '还没选'}</div>
-              <button type="button" class="sct-comfy-btn sct-bk-pick">📁 从手机相册选一张</button>
-              <input type="file" accept="image/*" class="sct-bk-file" style="display:none;" />
-              <div class="sct-bk-hint">源图会先上传到本机 ComfyUI 的 input 目录</div>
-            </div>
-          </div>
-          <div class="sct-bk-srcrow" style="margin-top:6px;">
-            <img class="sct-bk-ref2-preview" alt="参考图2" src="${escapeHtml(typeof sctBackendDialogRef2 === 'string' ? sctBackendDialogRef2 : '')}" style="${sctBackendDialogRef2 ? 'max-width:72px;' : 'display:none; max-width:72px;'}" />
-            <div class="sct-bk-srcside">
-              <div class="sct-bk-srctag">➕ 第二张参考图（可选）</div>
-              <select class="text_pole sct-bk-ref2">
-                <option value="">不使用第二张</option>
-                <option value="__album__">📁 从手机相册选</option>
-                ${ref2Options}
-              </select>
-              <input type="file" accept="image/*" class="sct-bk-ref2-file" style="display:none;" />
-              <div class="sct-bk-hint">两张图会一起编码给模型（最多支持 16 张）。用法举例：<b>「把图二里那个人身上的衣服穿到图一的人身上」</b>、<b>「让图一的人和图二的人抱在一起」</b>。图一＝上面那张源图，图二＝这里选的。</div>
-            </div>
-          </div>
-          <div class="sct-setting-col">
-            <label>编辑指令（直接写中文，例如：把头发改成粉色，其他别动）</label>
-            <textarea class="text_pole sct-bk-text" rows="3"></textarea>
-            <div class="sct-bk-fillrow">
-              <span class="sct-bk-hint">一键填指令：</span>
-              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="swap">🔁 角色替换（图二的人→放进图一）</button>
-              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="outfit">👕 换装（穿图二的衣服）</button>
-              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="duo">👥 双人合片（拥抱）</button>
-              <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="style">🎨 只改画风/光线</button>
-              <span class="sct-bk-hint">（先选好「第二张参考图」再点；填完还能继续手改）</span>
-            </div>
-          </div>
-          <div class="sct-bk-two">
-            <div class="sct-setting-col">
-              <label>重绘步数（20~30 步够用，越高越慢）</label>
-              <input type="number" class="text_pole sct-bk-steps" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
-            </div>
-            <div class="sct-setting-col">
-              <label>CFG（★ 1.0 几乎不改图，3.5~5 才会真的按指令改）</label>
-              <input type="number" class="text_pole sct-bk-cfg" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
-            </div>
-            <div class="sct-setting-col">
-              <label>输出像素（1.0 MP ≈ 1024×1024）</label>
-              <input type="number" class="text_pole sct-bk-mp" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
-            </div>
-          </div>
-          <div class="sct-bk-foot">
-            <button type="button" class="sct-comfy-btn sct-bk-go">🚀 开始</button>
-            <button type="button" class="sct-comfy-btn sct-bk-free" title="让 ComfyUI 卸载已加载的模型并释放显存（不会自动跑）">🧹 腾显存</button>
-            <button type="button" class="sct-comfy-btn sct-bk-quit">✖ 关闭（不生成）</button>
-            <span class="sct-bk-hint">编辑器会让它按指令改图，原图不动</span>
-          </div>
-        </div>
-      </div>`;
-    document.body.appendChild(overlay);
-    sctBackendDialogEl = overlay;
-    if (canUseDialog) {
-      try {
-        overlay.showModal();
-      } catch (err) {
-        console.warn('[SCT] showModal 失败，退回普通浮层：', err);
-        overlay.classList.add('sct-bk-fallback');
-        showToast('本机浏览器不支持顶层弹窗，已切换兜底模式（可能被主题盖住，请用底部「✖ 关闭」）', 'warning');
-      }
-    } else {
-      overlay.classList.add('sct-bk-fallback');
-      showToast('本机浏览器太旧（没有 dialog 顶层弹窗），已用兜底模式；关不掉的请点底部「✖ 关闭」', 'warning');
-    }
-    overlay.addEventListener('close', () => {
-      if (sctBackendDialogEl === overlay) {
-        sctBackendDialogEl = null;
-        if (overlay.isConnected) overlay.remove();
-      }
-    });
-
-    if (!sctBackendDialogSource) {
-      const pv = overlay.querySelector('.sct-bk-preview');
-      if (pv) pv.style.display = 'none';
-    }
-
-    overlay.querySelectorAll('.sct-bk-quit').forEach((btn) => bindBackendTap(btn, () => closeBackendDialog()));
-    const onBackdrop = (e) => { if (e.target === overlay) closeBackendDialog(); };
-    overlay.addEventListener('click', onBackdrop);
-    overlay.addEventListener('pointerdown', onBackdrop);
-    sctBackendDialogEsc = (e) => { if (e.key === 'Escape') closeBackendDialog(); };
-    document.addEventListener('keydown', sctBackendDialogEsc, true);
-
-    const fileInput = overlay.querySelector('.sct-bk-file');
-    bindBackendTap(overlay.querySelector('.sct-bk-pick'), () => fileInput?.click());
-    fileInput?.addEventListener('change', () => {
-      const f = fileInput.files && fileInput.files[0];
-      if (!f) return;
-      sctBackendDialogSource = f;
-      const img = overlay.querySelector('.sct-bk-preview');
-      if (img) { img.style.display = ''; img.src = URL.createObjectURL(f); }
-      const tag = overlay.querySelector('.sct-bk-srctag');
-      if (tag) tag.textContent = `源图：相册选图 ${f.name}`;
-    });
-
-    bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
-
-    overlay.querySelectorAll('.sct-bk-fill').forEach((btn) => {
-      bindBackendTap(btn, () => {
-        const key = String(btn.dataset.preset || '');
-        const text = SCT_EDIT_PRESETS[key];
-        if (!text) return;
-        const ta = overlay.querySelector('.sct-bk-text');
-        if (ta) { ta.value = text; ta.focus(); }
-        const needRef2 = key === 'swap' || key === 'outfit' || key === 'duo';
-        showToast(needRef2 && !sctBackendDialogRef2
-          ? '指令已填好 —— 记得在上面选「➕ 第二张参考图」（图二）再开始'
-          : '指令已填好，可以继续手改', 'info');
-      });
-    });
-
-    const ref2Sel = overlay.querySelector('.sct-bk-ref2');
-    const ref2File = overlay.querySelector('.sct-bk-ref2-file');
-    const showRef2Preview = (val) => {
-      const img = overlay.querySelector('.sct-bk-ref2-preview');
-      if (!img) return;
-      if (val) { img.style.display = ''; img.src = val; }
-      else { img.style.display = 'none'; img.removeAttribute('src'); }
-    };
-    ref2Sel?.addEventListener('change', () => {
-      const v = String(ref2Sel.value || '');
-      if (v === '__album__') { ref2File?.click(); return; }
-      sctBackendDialogRef2 = v || null;
-      showRef2Preview(v);
-    });
-    ref2File?.addEventListener('change', () => {
-      const f = ref2File.files && ref2File.files[0];
-      if (!f) return;
-      sctBackendDialogRef2 = f;
-      if (ref2Sel) ref2Sel.value = '';
-      showRef2Preview(URL.createObjectURL(f));
-    });
-
-    bindBackendTap(overlay.querySelector('.sct-bk-go'), async () => {
-      const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
-      if (!text) { showToast('先写编辑指令', 'warning'); return; }
-      if (!sctBackendDialogSource) { showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning'); return; }
-
-      const source = sctBackendDialogSource;
-      const steps = parseInt(overlay.querySelector('.sct-bk-steps')?.value, 10);
-      const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
-      const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
-      saveSettings({
-        comfyEditSteps: Number.isFinite(steps) ? steps : s.comfyEditSteps,
-        comfyEditCfg: Number.isFinite(cfg) ? cfg : s.comfyEditCfg,
-        comfyEditMegapixels: Number.isFinite(mp) ? mp : s.comfyEditMegapixels
-      });
-      closeBackendDialog();
-      const cardEl = createBackendCardContainer(anchor, kind);
-      cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
-    });
-  }
-
   async function triggerComfyInpaint(params) {
     const {
       imageUrl,
@@ -6266,8 +5604,6 @@
       }
     }
 
-    // 🧩 还原「✏️ 编辑 / 🎬 视频」的结果卡（刷新 / 切聊天后照样找得回来）
-    renderBackendCardsForMessage(textEl, mesId);
   }
 
   function scanAllMessages() {
@@ -8610,31 +7946,7 @@
             </div><!-- /③ C 站对照表 -->
           </div>
 
-          <!-- 板块 5: 图像编辑 (Qwen-Image 2.1) -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>✏️</span>
-              <span>图像编辑 (Qwen-Image 2.1)</span>
-            </div>
-
-            <div class="sct-bk-two">
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-steps">编辑步数（卡片底栏「✏️ 编辑」）</label>
-                <input type="number" id="sct-cfg-edit-steps" class="text_pole" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-cfg">编辑 CFG（★ 关键：1.0 几乎不改图，3.5~5 才真的改）</label>
-                <input type="number" id="sct-cfg-edit-cfg" class="text_pole" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-mp">编辑输出像素（1.0 MP ≈ 1024×1024）</label>
-                <input type="number" id="sct-cfg-edit-mp" class="text_pole" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
-              </div>
-            </div>
-            <div class="sct-hint">编辑走本机 Qwen-Image 2.1 编辑工作流：点图片卡片底栏「✏️ 编辑」→ 源图默认就是卡片当前这张（也能从手机相册选）→ 写中文指令（例：把头发改成亮粉色，其他别动）→ 源图先上传到 ComfyUI 的 input 目录再改图。还能再挂一张参考图做角色替换 / 换装 / 双人合片。<br><b>★ 实测</b>：本机这份工作流存档里 CFG=1.0，出图几乎和源图一模一样（像素差≈1、发色不变）；把 CFG 提到 4.0 才会真的按指令改（像素差≈5.6、头发明显变粉）。所以默认给了 4.0。</div>
-          </div>
-
-          <!-- 板块 6: 自动配图指令与消息交互 -->
+          <!-- 板块 5: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🤖</span>
@@ -8983,11 +8295,6 @@
     });
     container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
     container.querySelector('#sct-cfg-workflow').addEventListener('change', (e) => saveSettings({ comfyWorkflow: e.target.value }));
-
-    // ---- ✏️ 图像编辑（Qwen-Image 2.1）----
-    container.querySelector('#sct-cfg-edit-steps')?.addEventListener('change', (e) => saveSettings({ comfyEditSteps: parseInt(e.target.value, 10) || 30 }));
-    container.querySelector('#sct-cfg-edit-cfg')?.addEventListener('change', (e) => saveSettings({ comfyEditCfg: parseFloat(e.target.value) || 4.0 }));
-    container.querySelector('#sct-cfg-edit-mp')?.addEventListener('change', (e) => saveSettings({ comfyEditMegapixels: parseFloat(e.target.value) || 1.0 }));
 
     container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
 
