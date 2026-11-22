@@ -67,10 +67,33 @@
 | 档位 | 正向追加 | 负向追加 |
 | :--- | :--- | :--- |
 | **不控制**（默认） | 无 | 无 |
-| **二次元** | `anime style, japanese anime, cel shading, clean lineart, flat color, 2d illustration, anime coloring` | `photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, depth of field, bokeh` |
-| **2.5D** | `2.5d, semi-realistic, stylized 3d render, soft shading, subsurface scattering, volumetric lighting, detailed illustration, painterly` | `flat color, cel shading, pure lineart, cartoon, chibi, sketch, monochrome` |
+| **二次元** | `official art, intricate details, beautiful detailed eyes, detailed hair strands` | `photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, flat color, flat shading, comic, manga, sketch, rough, monochrome, color cast, tinted, blue tint, green tint, orange tint, purple tint, colored shadows, oversaturated, high saturation, neon` |
+| **2.5D** | `2.5d, semi-realistic, stylized 3d render, detailed illustration, painterly` | `flat color, flat shading, cel shading, pure lineart, cartoon, chibi, sketch, monochrome, photorealistic, real person, color cast, tinted, blue tint, green tint, orange tint, colored shadows, oversaturated` |
 | **3D** | `3d render, cgi, octane render, unreal engine, physically based rendering, subsurface scattering, volumetric lighting, ray tracing, high poly, detailed 3d model` | `anime, cel shading, flat color, 2d, lineart, sketch, drawing, illustration, painting, hand drawn` |
 | **真人写实** | `photorealistic, realistic photo, raw photo, photograph, real person, live action, natural skin texture, skin pores, detailed face, 85mm lens, shallow depth of field, film grain, professional photography` | `anime, cartoon, 3d render, cgi, illustration, painting, drawing, sketch, cel shading, flat color, doll, plastic skin, oversaturated` |
+
+> ⚠️ **v3.2.3 重要修正 —— 偏色坑（30+ 张实测）**
+>
+> 早期版本的「二次元」预设写了 `detailed shading, soft gradients, glossy highlights, vibrant colors`，
+> 在 **WAI-illustrious 系底模（wai16 / wai17）** 上会导致**整图严重偏色**（蓝紫阴影、青绿高光），
+> 加负向词也压不住。逐词对照测试结论：
+>
+> | 风格词 | wai17 结果 |
+> | :--- | :--- |
+> | 无（裸 LoRA） | ✅ 正常 |
+> | `official art` | ✅ 正常 |
+> | `intricate details, beautiful detailed eyes` | ✅ 正常 |
+> | `anime illustration` | ❌ 偏青绿 |
+> | `detailed shading, soft gradients, glossy highlights` | ❌ **全绿** |
+> | `vibrant colors, rich color depth` | ❌ 偏色 |
+>
+> 采样器（euler / dpmpp_2m）、调度器（normal / karras）、CFG（5 / 6 / 7）、种子 —— **都不是原因**。
+>
+> **两个独立原因**：
+> 1. **WAI 底模对 shading 类词极度敏感** → 已从预设中彻底移除这类词；
+> 2. **WAI 底模本身带轻微青调**（白衬衫偏青白）→ 这是底模特性，提示词改不掉。
+>
+> **建议**：要纯正色彩，底模换 `v6.safetensors`（实测零偏色）；必须用 WAI 就选「不控制」档，靠底模自己出。
 
 **设计要点**：
 

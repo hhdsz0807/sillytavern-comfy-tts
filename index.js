@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.2.0';
+  const SCT_BUILD = '3.2.3';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -2799,14 +2799,24 @@
       negative: '',
     },
     anime: {
-      label: '二次元（日系赛璐璐 / 动漫插画）',
-      positive: 'anime style, japanese anime, cel shading, clean lineart, flat color, 2d illustration, anime coloring',
-      negative: 'photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, depth of field, bokeh',
+      label: '二次元（精细动画插画 / 官方立绘）',
+      // ★★★ 实测结论（wai17 / wai16 / v6 三底模 × 逐词对照，共 30+ 张验证）：
+      //   1) WAI-illustrious 系底模对 shading / gradient / vibrant 类词极度敏感：
+      //      detailed shading / soft gradients / glossy highlights / vibrant colors
+      //      → 给阴影上互补色（蓝紫阴影、青绿高光），整图严重偏色，加负向词也压不住；
+      //   2) flat color / cel shading / clean lineart → 画面被压成平涂漫画风，丢失精细度；
+      //   3) 只有 official art + intricate details 这类「画质词」能兼顾精细与色彩正常；
+      //   4) WAI 底模本身带轻微青调（白衬衫会偏青白），这是底模特性，提示词改不掉；
+      //      要纯正色彩请换非 Illustrious 底模（如 v6）。
+      //   所以这里刻意不写任何 shading / gradient / vibrant 类词。
+      positive: 'official art, intricate details, beautiful detailed eyes, detailed hair strands',
+      negative: 'photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, flat color, flat shading, comic, manga, sketch, rough, monochrome, color cast, tinted, blue tint, green tint, orange tint, purple tint, colored shadows, oversaturated, high saturation, neon',
     },
     d25: {
       label: '2.5D（半写实 / 厚涂立体感）',
-      positive: '2.5d, semi-realistic, stylized 3d render, soft shading, subsurface scattering, volumetric lighting, detailed illustration, painterly',
-      negative: 'flat color, cel shading, pure lineart, cartoon, chibi, sketch, monochrome',
+      // 同样避开 shading / gradient 类词（见上面二次元预设的实测说明）
+      positive: '2.5d, semi-realistic, stylized 3d render, detailed illustration, painterly',
+      negative: 'flat color, flat shading, cel shading, pure lineart, cartoon, chibi, sketch, monochrome, photorealistic, real person, color cast, tinted, blue tint, green tint, orange tint, colored shadows, oversaturated',
     },
     d3: {
       label: '3D（三维渲染 / CG 质感）',
