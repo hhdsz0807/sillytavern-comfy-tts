@@ -1,5 +1,5 @@
 /* ==========================================================================
-   SillyTavern ComfyUI 绘图 & TTS 语音朗读插件样式表 (sillytavern-comfy-tts)
+   SillyTavern ComfyUI 绘图插件样式表 (sillytavern-comfy-tts)
    设计语言: 借鉴 ST-BaiBai-Image「柏宝绘」—— 海军黑底 × 青瓷蓝绿强调,
    token 驱动 (--sct-*),所有颜色/圆角/阴影/动效从根变量取,组件不写死颜色。
    ========================================================================== */
@@ -54,8 +54,6 @@
 .sct-comfy-card,
 .sct-inpaint-dialog,
 .sct-lightbox-content,
-.sct-tts-pill-btn,
-.sct-global-tts-badge,
 .sct-mes-action-btn {
   font-family: var(--sct-font-sans);
   box-sizing: border-box;
@@ -88,104 +86,6 @@
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
-}
-
-/* --------------------------------------------------------------------------
-   2. 划选文本浮动朗读胶囊 (Floating Selection TTS Capsule)
-   -------------------------------------------------------------------------- */
-@keyframes sctPulseBlue {
-  0% { box-shadow: 0 0 0 0 rgba(118, 171, 174, 0.45); }
-  70% { box-shadow: 0 0 0 10px rgba(118, 171, 174, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(118, 171, 174, 0); }
-}
-
-@keyframes sctPulseRed {
-  0% { box-shadow: 0 0 0 0 rgba(217, 107, 107, 0.55); }
-  70% { box-shadow: 0 0 0 12px rgba(217, 107, 107, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(217, 107, 107, 0); }
-}
-
-.sct-tts-pill-btn {
-  position: fixed !important;
-  z-index: 2147483647 !important;
-  display: none;
-  align-items: center;
-  gap: 7px;
-  padding: 8px 16px;
-  border-radius: var(--sct-radius-pill);
-  font-size: 13px;
-  font-weight: 600;
-  font-family: var(--sct-font-sans);
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  touch-action: manipulation;
-  transition: transform 0.15s var(--sct-ease), opacity 0.18s var(--sct-ease),
-    background var(--sct-dur) var(--sct-ease), border-color var(--sct-dur) var(--sct-ease);
-  box-shadow: var(--sct-shadow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  line-height: 1.4;
-}
-
-.sct-tts-pill-btn:active {
-  transform: scale(0.94) !important;
-}
-
-.sct-tts-idle {
-  background: rgba(55, 53, 62, 0.94);
-  border: 1px solid var(--sct-accent);
-  color: var(--sct-accent);
-}
-
-.sct-tts-idle:hover {
-  background: var(--sct-surface);
-  border-color: var(--sct-accent);
-  color: var(--sct-ink);
-}
-
-.sct-tts-playing {
-  background: rgba(55, 53, 62, 0.94);
-  border: 1px solid var(--sct-danger);
-  color: var(--sct-danger);
-  animation: sctPulseRed 1.8s infinite;
-}
-
-.sct-tts-playing:hover {
-  background: var(--sct-surface);
-  color: var(--sct-danger);
-}
-
-/* --------------------------------------------------------------------------
-   3. 全局播放状态指示器 (Global Playing Floating Badge)
-   -------------------------------------------------------------------------- */
-.sct-global-tts-badge {
-  position: fixed !important;
-  bottom: 84px !important;
-  right: 20px !important;
-  z-index: 2147483646 !important;
-  display: none;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border-radius: var(--sct-radius-pill);
-  background: rgba(55, 53, 62, 0.95);
-  border: 1px solid var(--sct-accent);
-  color: var(--sct-accent);
-  font-size: 12px;
-  font-weight: 600;
-  box-shadow: var(--sct-shadow);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  cursor: pointer;
-  user-select: none;
-  -webkit-user-select: none;
-  animation: sctPulseBlue 2s infinite;
-}
-
-.sct-global-tts-badge:hover {
-  border-color: var(--sct-danger);
-  color: var(--sct-danger);
 }
 
 /* --------------------------------------------------------------------------
@@ -1074,69 +974,6 @@
 
 .sct-textarea-autowrap.sct-lora-triggers {
   min-height: 84px !important;
-}
-
-/* --------------------------------------------------------------------------
-   9. 引擎切换与小米 TTS 专属卡片 (Engine Box & Xiaomi TTS Card)
-   -------------------------------------------------------------------------- */
-.sct-engine-box {
-  background: var(--sct-bg);
-  border: 1px solid var(--sct-line);
-  border-radius: var(--sct-radius);
-  padding: 12px;
-  margin-top: 8px;
-  margin-bottom: 10px;
-}
-
-.sct-engine-box-header {
-  font-weight: 600;
-  font-size: 13px;
-  color: var(--sct-ink);
-  margin-bottom: 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--sct-line);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.sct-engine-chips .sct-engine-btn {
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: var(--sct-radius-sm);
-}
-
-.sct-engine-chips .sct-engine-btn[data-engine="xiaomi"].active {
-  background: var(--sct-accent-soft);
-  border-color: var(--sct-accent);
-  color: var(--sct-accent);
-  font-weight: 600;
-}
-
-.sct-engine-chips .sct-engine-btn[data-engine="webspeech"].active {
-  background: rgba(113, 140, 193, 0.18);
-  border-color: #718cc1;
-  color: #a9bfe0;
-  font-weight: 600;
-}
-
-.sct-engine-chips .sct-engine-btn[data-engine="openai"].active {
-  background: rgba(82, 158, 147, 0.18);
-  border-color: #529E93;
-  color: #8ed0c6;
-  font-weight: 600;
-}
-
-.sct-voice-chips .sct-v-chip {
-  padding: 4px 10px;
-  font-size: 11px;
-}
-
-.sct-voice-chips .sct-v-chip.active {
-  background: var(--sct-accent-soft);
-  border-color: var(--sct-accent);
-  color: var(--sct-accent);
-  font-weight: 600;
 }
 
 /* --------------------------------------------------------------------------
@@ -2759,7 +2596,7 @@
 }
 
 /* ==========================================================================
-   🧩 多后端（✏️ Qwen 图像编辑 / 🎬 MiniMax H3 图生视频 / MOSS 文生图）2026-10
+   🧩 图像编辑后端（✏️ Qwen-Image 2.1）2026-10
    ========================================================================== */
 .sct-bk-two { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-start; }
 .sct-bk-two > * { flex: 1 1 160px; min-width: 150px; }
@@ -2849,59 +2686,7 @@
 .sct-bk-two .sct-setting-col { margin-bottom: 0; }
 
 .sct-bk-card-container { margin: 6px 0 10px; }
-.sct-bk-card .sct-bk-videos { display: flex; flex-direction: column; gap: 10px; padding: 8px; }
-.sct-bk-video { width: 100%; max-height: 62vh; border-radius: var(--sct-radius, 10px); background: #000; display: block; }
-.sct-bk-video-bar { display: flex; align-items: center; gap: 8px; padding: 0 2px 6px; flex-wrap: wrap; }
 .sct-comfy-btn.sct-bk-edit-btn { border-color: var(--sct-accent, #76ABAE); color: var(--sct-accent, #76ABAE); }
-.sct-comfy-btn.sct-bk-video-btn { border-color: var(--sct-warning, #D9B358); color: var(--sct-warning, #D9B358); }
-
-/* 🎬 聊天主模型顺带写好的视频提示词：正文里显示成一枚小徽章 */
-.sct-video-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin: 2px 4px;
-  padding: 2px 9px;
-  font-size: 11px;
-  line-height: 1.7;
-  color: var(--sct-accent, #76ABAE);
-  background: var(--sct-accent-soft, #76ABAE26);
-  border: 1px solid var(--sct-accent, #76ABAE);
-  border-radius: var(--sct-radius-pill, 999px);
-  vertical-align: middle;
-  user-select: none;
-}
-
-/* 🎬 一采 / 二采 分阶段推送：每段视频带标题，顶部一行状态 */
-.sct-bk-video-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.sct-bk-video-label {
-  font-size: 12px; font-weight: 600; opacity: 0.9;
-  color: var(--sct-accent, #76ABAE);
-  padding-left: 2px;
-}
-.sct-bk-stage-note {
-  display: flex; align-items: center; gap: 6px;
-  margin: 0 8px 6px; padding: 6px 10px;
-  font-size: 11.5px; line-height: 1.5;
-  color: var(--sct-ink-soft, #B0B5B4);
-  background: var(--sct-accent-soft, #76ABAE26);
-  border-radius: var(--sct-radius-sm, 8px);
-}
-
-/* 🎬 只跑一采 勾选项 */
-.sct-bk-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 12.5px;
-  line-height: 1.6;
-  cursor: pointer;
-  user-select: none;
-  padding: 6px 2px;
-}
-.sct-bk-check input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 auto; }
-
 /* 🔁 编辑弹窗的一键指令预设 */
 .sct-bk-fillrow {
   display: flex;
@@ -2914,39 +2699,4 @@
 .sct-bk-fillrow .sct-comfy-btn {
   font-size: 12px;
   padding: 3px 8px;
-}
-
-/* 🎭 每句台词的「谁说的」选择 */
-.sct-bk-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 4px 0 8px;
-  padding: 6px 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.sct-bk-line-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.sct-bk-line-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  opacity: 0.92;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sct-bk-line-row select.sct-bk-line-voice {
-  flex: 0 0 auto;
-  max-width: 46%;
-  font-size: 12px;
-  padding: 2px 4px;
 }

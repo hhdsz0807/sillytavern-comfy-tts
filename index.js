@@ -1,6 +1,6 @@
 /**
- * SillyTavern ComfyUI 绘图 & TTS 语音朗读原生插件 (sillytavern-comfy-tts)
- * 
+ * SillyTavern ComfyUI 绘图原生插件 (sillytavern-comfy-tts)
+ *
  * 核心功能：
  * 1. ComfyUI 原生工作流引擎 (文生图 + 多 LoRA + 高清放大 Hires Fix)：
  *    - 直连标准 ComfyUI 服务（默认 8188 端口或远程 IP）；
@@ -11,12 +11,12 @@
  *    - 高清放大倍数设置（Hires Fix 1.0x~2.0x 与重绘幅度调整）；
  *    - 自动识别正文 `<image>image###sfw, tag###</image>` 标签自动后台异步出图，手势多图轮播卡片、全屏大图灯箱预览；
  *    - 自动配图指令注入与一键复制；消息栏「🎨」快捷绘图与 /comfy 斜杠命令。
- * 
- * 2. 纯净独立 TTS 语音朗读：
- *    - 原生 Web Speech API（零配置无延迟、支持系统全语种发音人）与 OpenAI 兼容格式音频服务；
- *    - 划选文本就地弹出「🔊 朗读选中文字」浮动胶囊（带播放波纹动效与随点随停）；
- *    - 消息栏「🔊」一键朗读（智能剥离 <think> 思考链、代码块与图像标签）；
- *    - 屏幕右下角全局播放/停止常驻指示条与 /tts 斜杠命令。
+ *
+ * 2. 图像编辑 (Qwen-Image 2.1)：
+ *    - 图片卡片底栏「✏️ 编辑」→ 源图 + 中文指令 → 本机 Qwen-Image 2.1 工作流改图；
+ *    - 支持挂第二张参考图（角色替换 / 换装 / 双人合片 / 只改画风）。
+ *
+ * 说明：MOSS 文生图、TTS 语音朗读、MiniMax H3 图生视频三块功能已移除。
  */
 
 (function () {
@@ -26,9 +26,9 @@
   window.__sctExtensionLoaded = true;
 
   const MODULE_NAME = 'sillytavern-comfy-tts';
-  const DISPLAY_NAME = 'ComfyUI 绘图 & TTS 语音朗读';
+  const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '2.18.0';
+  const SCT_BUILD = '3.0.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -36,63 +36,9 @@
 
   const DEFAULT_IMAGE_INSTRUCTION = `【自动配图指示】：在生成回复文字的同时，请你根据当前文字情景，自行判断是否需要为当前内容配图（最少1张，最多3张）。本插件配图为**行内情景插图**，必须严格遵循【插图就地嵌入与防污染规范】：\n1. **就地插入原则**：描述哪段文字情景，就必须将对应的生图标签**直接紧随插入在哪段文字正下方**，图文紧密呼应！**绝对严禁**将所有生图标签统一堆砌在文段末尾或整篇回复的最后面！\n2. **主体必须是女性角色（硬性规则）**：插图主体一律为女性角色（1girl）。**若当前情景中只有男性角色（只有 1boy、没有女性出场）→ 不要生成任何生图标签，直接跳过配图**。\n3. **男性只作为局部肢体出现（重要）**：当情景里同时有男女双方时，**以 1girl 作为唯一的完整主体**，男方**只允许以局部肢体 / 背影 / 无正面脸的形式出现**（如 male hand, hand on 1girl's shoulder, male arm, cropped male body, faceless male, seen from behind），**绝对严禁把 1boy 完整画出来**（不给男性正面五官、不画男性全身）。\n4. **单主体与防污染规则**：**除非男女双方发生明确的肢体接触或互动动作**（如拥抱、牵手、坐在腿上、依偎等），**否则每次插图必须且只能描述 1 个女性角色主体**（1girl, solo）！英文 tag 必须完全聚焦于该角色，**绝对严禁在图中混入其他角色的名称或特征词**，彻底杜绝提示词与特征污染（例如防止误生其他角色的尾巴、发色或配饰）！\n5. **人数上限**：仅当情节中双方存在**直接身体接触或明确互动动作**时，才允许在 tag 里出现男方（且男方仅为局部肢体），并且必须明确写出具体互动动作（如 hugging each other, holding hands, sitting on lap）。**严禁出现 3 个及以上角色**！\n6. **标签格式**：<image>image###sfw/nsfw, 1girl, solo(常规单人) 或 1girl, 1boy(仅在有接触时,且男方只是局部肢体), 人物名称(女方必填; 男方写名字或直接省略), 动作与特征描述(有互动必须写明具体动作 + 男方的局部肢体描述), 图片英文tag###</image>\n【单人示例（默认常规，纯净无污染）】：\n<image>image###sfw, 1girl, solo, emilia \\(re:zero\\), silver hair, long hair, purple eyes, white flower hair ornament, purple and white dress, elf ears, standing in sunlit mansion hallway, gentle smile, looking at viewer###</image>\n【男女同场示例（女方是唯一完整主体，男方只露局部肢体）】：\n<image>image###sfw, 1girl, 1boy, emilia \\(re:zero\\), subaru natsuki, 1girl sitting on bench, male hand holding 1girl's hand, male arm around 1girl's waist, cropped male body, faceless male, romantic garden bench, sunset, warm cinematic lighting###</image>\n【只有男性的情景 → 不出图】：例如正文只有 1boy 独处、或对话对象尚未出场时，**不要插入任何 <image> 标签**。\n【关键准则】：发出生图标签后，ComfyUI 会在后台异步生图并直接保存至 /sdcard/Download/DSHA/ 目录。你**完全无需等待生图结果**，插入标签后必须**立即继续向下输出你的后续文字回复**！`;
 
-  // ---------------------------------------------------------------------------
-  // 🎬 视频提示词：让「聊天主模型」在写正文与生图标签时，顺手把六段式也一起写出来
-  //    交给主模型的好处：它已经知道剧情与画面，不用另接一个 AI 接口，也不会跑偏
-  //    （代价：每次回复会长一些、多花 token，所以给了开关与精简/完整两档）
-  // ---------------------------------------------------------------------------
-  // 标签格式（这段永远固定：插件靠它认出视频提示词）
-  const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
-  const VIDEO_INSTRUCTION_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:\n【★★ 以正文为剧本】把**正文当剧本**，自己拆镜头、排分镜、设计角色动作与台词 —— 这些都是你决定的，不用等用户给。参考图 <Picture 1> 只用来**固定人物长相、服装、场景设定和画风**（身份锚），不要把它当成"只能拍这一格"的限制：可以换景别、换角度、跟拍、让角色在场景里走动。保持同一个人物、同一套画风即可；不要出现第二个角色，不要文字/水印。\n【★★ 台词：让角色说出正文里的话】正文里这个角色**说了话**，就把那句台词**原样**写进对应镜头（用双引号，语言跟正文一致，中文就说中文），并写明 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio；正文里没有台词就**不要自己编台词**。\n【其他硬性要求】\n1. subject_definitions 先用 <Picture 1> 声明它是身份锚，再写 <Subject 1> 人物、<Subject 2> 场景、<Subject 3> 道具或服装；画面里自始至终只有一个女性角色。人物的外观细节（发色/瞳色/服装/配饰/姿势/背景）**你没把握的一律写 "as shown in <Picture 1>"，绝不自己编**。\n2. 全片纯 2D 日式赛璐璐：<Subject 1> 结尾必须写 "drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere"；<Subject 2> 与 <Subject 3> 开头都写 "in the same flat 2D anime style"。\n3. summary 必须以 [reference generation] 开头，一句话写清整片内容，写明"首帧与 <Picture 1> 一致、之后按剧情运镜"、手部任务锁（哪只手拿什么、全程不换手）与禁项。\n4. retention_analysis 每个标签一行：<X> (appears in [Shot 1]): fully_preserved - …；只保留一部分的写 partially_preserved。\n`;
-  const VIDEO_INSTRUCTION_SHOT_SINGLE = `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]，**必须按分镜写法标清**：景别（如 medium shot / half body）、机位（与参考图同侧、平视或略低）、运镜（slight push-in / gentle follow）、人物动作、台词（正文有就原样写进引号）、关键音效。首帧构图必须与参考图一致，动作不要塞太多。\n`;
-  const VIDEO_INSTRUCTION_SHOT_MULTI = `5. detailed_description 先写一句全片风格声明，然后**按分镜表写 2~3 个镜头**：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 [Shot N] At MM:SS.mmm（例如 00:03.000）；**每个镜头都必须标清 景别 / 机位 / 运镜 / 动作 / 台词（正文有就原样）/ 音效**，按正文顺序推进；第一镜与参考图构图一致，之后的镜头可以换景别、可以推拉摇跟，但同一个人物、同一个场景。\n`;
-  const VIDEO_INSTRUCTION_SHOT_FREE = `5. detailed_description 先写一句全片风格声明，然后**按正文当剧本拆成 2~5 个镜头**（正文动作多就多拆，少就少拆）：每个镜头写 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 角色动作 + 台词（正文有就原样）+ 音效；推拉摇移、跟拍、景别切换、慢动作都可以；同一个人物、同一套画风，不出现第二个角色。**分镜、镜头、角色动作、台词全部由你根据正文设计，不要等用户给。**\n`;
-  const VIDEO_INSTRUCTION_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；**角色说的话要在这一段的音轨里有交代**（声音特质、语气、是否听清）；non_diegetic_music 写 BPM + 乐器 + 收尾方式。\n7. 画面内不得出现任何文字、字幕、水印、分格或画框；不得出现两个及以上同一个角色。\n8. 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。\n`;
-
-  function defaultVideoRules(mode) {
-    const m = String(mode || 'compact');
-    const shot = m === 'free' ? VIDEO_INSTRUCTION_SHOT_FREE
-      : (m === 'full' ? VIDEO_INSTRUCTION_SHOT_MULTI : VIDEO_INSTRUCTION_SHOT_SINGLE);
-    const len = m === 'free' ? '控制在 700 个英文单词以内（自由发挥版，允许 3~5 镜与运镜）'
-      : (m === 'full' ? '控制在 900 个英文单词以内（完整版，允许多镜头与转场）' : '控制在 350 个英文单词以内（精简版）');
-    return `${VIDEO_INSTRUCTION_HEAD}${shot}${VIDEO_INSTRUCTION_TAIL}【长度与语言】整段${len}；只写英文，不要解释、不要 markdown 围栏。`;
-  }
-
-  function buildVideoInstruction(mode, settingsLike) {
-    // ★ 用户自定义的分镜/写作规则：填了就整段替换内置规则（标签格式仍固定）
-    let override = '';
-    try {
-      const src = settingsLike || getSettings();
-      override = String(src?.comfyVideoInstructionText || '').trim();
-    } catch (_) {}
-    return `\n\n${VIDEO_TAG_INTRO}${override
-      ? `【分镜 / 写作规则（用户自定义，以此为准）】\n${override.slice(0, 6000)}`
-      : defaultVideoRules(mode)}`;
-  }
-
-  /** 给「看图重写」用的同一套镜头/台词规则（按模式取；用户自定义优先） */
-  function videoShotRulesForRewrite(mode) {
-    let override = '';
-    try { override = String(getSettings()?.comfyVideoInstructionText || '').trim(); } catch (_) {}
-    if (override) return `【分镜 / 写作规则（用户自定义，以此为准）】\n${override.slice(0, 6000)}`;
-    const m = String(mode || 'compact');
-    if (m === 'free') {
-      return '以正文为剧本：分镜、镜头、角色动作、台词全部由你根据正文设计（正文动作多就多拆几镜，少就少拆）。每个镜头写清 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 角色动作 + 台词 + 音效；可以把正文里的动作演完整、让角色在场景里走动、换景别与角度。参考图只用来固定人物长相/服装/场景/画风，不要被它框住；始终同一个人物、同一套 2D 赛璐璐画风，不出现第二个角色。'
-        + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement, the line is clearly heard in the audio。';
-    }
-    if (m === 'full') {
-      return '分镜由你自己排：按正文设计 2~3 个镜头，每个镜头写清 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 动作 + 台词 + 音效；第一镜与参考图构图一致，之后允许推拉摇跟，但不要无理由跳到另一个场景。'
-        + '\n台词：正文里角色说了话，就把原句用双引号写进对应镜头（语言跟正文一致），并写明 she says it aloud with natural lip movement。';
-    }
-    return '分镜由你自己排：写 1 个 [Shot 1]，并标清 景别 / 机位 / 运镜（轻微推近或跟随）/ 动作 / 台词 / 音效；首帧构图与参考图一致，不要跳切、不要换机位。'
-      + '\n台词：正文里角色说了话，就把原句用双引号写进这一镜（语言跟正文一致），并写明 she says it aloud with natural lip movement；没有台词不要编。';
-  }
-
-  /** 最终注入 AI 上下文的自动配图规范 = 生图规范 +（可选）视频规范 */
+  /** 最终注入 AI 上下文的自动配图规范 */
   function composedInstructionText(s) {
-    const base = String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
-    if (!s || !s.comfyAutoVideoPrompt) return base;
-    return `${base}${buildVideoInstruction(s.comfyVideoPromptMode, s)}`;
+    return String((s && s.imageInstructionText) || DEFAULT_IMAGE_INSTRUCTION);
   }
 
   // 默认配置
@@ -106,12 +52,12 @@
     comfyVae: '',
     comfyAutoDrawTags: true,
     comfyShowMesButton: true,
-    
+
     // 固定的正向、负向质量提示词与前后缀
     comfyFixedPositive: '(masterpiece, best quality, highly detailed), ',
     comfyPromptSuffix: ', 8k, photorealistic, cinematic lighting',
     comfyFixedNegative: '(worst quality, low quality:1.4), deformed, bad anatomy, bad hands, missing fingers, extra limbs, blurry, cropped, watermark, normal quality, username',
-    
+
     // 图像尺寸与生成张数
     comfyWidth: 512,
     comfyHeight: 768,
@@ -159,81 +105,11 @@
     comfyLocalCacheEnabled: true,
     comfyLocalCacheMaxMB: 800,         // 本地图库容量上限(MB),超出自动删最旧的
 
-    // ★ 多后端(2026-10)：三类任务分别走本机哪套 ComfyUI 工作流
-    // 文生图：'sdxl' = 插件内置的 SDXL 工作流(原行为) | 'moss' = 本机 MOSS-Image 文生图(写中文准)
-    comfyTxt2ImgBackend: 'sdxl',
-    // MOSS-Image 文生图参数（模型目录是加载器读的目录，不是单文件）
-    comfyMossModelDir: 'D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/MOSS-Image-SFT',
-    comfyMossDtype: 'fp8_e4m3fn',
-    comfyMossSteps: 20,
-    comfyMossWidth: 1024,              // 必须是 16 的整数倍
-    comfyMossHeight: 1024,
-    comfyMossNegative: 'nsfw, worst quality, bad anatomy, watermark, jpeg artifact',
     // 图像编辑(卡片上的 ✏️ 按钮)：本机 Qwen-Image 2.1 编辑工作流
     // ★ 实测：cfg=1.0 时模型几乎不改图（像素差≈1，头发颜色不变）；cfg≈4 才会真的按指令改
     comfyEditSteps: 30,
     comfyEditCfg: 4.0,
     comfyEditMegapixels: 1.0,
-    // 图生视频(卡片上的 🎬 按钮)：本机 MiniMax H3 二采工作流
-    comfyVideoSeconds: 6,              // 6 秒正好是单块上限，最划算；15 秒要 20 分钟以上
-    comfyVideoAspect: '16:9 (Widescreen)',
-    comfyVideoMegapixels: 0.2,
-    comfyVideoPrompt: `subject_definitions:
-<Picture 1> is the reference character sheet; it fixes her face, hair, eye colour and body proportions.
-<Subject 1> is the girl in <Picture 1>, drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills, simple two-tone shading, big expressive anime eyes; no 3D rendering, no CGI shading, no realistic skin texture anywhere.
-<Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
-
-summary:
-[reference generation] The target video is a flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>: the first frame matches the reference image, then the camera follows the action (gentle push-in and follow, no unmotivated cut). She has exactly two hands, each hand does only one thing, and nothing ever enters or leaves her hands.
-
-retention_analysis:
-<Subject 1> (appears in [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
-<Picture 1> (identity anchor): fully_preserved - its views guide proportions, features and costume.
-<Subject 2> (appears in [Shot 1]): fully_preserved - the scenery stays consistent.
-
-detailed_description:
-The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. The first frame matches the reference image <Picture 1>; afterwards the camera follows the action with a gentle push-in and a slow pan, never an unmotivated cut or scene change. [Shot 1] The girl starts in the pose from <Picture 1> and moves naturally: she turns slightly, breathes, blinks, hair and hem swaying. Hand assignment: both hands stay consistent and never swap tasks. If the scene contains a spoken line, she says it aloud with natural lip movement and the line is clearly heard in the audio. Keep exactly one girl on screen, never duplicate her, no split panels, no frame borders; no letters, subtitles, watermarks or captions anywhere in the picture.
-
-overall_soundscape:
-A quiet room tone with faint ambience, strictly action-synced: footsteps, cloth rustle and breathing land exactly on the matching motion. Any spoken line is heard clearly in the foreground, with an intimate close-mic voice.
-
-non_diegetic_music:
-A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note.`,
-    // ★ 让聊天主模型在写生图标签时，顺手把视频六段式也写出来（<video>…</video>）
-    //   代价：每次回复会变长、多花 token；关掉就只能用上面的默认模板或手写
-    comfyAutoVideoPrompt: true,
-    comfyVideoPromptMode: 'free',      // 'compact' 精简版 | 'full' 完整版 | 'free' 以正文为剧本（默认）
-    // 📐 分镜/写作规则（可自己换）：留空 = 用内置规则；填了就整段替换内置的那套（标签格式仍固定）
-    comfyVideoInstructionText: '',
-    // 🔊 提交视频时，把正文里识别到的台词追加进提示词（不重写也能念出来）
-    comfyVideoSpeakLines: true,
-    // 🎭 换头换装（动作迁移）：参考视频当"动作模板"(AddGuide frame_idx=0) + 角色图当身份 + body_swap 触发词
-    comfyH3SwapMode: false,
-    comfyH3SwapLora: 'minimax_h3_character_swap_v1.1_ref2va_fro.safetensors',
-    comfyH3SwapLoraStrength: 1.0,
-    comfyH3DmadLora: '',                                             // 加速 LoRA（留空 = 用内置的 TaoMate-H3-3step）
-    comfyH3DmadLoraStrength: 1.0,
-    comfyH3SwapPrompt: 'body_swap: 用 <Picture 1> 的角色替换参考视频里的角色。角色外观：脸型、五官、发色、瞳色、体型、服装全部严格按 <Picture 1>；不要参考视频中人物的长相、五官与身材。',
-    // 🎨 换人后的画风（实测：画风上限由参考图决定，提示词只是微调；长句写实描述会反向变平涂）
-    comfyH3SwapStyle: 'video',      // 'video' 跟参考视频 | 'realistic' 写实实拍 | 'anime' 纯平涂2D | 'custom'
-    comfyH3SwapStyleCustom: '',
-    comfyH3KeepRefVideoAudio: true,
-    // ✂️ 参考视频裁剪：从第几秒开始截（秒）；截多长由「时长」决定，最终帧数=17n+5
-    comfyH3RefStartSec: 0,
-    // 🧭 中文指导：想让这一条视频变成什么样的情况（点「主模型看图重写」时会按它来写）
-    comfyVideoDirectorNote: '',
-    // 只跑一采（不跑二采高清）：快很多、显存占用小，但只有一采的草稿画质
-    comfyVideoOnePassOnly: false,
-    // 「让主模型看图重写」时用哪套酒馆已保存的设置（空 = 跟随酒馆当前）
-    comfyRewriteProfile: '',           // 连接配置 id（酒馆「连接配置」里那份 API 配置）
-    comfyRewritePreset: '',            // 对话预设名（Chat Completion 预设）
-    comfyRewriteModel: '',             // 聊天补全的模型名
-    // 走「独立 API」而不是酒馆配置文件时用的地址/Key/模型（预设仍用酒馆已有的，只借它的采样参数）
-    comfyRewriteMode: 'tavern',        // 'tavern' = 走酒馆主模型 | 'api' = 走独立 API
-    comfyRewriteApiUrl: '',
-    comfyRewriteApiKey: '',
-    comfyRewriteApiModel: '',
-    comfyRewriteMaxTokens: 1600,
 
     // LoRA 特征词注入策略
     // true(推荐) = 基础「角色特征激活词」始终注入(放身份锚点:发色/眼睛/尾巴…),再加选中分组的服装词
@@ -284,40 +160,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     imageInstructionInjectVersion: 2,
     imageInstructionText: DEFAULT_IMAGE_INSTRUCTION,
 
-    // TTS 语音朗读设置
-    ttsEnabled: true,
-    ttsFloatingSelection: true,
-    ttsShowMesButton: true,
-    ttsFilterThinking: true,
-    ttsEngine: 'xiaomi', // 'xiaomi' | 'webspeech' | 'openai'
-    ttsVoice: '',
-    ttsRate: 1.0,
-    ttsPitch: 1.0,
-    ttsVolume: 1.0,
-    // 小米 MiMo 在线 TTS
-    ttsXiaomiKey: '',
-    ttsXiaomiEndpoint: 'https://api.xiaomimimo.com/v1/chat/completions',
-    ttsXiaomiModel: 'mimo-v2.5-tts', // 'mimo-v2.5-tts' | 'mimo-v2.5-tts-voicedesign' | 'mimo-v2.5-tts-voiceclone'
-    ttsXiaomiVoice: '冰糖', // '冰糖' | '茉莉' | 'Mia' | 'Chloe' | 'Milo' | 'Dean'
-    ttsXiaomiSinging: false,
-    ttsXiaomiVoiceDesignPrompt: '年轻活泼的女性声音，亲切自然，语调轻快',
-    ttsXiaomiCloneSample: '',
-    // OpenAI 兼容 TTS
-    ttsOpenAiEndpoint: '',
-    ttsOpenAiKey: '',
-    ttsOpenAiModel: 'tts-1',
-    ttsOpenAiVoice: 'alloy',
   };
 
   // 运行期全局缓存与状态
-  let currentUtterance = null;
-  let currentAudio = null;
-  let isTtsPlaying = false;
-  let currentPlayingText = '';
-  let ttsButton = null;
-  let playingBadge = null;
-  let selectedTextCache = '';
-  let lastActionTime = 0;
   let lightboxEl = null;
 
   // 探查到的 ComfyUI 资产缓存
@@ -419,9 +264,18 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           }
           delete extSettings[MODULE_NAME].comfyGlobalLoraNegatives;
         }
-        // 如果旧版缓存了默认的 webspeech 或未设置，自动升级为推荐的小米 MiMo 在线 TTS
-        if (!extSettings[MODULE_NAME].ttsEngine || extSettings[MODULE_NAME].ttsEngine === 'webspeech') {
-          extSettings[MODULE_NAME].ttsEngine = 'xiaomi';
+        // ★ v3.0.0：MOSS 文生图 / TTS 语音朗读 / MiniMax H3 图生视频 三块功能已移除，
+        //   把老配置里对应的设置键一次性清掉（只删这些键，其它配置一律不动）
+        const prunedVer = extSettings[MODULE_NAME].removedFeatureVersion || 1;
+        if (prunedVer < 3) {
+          const store = extSettings[MODULE_NAME];
+          Object.keys(store).forEach((k) => {
+            if (/^(comfyMoss|comfyVideo|comfyH3|comfyRewrite|tts)/.test(k)
+              || k === 'comfyTxt2ImgBackend') {
+              delete store[k];
+            }
+          });
+          store.removedFeatureVersion = 3;
         }
         // (旧的"缺关键词就重置文本"迁移已移除:改为上面的版本号迁移,不再覆盖用户自己改写的文本)
       }
@@ -632,29 +486,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return null;
   }
 
-  // 🎬 视频提示词：聊天主模型在生图标签后面顺带写的那份六段式，按槽位存进消息 extra
-  function getChatMessageVideoPrompt(mesId, slotIdx) {
-    try {
-      const ctx = getSTContext();
-      const numId = parseInt(mesId, 10);
-      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return '';
-      const slot = ctx.chat[numId].extra?.sct_images?.[slotIdx];
-      return (slot && typeof slot.videoPrompt === 'string') ? slot.videoPrompt : '';
-    } catch (_) { return ''; }
-  }
-
-  function saveChatMessageVideoPrompt(mesId, slotIdx, videoPrompt) {
-    try {
-      const ctx = getSTContext();
-      const numId = parseInt(mesId, 10);
-      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId]) return;
-      if (!ctx.chat[numId].extra) ctx.chat[numId].extra = {};
-      if (!ctx.chat[numId].extra.sct_images) ctx.chat[numId].extra.sct_images = {};
-      if (!ctx.chat[numId].extra.sct_images[slotIdx]) ctx.chat[numId].extra.sct_images[slotIdx] = {};
-      ctx.chat[numId].extra.sct_images[slotIdx].videoPrompt = String(videoPrompt || '');
-      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
-    } catch (_) {}
-  }
 
   // 保存生图结果到酒馆消息上下文 extra 并保存聊天记录
   function saveChatMessageExtraImages(mesId, slotIdx, images, promptText, activeLoras = [], lastRepaintUrl = '') {
@@ -674,8 +505,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         prompt: promptText,
         activeLoras: activeLoras,
         lastRepaintUrl: lastRepaintUrl || '',
-        // ★ 保留聊天模型顺带写好的视频提示词，别被这次覆盖清掉
-        videoPrompt: String(ctx.chat[numId].extra.sct_images[slotIdx]?.videoPrompt || ''),
         savedAt: Date.now()
       };
       if (typeof ctx.saveChatDebounced === 'function') {
@@ -2607,46 +2436,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
      4. 标签解析与关键词匹配 (Tag Parsing & LoRA Keyword Matching)
      ========================================================================== */
 
-  // 解析并提取生图标签内容（兼容纯文本 image###...###、带标签 <image>image###...###</image> 及常规格式）
-  /**
-   * 把正文里的「视频提示词标签」摘出来（聊天主模型在生图标签后面顺带写的那份六段式）
-   * 兼容：<video>…</video>、&lt;video&gt;…&lt;/video&gt;、video###…###（外层可有 pre/code 包裹）
-   * ★ 配对规则：**按位置**——谁的生图标签紧后面跟着视频标签，就算谁的那一份；
-   *   这样即使模型只给其中某几张图写了，也不会张冠李戴。
-   * 返回：{ list: 按顺序的提示词数组, byImage: { 第几张图(从0数): 提示词 } }
-   */
-  function extractVideoPrompts(textEl) {
-    const list = [];
-    const byImage = {};
-    try {
-      let html = textEl.innerHTML || '';
-      const hasVideoTag = /(<video[\s>]|&lt;video|<\/video>|video###)/i.test(html);
-      if (!hasVideoTag) return { list, byImage };
-
-      // 一次扫描同时数「图标签」和「视频标签」，按出现顺序判断归属
-      const scan = /(?:<image>[\s\S]*?<\/image>|&lt;image&gt;[\s\S]*?&lt;\/image&gt;|<img_prompt>[\s\S]*?<\/img_prompt>|&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;|image###[\s\S]*?###)|(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)/gi;
-      let m;
-      let imgIdx = -1;
-      while ((m = scan.exec(html)) !== null) {
-        const isVideo = (m[1] !== undefined || m[2] !== undefined || m[3] !== undefined);
-        if (!isVideo) { imgIdx++; continue; }
-        const text = String(m[1] || m[2] || m[3] || '').trim();
-        if (!text) continue;
-        list.push(text);
-        if (imgIdx >= 0) byImage[imgIdx] = text;   // 归属给「最近的那个图标签」
-      }
-
-      // 再从正文里移除视频标签，换成一枚小徽章（空标签也一并清掉，免得留下一个空的 <video> 占位）
-      const re = /(?:<pre>\s*)?(?:<code>)?\s*(?:<video>([\s\S]*?)<\/video>|&lt;video&gt;([\s\S]*?)&lt;\/video&gt;|video###([\s\S]*?)###)\s*(?:<\/code>)?(?:\s*<\/pre>)?/gi;
-      const cleanedHtml = html.replace(re, (full, a, b, c) => {
-        const text = String(a || b || c || '').trim();
-        if (!text) return '';
-        return '<span class="sct-video-chip" title="聊天模型已经写好视频提示词：点卡片上的「🎬 视频」会自动填进弹窗">🎬 视频提示词已就绪</span>';
-      });
-      if (cleanedHtml !== html) textEl.innerHTML = cleanedHtml;
-    } catch (_) {}
-    return { list, byImage };
-  }
 
   function parseImageTagContent(rawContent) {
     let s = (rawContent || '').trim();
@@ -4488,53 +4277,30 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   const cardStateMap = new Map();
 
   /* ==========================================================================
-     🧩 多后端对接：图像编辑(Qwen-Image 2.1) / 文生图(MOSS-Image) / 图生视频(MiniMax H3)
+     🧩 图像编辑后端：Qwen-Image 2.1
      --------------------------------------------------------------------------
-     · 三份工作流都是「API 格式的固定图」，从本机 ComfyUI 真实跑通的提交里导出；
+     · 工作流是「API 格式的固定图」，从本机 ComfyUI 真实跑通的提交里导出；
        运行时只改写 提示词 / 源图 / 种子 / 步数 / 尺寸 几个字段，绝不在浏览器里重拼节点。
      · 源图先 POST /upload/image 传进 ComfyUI 的 input 目录，再把文件名塞进 LoadImage。
-     · 视频很慢（6 秒≈7 分钟，15 秒可能 20 分钟以上）：单独给 1 小时超时与进度提示，
-       结果卡写进酒馆消息 extra，刷新 / 切聊天后照样能找回来。
+     · 结果卡写进酒馆消息 extra，刷新 / 切聊天后照样能找回来。
      ========================================================================== */
 
-  const SCT_WF_MOSS = {"1":{"class_type":"MOSSImageHFLoader","inputs":{"model_path":"D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/MOSS-Image-SFT","text_device":"default","weight_dtype":"fp8_e4m3fn"}},"13":{"class_type":"SkipLayerGuidanceDiTSimple","inputs":{"double_layers":"","end_percent":1.0,"model":["15",0],"single_layers":"22","start_percent":0.0}},"15":{"class_type":"ModelSamplingSD3","inputs":{"model":["1",0],"shift":5.0}},"16":{"class_type":"KSampler","inputs":{"cfg":3.0,"denoise":1.0,"latent_image":["6",0],"model":["13",0],"negative":["5",0],"positive":["4",0],"sampler_name":"euler","scheduler":"sgm_uniform","seed":42,"steps":50}},"17":{"class_type":"VAEDecode","inputs":{"samples":["16",0],"vae":["1",2]}},"18":{"class_type":"SaveImage","inputs":{"filename_prefix":"MOSS_SFT","images":["17",0]}},"4":{"class_type":"CLIPTextEncode","inputs":{"clip":["1",1],"text":""}},"5":{"class_type":"CLIPTextEncode","inputs":{"clip":["1",1],"text":""}},"6":{"class_type":"EmptyFlux2LatentImage","inputs":{"batch_size":1,"height":1024,"width":1024}}};
 
   const SCT_WF_QWEN = {"13":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"9:16 (Portrait Widescreen)","megapixels":1.5,"multiple":32}},"475":{"class_type":"LoadImage","inputs":{"image":""}},"476":{"class_type":"UNETLoader","inputs":{"unet_name":"Qwen\\qwen_image_2.1_int8_convrot.safetensors","weight_dtype":"default"}},"477":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_8b_int8_convrot.safetensors","device":"default","type":"qwen_image"}},"478":{"class_type":"VAELoader","inputs":{"vae_name":"qwen_image_2.1_vae_bf16.safetensors"}},"479":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":["13",1],"width":["13",0]}},"480":{"class_type":"VAEDecode","inputs":{"samples":["481",0],"vae":["478",0]}},"481":{"class_type":"KSampler","inputs":{"cfg":1.0,"denoise":1.0,"latent_image":["482",0],"model":["483",0],"negative":["497",1],"positive":["497",0],"sampler_name":"euler","scheduler":"simple","seed":["502",0],"steps":30}},"482":{"class_type":"ComfySwitchNode","inputs":{"on_false":["497",2],"on_true":["479",0],"switch":false}},"483":{"class_type":"QwenImage21Cache","inputs":{"device":"auto","dtype":"default","model":["476",0]}},"487":{"class_type":"SaveImage","inputs":{"filename_prefix":"QW21-%date:yyyyMMddhhmmss%","images":["480",0]}},"497":{"class_type":"TextEncodeQwenImage21","inputs":{"clip":["477",0],"images.image_1":["532",0],"negative_prompt":"","prompt":["571",0],"resolution":0,"vae":["478",0]}},"502":{"class_type":"Seed (rgthree)","inputs":{"seed":-1}},"532":{"class_type":"ImageScaleToTotalPixels","inputs":{"image":["475",0],"megapixels":1.5,"resolution_steps":32,"upscale_method":"lanczos"}},"571":{"class_type":"PrimitiveStringMultiline","inputs":{"value":""}}};
 
-  const SCT_WF_MM = {"10":{"class_type":"KSamplerSelect","inputs":{"sampler_name":"res_multistep"}},"106":{"class_type":"LTXVConcatAVLatent","inputs":{"audio_latent":["90",1],"video_latent":["118",0]}},"107":{"class_type":"VAEDecode","inputs":{"samples":["113",0],"vae":["26",0]}},"11":{"class_type":"RandomNoise","inputs":{"noise_seed":["12",0]}},"110":{"class_type":"ConditioningZeroOut","inputs":{"conditioning":["6",0]}},"113":{"class_type":"MMH3UltimateUpscale","inputs":{"cfg":1.0,"conditioning":["6",0],"latent":["106",0],"model":["129",0],"negative":["110",0],"noise":["11",0],"sampler":["10",0],"sigmas":["117",1],"temporal_split_param":["98",0]}},"114":{"class_type":"VHS_VideoCombine","inputs":{"audio":["83",0],"filename_prefix":"video/自改二采/二采/minimax_二采_","format":"video/h264-mp4","frame_rate":24.0,"images":["107",0],"loop_count":0,"pingpong":false,"save_output":true}},"117":{"class_type":"SplitSigmas","inputs":{"sigmas":["119",0],"step":["150",0]}},"118":{"class_type":"MinimaxH3LatentUpscaler3D","inputs":{"align":32,"device":"cuda","enable_temporal_chunking":true,"force_unload":true,"latent":["90",0],"mode":"scale by multiplier","mode.scale":["151",0],"model_name":"minimax_h3_latent_upscaler_3d_fp16.safetensors","precision":"fp16"}},"119":{"class_type":"BasicScheduler","inputs":{"denoise":1.0,"model":["129",0],"scheduler":"simple","steps":["149",1]}},"12":{"class_type":"Seed (rgthree)","inputs":{"seed":412998550581804}},"125":{"class_type":"ModelAttentionBackend","inputs":{"attention":"comfy kitchen attention","model":["22",0]}},"126":{"class_type":"VHS_VideoCombine","inputs":{"audio":["128",0],"filename_prefix":"video/自改二采/一采/minimax_一采_","format":"video/h264-mp4","frame_rate":24.0,"images":["5",0],"loop_count":0,"pingpong":false,"save_output":true}},"128":{"class_type":"VAEDecodeAudio","inputs":{"samples":["7",1],"vae":["19",0]}},"129":{"class_type":"ModelPreviewOverrideKJ","inputs":{"jpeg_quality":80,"max_resolution":480,"model":["156",0],"preview_fps":8,"preview_frames":999,"suppress_default_preview":true,"tiny_vae":"taeh3.safetensors","vae":"taeh3.safetensors"}},"14":{"class_type":"BasicGuider","inputs":{"conditioning":["6",0],"model":["129",0]}},"148":{"class_type":"INTConstant","inputs":{"value":4}},"149":{"class_type":"ComfyMathExpression","inputs":{"expression":"a + b","values.a":["150",0],"values.b":["148",0]}},"150":{"class_type":"INTConstant","inputs":{"value":8}},"151":{"class_type":"FloatConstant","inputs":{"value":2.0}},"156":{"class_type":"MiniMaxH3SigmaShift","inputs":{"model":["21",0],"shift_audio":3.0,"shift_video":12.0}},"17":{"class_type":"PrimitiveFloat","inputs":{"value":3.0}},"18":{"class_type":"CLIPLoader","inputs":{"clip_name":"qwen3vl_32b_minimax_h3_int8_convrot.safetensors","device":"default","type":"minimax"}},"19":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_audio_vae_fp32.safetensors"}},"20":{"class_type":"UNETLoader","inputs":{"unet_name":"h3\\DasiwaMinimaxH3_dasiwaHybridV2_int8.safetensors","weight_dtype":"default"}},"21":{"class_type":"LoraLoaderModelOnly","inputs":{"lora_name":"minimax h3\\加速\\TaoMate-H3-3step.safetensors","model":["125",0],"strength_model":1.0}},"22":{"class_type":"MiniMaxH3MemoryEfficientSageAttentionPatch","inputs":{"model":["20",0]}},"24":{"class_type":"LoadImage","inputs":{"image":""}},"26":{"class_type":"VAELoader","inputs":{"vae_name":"minimax_h3_video_vae_fp16.safetensors"}},"40":{"class_type":"ComfyMathExpression","inputs":{"expression":"max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17","values.a":["17",0],"values.b":["8",1]}},"5":{"class_type":"VAEDecode","inputs":{"samples":["7",1],"vae":["26",0]}},"6":{"class_type":"MiniMaxH3ReferenceToVideo","inputs":{"audio_vae":["19",0],"clip":["18",0],"height":["8",1],"length":["40",1],"prompt":"","ref_image_size":"match","ref_images.ref_image_0":["24",0],"vae":["26",0],"width":["8",0]}},"7":{"class_type":"SamplerCustomAdvanced","inputs":{"guider":["14",0],"latent_image":["6",1],"noise":["11",0],"sampler":["10",0],"sigmas":["117",0]}},"8":{"class_type":"ResolutionSelector","inputs":{"aspect_ratio":"16:9 (Widescreen)","megapixels":0.2,"multiple":32}},"83":{"class_type":"VAEDecodeAudio","inputs":{"samples":["113",0],"vae":["19",0]}},"90":{"class_type":"LTXVSeparateAVLatent","inputs":{"av_latent":["7",1]}},"98":{"class_type":"MMH3TemporalSplitParams","inputs":{"anchor_strength":0.99,"chunk_length":153,"temporal_overlap":17}}};
 
   // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
+  // 模板改写点（节点号对应本机工作流；以后换工作流只改这里）
   const SCT_WF_PATCH = {
-    moss: { loader: '1', positive: '4', negative: '5', latent: '6', sampler: '16', save: '18' },
-    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487', encoder: '497' },
-    video: { image: '24', prompt: '6', seed: '12', seconds: '17', size: '8',
-             onePass: '126', twoPass: '114', save: '114' }
+    qwen: { image: '475', prompt: '571', sampler: '481', scale: '532', save: '487', encoder: '497' }
   };
 
-  const SCT_VIDEO_ASPECTS = ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)', '1:1 (Square)',
-    '4:3 (Standard)', '3:4 (Portrait Standard)', '3:2 (Photo)', '2:3 (Portrait Photo)', '21:9 (Ultrawide)'];
 
   let sctBackendDialogEl = null;
   let sctBackendDialogEsc = null;
   let sctBackendDialogSource = null;      // 当前对话框里选中的源图（URL / Blob）
   let sctBackendDialogRef2 = null;        // 编辑弹窗的「第二张参考图」（URL / File，可选）
-  let sctBackendDialogRefVideo = null;    // 视频弹窗的「参考视频」（File，可选 → H3 ref_videos / AddGuide）
-  let sctBackendDialogRefVideoDur = 0;    // 该参考视频的时长（秒，选文件时探测）
 
-  // 读本地视频时长（用 <video> 元数据，不上传）
-  function probeVideoDuration(file, cb) {
-    try {
-      const url = URL.createObjectURL(file);
-      const v = document.createElement('video');
-      v.preload = 'metadata';
-      v.onloadedmetadata = () => { const d = Number(v.duration) || 0; URL.revokeObjectURL(url); cb(d); };
-      v.onerror = () => { URL.revokeObjectURL(url); cb(0); };
-      v.src = url;
-    } catch (_) { cb(0); }
-  }
-  let sctBackendDialogPrefillFromAi = false;   // 弹窗里的提示词是不是"场景专属"的（模型写的/看图重写的）
-  let sctBackendDialogRewritten = false;       // 本次弹窗里有没有成功跑过"看图重写"
-  let sctApiModelCache = [];                   // 独立 API「连接」后拿到的模型清单（内存缓存，关掉弹窗再开还在）
 
   function cloneWorkflow(tpl) {
     return JSON.parse(JSON.stringify(tpl));
@@ -4584,23 +4350,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return await uploadComfyInputImage(host, blob, name, '');
   }
 
-  // 本机 ComfyUI 里「可用的 LoRA 文件名」清单（来自 /object_info，用于开跑前预检）
-  let sctComfyLoraCache = null;
-  async function fetchComfyLoraList() {
-    if (Array.isArray(sctComfyLoraCache)) return sctComfyLoraCache;
-    try {
-      const host = getCleanComfyHost();
-      const res = await fetch(`${host}/object_info/LoraLoaderModelOnly`);
-      const j = await res.json();
-      const node = j?.LoraLoaderModelOnly || Object.values(j || {})[0];
-      const arr = node?.input?.required?.lora_name?.[0];
-      sctComfyLoraCache = Array.isArray(arr) ? arr.map((x) => String(x)) : [];
-    } catch (_) { sctComfyLoraCache = []; }
-    return sctComfyLoraCache;
-  }
-
-  // 从 /history 任务里收集输出（图片走 images，视频走 gifs/videos）
-  // byNode 记录「哪个节点出的」——一采(#126) 与 二采(#114) 要分开推送
+  // 从 /history 任务里收集输出（图片走 images）
   function collectComfyApiOutputs(task, host) {
     const images = [], videos = [];
     const byNode = {};
@@ -4719,57 +4469,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     throw new Error(`等待超时（${Math.round(timeoutMs / 60000)} 分钟）`);
   }
 
-  /* ---------------------------- 三个后端的提交入口 ---------------------------- */
-
-  // 文生图：MOSS-Image（本机 27GB 模型，写中文最准；不参与 LoRA 链）
-  async function triggerComfyMossDraw(promptText, container, taskKey = null) {
-    const s = getSettings();
-    const host = getCleanComfyHost();
-    const wf = cloneWorkflow(SCT_WF_MOSS);
-    const P = SCT_WF_PATCH.moss;
-    wf[P.loader].inputs.model_path = (s.comfyMossModelDir || '').trim();
-    wf[P.loader].inputs.weight_dtype = s.comfyMossDtype || 'fp8_e4m3fn';
-    wf[P.positive].inputs.text = String(promptText || '');
-    wf[P.negative].inputs.text = s.comfyMossNegative || '';
-    const w = Math.max(256, Math.round((parseInt(s.comfyMossWidth, 10) || 1024) / 16) * 16);
-    const h = Math.max(256, Math.round((parseInt(s.comfyMossHeight, 10) || 1024) / 16) * 16);
-    wf[P.latent].inputs.width = w;
-    wf[P.latent].inputs.height = h;
-    wf[P.sampler].inputs.steps = Math.min(80, Math.max(4, parseInt(s.comfyMossSteps, 10) || 20));
-    wf[P.sampler].inputs.seed = Math.floor(Math.random() * 1000000000);
-    wf[P.save].inputs.filename_prefix = 'SCT_MOSS_' + uniqueFileStamp() + '_';
-
-    container.__sctLastParams = {
-      checkpoint: `MOSS-Image（${String(s.comfyMossModelDir || '').split('/').pop()}）`,
-      cfg: wf[P.sampler].inputs.cfg, steps: wf[P.sampler].inputs.steps,
-      sampler: wf[P.sampler].inputs.sampler_name, scheduler: wf[P.sampler].inputs.scheduler,
-      size: `${w}x${h}`, batch: 1, seed: wf[P.sampler].inputs.seed,
-      vae: '(模型内置)', hires: '关', faceFix: '关', styleRef: '关',
-      loras: ['（MOSS 后端不挂 LoRA）'],
-      positive: wf[P.positive].inputs.text, negative: wf[P.negative].inputs.text
-    };
-    container.__sctLastWorkflow = wf;
-
-    renderLoadingCard(container, promptText, '🟢 正在用 MOSS-Image 出图（本机大模型，首次加载较慢）…', taskKey);
-    try {
-      const out = await submitComfyApiPrompt(wf, {
-        onProgress: (t) => renderLoadingCard(container, promptText, t, taskKey)
-      });
-      const merged = capCarouselImages(dedupeComfyImages([...(collectExistingImages(container, taskKey) || []), ...out.images]));
-      renderCarouselCard(container, merged, promptText, []);
-      const mesId = mesIdOf(container);
-      if (mesId) saveChatMessageExtraImages(mesId, container.dataset.sctSlotIdx || '0', merged, promptText, []);
-      cacheImagesToPhone(out.images.map((u) => ({ url: u, prompt: promptText, loras: [] })))
-        .then(async (r) => {
-          if (r.saved > 0) { await ensurePersistentStorage(); await loadLocalImageUrls(); }
-        }).catch(() => {});
-      showToast(`MOSS-Image 出图成功！（${w}x${h}）`, 'success');
-      return true;
-    } catch (e) {
-      renderErrorCard(container, promptText, e.message, [], taskKey);
-      return false;
-    }
-  }
 
   // 图像编辑：Qwen-Image 2.1（源图 + 中文指令 → 改图）
   async function triggerComfyQwenEdit(source, instruction, container, taskKey = null, ref2 = null) {
@@ -4850,260 +4549,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
-  // 图生视频：MiniMax H3（源图 + 六段式提示词 → 带音频短视频）
-  async function triggerComfyH3Video(source, videoPrompt, container, opts = {}) {
-    const s = getSettings();
-    const seconds = Math.min(15, Math.max(1, parseFloat(opts.seconds) || parseFloat(s.comfyVideoSeconds) || 6));
-    const frames = (() => {
-      let f = Math.max(5, Math.round(seconds * 24));
-      f = f + (5 - (f % 17)) % 17;
-      return f;
-    })();
-    const blocks = frames <= 153 ? 1 : Math.ceil((frames - 153) / 136) + 1;
-    // 只跑一采：不提交二采那条链（省掉一次 4 步精修 + 3D 潜空间放大，快很多）
-    const onePassOnly = (opts.onePassOnly !== undefined) ? !!opts.onePassOnly : !!s.comfyVideoOnePassOnly;
-    const hint = onePassOnly
-      ? `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 只跑一采（不跑二采）`
-      : `🎬 目标 ${frames} 帧（约 ${(frames / 24).toFixed(1)} 秒）· 二采 ${blocks} 组`;
-
-    renderLoadingCard(container, videoPrompt, '📤 正在把源图上传到 ComfyUI…', null);
-    let uploaded = '';
-    try {
-      uploaded = await prepareComfySourceImage(source);
-    } catch (e) {
-      renderErrorCard(container, videoPrompt, '源图上传失败：' + e.message);
-      return false;
-    }
-    // 🎞 参考视频（可选）：角色替换 —— 图一的角色 + 这段视频的动作/镜头/背景
-    let uploadedVideo = '';
-    if (opts.refVideo && typeof opts.refVideo === 'object' && typeof opts.refVideo.size === 'number') {
-      try {
-        renderLoadingCard(container, videoPrompt, '📤 正在上传参考视频…', null);
-        const host = getCleanComfyHost();
-        const vf = opts.refVideo;
-        const ext = (String(vf.name || '').match(/\.(mp4|webm|mkv|mov|gif)$/i) || ['.mp4'])[0].toLowerCase();
-        const vname = `sct_refvideo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}${ext}`;
-        uploadedVideo = await uploadComfyInputImage(host, vf, vname, '');
-        showToast('参考视频已上传：这次按「角色替换」跑（动作镜头照视频，长相照图一）', 'info');
-      } catch (e) {
-        uploadedVideo = '';
-        showToast('参考视频上传失败，这次退回普通图生视频：' + e.message, 'warning');
-      }
-    }
-
-    const wf = cloneWorkflow(SCT_WF_MM);
-    const P = SCT_WF_PATCH.video;
-    const vStamp = uniqueFileStamp();
-    wf[P.image].inputs.image = uploaded;
-    wf[P.prompt].inputs.prompt = String(videoPrompt || '');
-    wf[P.seed].inputs.seed = Math.floor(Math.random() * 1125899906842624);
-    wf[P.seconds].inputs.value = seconds;
-    wf[P.size].inputs.aspect_ratio = opts.aspect || s.comfyVideoAspect || '16:9 (Widescreen)';
-    wf[P.size].inputs.megapixels = Math.min(1, Math.max(0.1, parseFloat(s.comfyVideoMegapixels) || 0.2));
-    // 一采 / 二采 各自的文件名前缀都带唯一戳，且分目录，绝不互相覆盖
-    wf[P.onePass].inputs.filename_prefix = `video/SCT_H3/一采/minimax_${vStamp}_`;
-    wf[P.twoPass].inputs.filename_prefix = `video/SCT_H3/二采/minimax_${vStamp}_`;
-    if (onePassOnly) {
-      // 摘掉二采的输出节点 → ComfyUI 只执行一采那条链（二采的上游不会被执行）
-      try { delete wf[P.twoPass]; } catch (_) {}
-    }
-    // 🎞 参考视频 → H3 的 ref_videos（IMAGE 帧，24fps）+ ref_video_audios（原声）
-    if (uploadedVideo) {
-      wf['700'] = {
-        class_type: 'VHS_LoadVideo',   // 用 combo 版：VHS_LoadVideoPath 要绝对路径，combo 版认 input/ 里的文件名
-        inputs: {
-          video: uploadedVideo,
-          force_rate: 24,
-          custom_width: 0,
-          custom_height: 0,
-          frame_load_cap: frames,      // 只取目标长度，别把整段长视频全读进来
-          skip_first_frames: Math.max(0, Math.round((parseFloat(opts.refStart) || 0) * 24)),   // ✂️ 从第几秒开始截
-          select_every_nth: 1,
-          format: 'None'
-        }
-      };
-      // ★ 换头换装模式下**不接** ref_videos：作者工作流只用 AddGuide 当动作模板，
-      //   同时再接原生视频参考会把原演员的长相一起带进来，跟 body_swap 打架。
-      if (!opts.swapMode) {
-        if (!wf[P.prompt].inputs) wf[P.prompt].inputs = {};
-        wf[P.prompt].inputs['ref_videos.ref_video_0'] = ['700', 0];
-        // 保留参考视频的原声（H3 的 ref_video_audio 会一起条件化音频）
-        try {
-          wf[P.prompt].inputs['ref_video_audios.ref_video_audio_0'] = ['700', 2];
-        } catch (_) {}
-        // 在六段式后面补一句"谁是谁"的定位，免得把视频里的人当成主角
-        const refClause = '\n\n[Reference video (Video 1): keep its motion, timing, camera movement, framing and background. Replace the performer with the character from <Picture 1>, keeping her face, hair, eye colour, body proportions and outfit exactly as in <Picture 1>. Do not copy the performer\'s identity from the reference video.]';
-        wf[P.prompt].inputs.prompt = String(videoPrompt || '') + refClause;
-      }
-    }
-
-    // 🎭 换头换装（动作迁移）：参考视频 → MiniMaxH3AddGuide(frame_idx=0) + character_swap LoRA + body_swap 触发词
-    const loraNote = ['TaoMate-H3-3step（加速，链内固定）'];
-    const swapMode = !!opts.swapMode && !!uploadedVideo;
-    if (opts.swapMode && !uploadedVideo) {
-      showToast('「🎭 换头换装」需要先选一段参考视频，这次按普通图生视频跑', 'warning');
-    }
-    if (swapMode) {
-      const wantSwap = String(s.comfyH3SwapLora || '').trim();
-      const loras = await fetchComfyLoraList();
-      if (wantSwap && loras.length) {
-        const norm = (v) => String(v).replace(/\\/g, '/').trim();
-        if (!loras.some((n) => norm(n) === norm(wantSwap))) {
-          const msg = `找不到角色替换 LoRA：${wantSwap}\n\n下载后放到 ComfyUI/models/loras/（推荐 80MB 的 v1.1）：\nhttps://huggingface.co/Alissonerdx/Minimax-H3-ComfyUI/tree/main/loras\n\n或者在插件设置里把它改成你已有的文件名。`;
-          renderErrorCard(container, videoPrompt, msg, [], taskKey);
-          showToast('缺「角色替换 LoRA」，已中止（避免白跑 20 分钟）', 'error');
-          return false;
-        }
-      }
-      const wantDmad = String(s.comfyH3DmadLora || '').trim();
-      if (wantDmad) {
-        wf['21'].inputs.lora_name = wantDmad;
-        wf['21'].inputs.strength_model = Math.min(2, Math.max(0.1, parseFloat(s.comfyH3DmadLoraStrength) || 1.0));
-        loraNote[0] = `${wantDmad}（加速）`;
-      }
-      // 链序照作者工作流：UNET → 预处理 → 加速 LoRA → character_swap LoRA → 预览 → 采样
-      wf['156'].inputs.model = ['125', 0];
-      wf['711'] = {
-        class_type: 'LoraLoaderModelOnly',
-        inputs: {
-          lora_name: wantSwap,
-          model: ['21', 0],
-          strength_model: Math.min(2, Math.max(0.1, parseFloat(s.comfyH3SwapLoraStrength) || 1.0))
-        }
-      };
-      wf['129'].inputs.model = ['711', 0];
-      loraNote.push(`${wantSwap}（角色替换 · strength ${Math.min(2, Math.max(0.1, parseFloat(s.comfyH3SwapLoraStrength) || 1.0))}）`);
-      // 参考视频当动作模板（frame_idx=0：与生成画面共享空间/时间网格）
-      wf['712'] = {
-        class_type: 'MiniMaxH3AddGuide',
-        inputs: { positive: ['6', 0], latent: ['6', 1], vae: ['26', 0], image: ['700', 0], frame_idx: 0 }
-      };
-      wf['14'].inputs.conditioning = ['712', 0];
-      if (wf['110']) wf['110'].inputs.conditioning = ['712', 0];
-      if (wf['113']) wf['113'].inputs.conditioning = ['712', 0];
-      // 沿用参考视频的原声（真实人物视频里通常有说话声）
-      if (s.comfyH3KeepRefVideoAudio !== false) {
-        if (wf['126']) wf['126'].inputs.audio = ['700', 2];
-        if (wf['114']) wf['114'].inputs.audio = ['700', 2];
-      }
-      // body_swap: 触发词 + 换人说明
-      const swapClause = String(s.comfyH3SwapPrompt || '').trim();
-      if (swapClause) wf[P.prompt].inputs.prompt = String(wf[P.prompt].inputs.prompt || '') + '\n\n' + swapClause;
-      // 🎨 画风句（实测：写实要短、要英文；长句中式描述会反向变平涂）
-      const styleKey = String(opts.swapStyle || s.comfyH3SwapStyle || 'video');
-      const styleSentence = styleKey === 'realistic'
-        ? 'Photorealistic live-action footage: real human skin with pores, real hair strands, real fabric, natural studio lighting, 4K photo look. No anime, no cel shading, no cartoon, no illustration, realistic human anatomy.'
-        : (styleKey === 'anime'
-          ? 'Pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere.'
-          : (styleKey === 'custom' ? String(s.comfyH3SwapStyleCustom || '').trim() : ''));
-      if (styleSentence) {
-        wf[P.prompt].inputs.prompt = String(wf[P.prompt].inputs.prompt || '') + '\n' + styleSentence;
-        loraNote.push(`画风：${styleKey === 'realistic' ? '写实实拍' : (styleKey === 'anime' ? '平涂 2D' : '自定义')}`);
-      } else {
-        loraNote.push('画风：跟参考视频');
-      }
-    }
-
-    container.__sctLastParams = {
-      checkpoint: 'MiniMax H3 int8（一采 + 二采 · 带音频）', cfg: wf['113']?.inputs?.cfg,
-      steps: '一采 8 + 二采 4', sampler: 'res_multistep', scheduler: 'simple',
-      size: `${wf[P.size].inputs.aspect_ratio} / ${wf[P.size].inputs.megapixels} MP`,
-      batch: 1, seed: wf[P.seed].inputs.seed, vae: 'minimax_h3_video_vae_fp16 + audio_vae_fp32',
-      hires: onePassOnly ? '只跑一采' : `二采 ${blocks} 组`, faceFix: '关', styleRef: '关', loras: loraNote,
-      output: `一采(#${P.onePass}) 先推送 → 二采(#${P.twoPass}) 好了再补`,
-      positive: String(videoPrompt || ''), negative: '—'
-    };
-    container.__sctLastWorkflow = wf;
-
-    // ★ 分阶段推送：一采一好就先显示，二采出来再补上（本机实测一采比二采早 4 分钟以上）
-    const onePassNode = String(P.onePass || '');
-    const twoPassNode = String(P.twoPass || P.save || '');
-    const staged = { one: '', two: '' };
-    let cardShown = false;
-    const stageItems = () => {
-      const arr = [];
-      if (staged.one) {
-        arr.push({
-          url: staged.one,
-          label: onePassOnly
-            ? '一采 · 草稿（本次只跑一采，没有二采高清版）'
-            : '一采 · 低清草稿（先看构图与动作；二采成品还在跑）'
-        });
-      }
-      if (staged.two) arr.push({ url: staged.two, label: '二采 · 成品（高清 + 音轨，拿这条用）' });
-      return arr;
-    };
-    const paintStage = (note, running) => {
-      const list = stageItems();
-      if (!list.length) return;
-      cardShown = true;
-      renderBackendVideoCard(container, list, videoPrompt, { note, running });
-    };
-
-    renderLoadingCard(container, videoPrompt, `${hint} · 正在装载模型…`, null);
-    try {
-      const out = await submitComfyApiPrompt(wf, {
-        video: true, timeoutMs: 60 * 60 * 1000,
-        onProgress: (t) => {
-          if (cardShown) {
-            // 一采卡片已经在显示：只更新顶部那行状态，别把视频卡刷掉
-            const noteEl = container.querySelector('.sct-bk-stage-note span');
-            if (noteEl) noteEl.textContent = `${hint} · ${t}`;
-            return;
-          }
-          renderLoadingCard(container, videoPrompt, `${hint}\n${t}`, null);
-        },
-        onOutput: (nodeId, output) => {
-          let got;
-          try { got = collectComfyApiOutputs({ outputs: { [nodeId]: output } }, getCleanComfyHost()); } catch (_) { return; }
-          if (!got || !got.videos.length) return;
-          if (nodeId === onePassNode && !staged.one) {
-            staged.one = got.videos[0];
-            paintStage('一采已出（低清草稿），二采成品还在跑…', true);
-            showToast('一采视频已出，先看草稿；二采成品还在跑', 'info');
-          } else if (nodeId === twoPassNode && !staged.two) {
-            staged.two = got.videos[0];
-            paintStage('二采成品已出', true);
-          }
-        }
-      });
-
-      // 收尾：用 /history 的最终结果补齐（万一 ws 漏了消息）
-      const byNode = out.byNode || {};
-      if (!staged.one && byNode[onePassNode]?.videos?.length) staged.one = byNode[onePassNode].videos[0];
-      if (!staged.two && byNode[twoPassNode]?.videos?.length) staged.two = byNode[twoPassNode].videos[0];
-      if (!staged.one && !staged.two) {
-        out.videos.forEach((u, i) => { if (i === 0) staged.one = u; else if (i === 1) staged.two = u; });
-      }
-      const finalList = stageItems();
-      if (!finalList.length) {
-        renderErrorCard(container, videoPrompt, '跑完了但没拿到视频文件（去 ComfyUI 的 output/video/SCT_H3 看看）');
-        return false;
-      }
-      paintStage(onePassOnly
-        ? '一采出片完成（本次没跑二采）'
-        : (staged.one && staged.two ? '一采 + 二采 都已出片 ✅' : '出片完成'), false);
-      const rec = {
-        id: 'bk_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        kind: 'video', urls: finalList.map((it) => it.url), videoItems: finalList,
-        prompt: videoPrompt, at: Date.now()
-      };
-      saveChatBackendCard(container, rec);
-      showToast(staged.two ? '视频生成完成！二采成品在下面那条，可播放或「⬇️ 保存到手机」' : '视频生成完成！', 'success');
-      return true;
-    } catch (e) {
-      if (cardShown) {
-        const noteEl = container.querySelector('.sct-bk-stage-note span');
-        if (noteEl) noteEl.textContent = '二采中断：' + e.message + '（一采草稿已保留）';
-        const abortBtn = container.querySelector('.sct-bk-abort');
-        if (abortBtn) abortBtn.remove();
-        showToast('二采失败，但一采草稿还在：' + e.message, 'warning');
-      } else {
-        renderErrorCard(container, videoPrompt, e.message);
-      }
-      return false;
-    }
-  }
 
   function renderCarouselCard(container, images, promptText, activeLoras = []) {
     if (!images || images.length === 0) return;
@@ -5129,7 +4574,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     //   （本地副本会核对提示词，防止同名文件被覆盖后串图）
     const currentSrc = localCopyFor(currentUrl, promptText) || currentUrl;
 
-    const loraBadgeHtml = activeLoras && activeLoras.length > 0 
+    const loraBadgeHtml = activeLoras && activeLoras.length > 0
       ? `<span class="sct-lora-badge" title="${escapeHtml(activeLoras.map(l => l.name).join(', '))}">🎭 LoRA: ${escapeHtml(activeLoras.map(l => l.name.replace(/\.[^/.]+$/, '')).join(', '))}</span>`
       : '';
 
@@ -5164,7 +4609,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="只删除当前显示的这张 (共 ${total} 张)">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
-            <button type="button" class="sct-comfy-btn sct-bk-video-btn" title="用当前这张图做源图，本机 MiniMax H3 出带音频短视频（6 秒约 7 分钟）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           ` : `
             <span style="font-size: 11px; opacity: 0.5;">点击放大</span>
@@ -5172,7 +4616,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <button type="button" class="sct-comfy-btn sct-del-img-btn" title="删除这张图片">✕ 删这张</button>
             <button type="button" class="sct-comfy-btn sct-workflow-btn" title="查看/复制本次完整工作流与参数(与本地 ComfyUI 对比用)">🧩 本次工作流</button>
             <button type="button" class="sct-comfy-btn sct-bk-edit-btn" title="用当前这张图当源图，交给本机 Qwen-Image 2.1 按指令改图">✏️ 编辑</button>
-            <button type="button" class="sct-comfy-btn sct-bk-video-btn" title="用当前这张图做源图，本机 MiniMax H3 出带音频短视频（6 秒约 7 分钟）">🎬 视频</button>
             <button type="button" class="sct-comfy-btn sct-btn-danger sct-clear-slot-btn" title="清空本槽位的全部图片">🗑️ 清空</button>
           `}
         </div>
@@ -5290,16 +4733,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       });
     }
 
-    // ✏️ 编辑 / 🎬 视频：拿当前显示的这张当源图，交给本机 Qwen-Image / MiniMax H3
+    // ✏️ 编辑：拿当前显示的这张当源图，交给本机 Qwen-Image 2.1
     container.querySelector('.sct-bk-edit-btn')?.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openBackendDialog('edit', container, currentSrc);
-    });
-    container.querySelector('.sct-bk-video-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openBackendDialog('video', container, currentSrc);
     });
 
     // 只删当前这一张
@@ -5385,68 +4823,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
   }
 
-  // 提交并调度 ComfyUI 局部重绘任务 (Inpainting)
-  /* ---------------------------- 多后端结果卡与持久化 ---------------------------- */
-
-  // 视频卡：<video> 直接播放 + 一键下载到手机
-  // 视频卡：一采 / 二采 可以分别在出片时先推送，所以支持「分阶段渲染」
-  //   items: [{ url, label }] 或 ['url']；opts: { note, running }
-  function renderBackendVideoCard(container, items, promptText, opts = {}) {
-    const list = (items || [])
-      .map((it) => (typeof it === 'string' ? { url: it, label: '' } : (it || {})))
-      .filter((it) => it.url);
-    if (!list.length) return;
-    container.__sctVideoUrls = list.map((it) => it.url);
-    container.__sctVideoItems = list.slice();
-    const running = !!opts.running;
-
-    const one = (it, i) => `
-      <div class="sct-bk-video-block">
-        ${it.label ? `<div class="sct-bk-video-label">${escapeHtml(it.label)}</div>` : ''}
-        <video class="sct-bk-video" controls playsinline preload="metadata" src="${escapeHtml(it.url)}"></video>
-        <div class="sct-bk-video-bar">
-          <a class="sct-comfy-btn" href="${escapeHtml(it.url)}" download="sct_h3_${i + 1}.mp4" target="_blank" rel="noopener">⬇️ 保存到手机</a>
-          <span class="sct-bk-hint">播放卡住就先下载再看 · 文件也留在 ComfyUI 的 output 里</span>
-        </div>
-      </div>`;
-
-    container.innerHTML = `
-      <div class="sct-comfy-card sct-bk-card">
-        <div class="sct-comfy-card-header">
-          <div class="sct-title"><span>🎬</span><span>MiniMax H3 图生视频</span></div>
-          <div class="sct-prompt-preview" title="${encodeURIComponent(String(promptText || ''))}">${escapeHtml(String(promptText || '').slice(0, 40))}…</div>
-        </div>
-        <div class="sct-bk-stage-note"${opts.note ? '' : ' style="display:none;"'}>${running ? '⏳ ' : ''}<span>${escapeHtml(opts.note || '')}</span></div>
-        <div class="sct-bk-videos">${list.map(one).join('')}</div>
-        <div class="sct-comfy-footer">
-          <button type="button" class="sct-comfy-btn sct-bk-again">🎬 再做一条</button>
-          <button type="button" class="sct-comfy-btn sct-bk-params">🧩 本次工作流</button>
-          ${running ? '<button type="button" class="sct-comfy-btn sct-bk-abort">🛑 中止本次视频任务</button>' : ''}
-          <button type="button" class="sct-comfy-btn sct-btn-danger sct-bk-close">✕ 关掉这张卡</button>
-        </div>
-      </div>`;
-
-    bindBackendTap(container.querySelector('.sct-bk-close'), () => {
-      const id = container.dataset.sctBkId;
-      if (id) removeChatBackendCard(mesIdOf(container), id);
-      container.remove();
-    });
-    bindBackendTap(container.querySelector('.sct-bk-abort'), async () => {
-      await clearComfyQueue();
-      renderErrorCard(container, promptText, '你中止了本次视频任务（ComfyUI 排队已清空）');
-    });
-    bindBackendTap(container.querySelector('.sct-bk-again'), () => {
-      openBackendDialog('video', container, container.__sctSourceUrl || '');
-    });
-    bindBackendTap(container.querySelector('.sct-bk-params'), () => {
-      const p = container.__sctLastParams || {};
-      const txt = Object.entries(p).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`).join('\n')
-        + '\n\n— 完整工作流 JSON —\n' + JSON.stringify(container.__sctLastWorkflow || {}, null, 1);
-      const w = window.open('', '_blank');
-      if (w) { w.document.write(`<pre style="white-space:pre-wrap;font-size:12px;">${escapeHtml(txt)}</pre>`); }
-      else showToast('弹窗被拦了，先允许弹窗再看工作流', 'warning');
-    });
-  }
 
   // 编辑/视频卡挂在原图卡片后面，同样隔离事件
   function createBackendCardContainer(anchor, kind) {
@@ -5490,18 +4866,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     } catch (_) {}
   }
 
-  function removeChatBackendCard(mesId, id) {
-    try {
-      const ctx = getSTContext();
-      const numId = parseInt(mesId, 10);
-      if (!ctx || !ctx.chat || isNaN(numId) || !ctx.chat[numId] || !id) return;
-      const node = ctx.chat[numId];
-      if (!Array.isArray(node.extra?.sct_backend_cards)) return;
-      node.extra.sct_backend_cards = node.extra.sct_backend_cards.filter((x) => x && x.id !== id);
-      if (typeof ctx.saveChatDebounced === 'function') ctx.saveChatDebounced();
-    } catch (_) {}
-  }
-
   // 扫描消息时还原这些卡片
   function renderBackendCardsForMessage(textEl, mesId) {
     const cards = getChatBackendCards(mesId);
@@ -5519,13 +4883,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']
         .forEach((evt) => el.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt.startsWith('touch') }));
       textEl.appendChild(el);
-      if (rec.kind === 'video') renderBackendVideoCard(el, rec.videoItems || rec.urls, rec.prompt || '');
-      else renderCarouselCard(el, rec.urls, rec.prompt || '', []);
+      renderCarouselCard(el, rec.urls, rec.prompt || '', []);
     });
   }
 
   // 让 ComfyUI 主动卸载模型 + 释放显存池（POST /free）。
-  // 跑视频这种"要加载 20GB+ 模型"的大活之前先清一下更稳；平时不用管，ComfyUI 自己会按需流式装卸。
+  // 换模型 / 显存吃紧时点一下更稳；平时不用管，ComfyUI 自己会按需流式装卸。
   async function freeComfyMemory(notify = true) {
     const host = getCleanComfyHost();
     const readFree = async () => {
@@ -5558,67 +4921,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
-  /* ---------------------------------------------------------------------------
-     🧠 让酒馆「主模型」看着图重写视频六段式
-     用的就是酒馆自己的 generateQuietPrompt（当前角色卡 + 当前对话预设 + 这张图），
-     效果等同于你在输入框里发这条要求，但结果不写进聊天，而是直接填进视频提示词框。
-     需要：酒馆 ≥ 1.12 的 generateQuietPrompt + 支持看图的模型 + 打开「媒体内联」。
-     --------------------------------------------------------------------------- */
-  const SIX_SECTION_KEYS = ['subject_definitions', 'summary', 'retention_analysis',
-    'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
-
-  function blobToDataUrl(blob) {
-    return new Promise((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result || ''));
-      fr.onerror = () => reject(new Error('图片转 Base64 失败'));
-      fr.readAsDataURL(blob);
-    });
-  }
-
-  // 酒馆能不能把图片真的发给模型（ST 的判断在 openai.js 的 isImageInliningSupported 里，
-  // 这里只做插件能做的探测：接口类型 + 「媒体内联」开关）
-  function imageToModelBlockers() {
-    const reasons = [];
-    try {
-      const ctx = getSTContext();
-      if (ctx && ctx.main_api && ctx.main_api !== 'openai') {
-        reasons.push(`当前接口类型是「${ctx.main_api}」，不是聊天补全(openai 兼容)`);
-      }
-    } catch (_) {}
-    try {
-      const cb = document.getElementById('openai_media_inlining');
-      if (cb && cb.checked === false) reasons.push('酒馆设置 → 聊天补全 里的「媒体内联 (Media Inlining)」没开');
-    } catch (_) {}
-    return reasons;
-  }
-
-  // 从主模型回复里抠出六段（容忍 markdown 标题/加粗、代码围栏、前后寒暄），并统一成规范段名
-  function parseSixSectionPrompt(text) {
-    let t = String(text || '').replace(/\r\n/g, '\n').trim();
-    t = t.replace(/```[a-zA-Z]*/g, '').replace(/<\/?video>/gi, '').trim();
-    const positions = [];
-    SIX_SECTION_KEYS.forEach((k) => {
-      const re = new RegExp('(^|\\n)[\\s>*-]*(?:#{1,6}\\s*)?(?:\\*\\*)?\\s*' + k + '\\s*(?:\\*\\*)?\\s*[:：]', 'i');
-      const m = t.match(re);
-      if (m) positions.push({ k, i: m.index + (m[1] ? m[1].length : 0) });
-    });
-    positions.sort((a, b) => a.i - b.i);
-    if (positions.length < 4) return '';
-    const parts = {};
-    positions.forEach((p, n) => {
-      const stop = (n + 1 < positions.length) ? positions[n + 1].i : t.length;
-      let body = t.slice(p.i, stop);
-      body = body.replace(/^[\s>*-]*(?:#{1,6}\s*)?(?:\*\*)?\s*[a-z_]+\s*(?:\*\*)?\s*[:：]\s*/i, '');
-      parts[p.k] = body.replace(/\n{3,}/g, '\n\n').trim();
-    });
-    const lastKey = positions[positions.length - 1].k;
-    if (parts[lastKey]) {
-      const cut = parts[lastKey].search(/\n\s*(?:希望|以上|如果需要|需要我|If you|Hope |Let me know|Note:)/i);
-      if (cut > 0) parts[lastKey] = parts[lastKey].slice(0, cut).trim();
-    }
-    return SIX_SECTION_KEYS.map((k) => `${k}:\n${parts[k] || ''}`).join('\n\n');
-  }
 
   // HTML 片段 → 纯文本（切段用）
   function htmlToPlainText(html) {
@@ -5631,79 +4933,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
   }
 
-  // 按卡片在 DOM 里的真实位置切「这张图上方那段」：
-  // 上一张卡片之后 → 这张卡片之前的所有文字（不跨图片，也不往更前面翻）。
-  // 这样即使卡片是别的路径建的、没带上 __sctScriptText，也能切对。
-  function textBeforeCard(anchor) {
-    try {
-      const mesText = anchor?.closest?.('.mes_text');
-      if (!mesText || !anchor) return '';
-      const cards = [...mesText.querySelectorAll('.sct-comfy-card-container')];
-      const idx = cards.indexOf(anchor);
-      const prev = idx > 0 ? cards[idx - 1] : null;
-      const walker = document.createTreeWalker(mesText, NodeFilter.SHOW_TEXT, null);
-      let out = '';
-      let n = walker.nextNode();
-      while (n) {
-        const beforeAnchor = !!(n.compareDocumentPosition(anchor) & Node.DOCUMENT_POSITION_FOLLOWING);
-        if (beforeAnchor) {
-          const beforePrev = prev ? !!(n.compareDocumentPosition(prev) & Node.DOCUMENT_POSITION_FOLLOWING) : false;
-          if (!beforePrev) out += String(n.nodeValue || '') + ' ';
-        }
-        n = walker.nextNode();
-      }
-      return out.replace(/\s+/g, ' ').trim();
-    } catch (_) { return ''; }
-  }
-
-  // 从正文里抓「角色说的话」：中文引号「」『』“” 和英文双引号都认，最多取 3 句
-  function extractDialogueLines(anchor) {
-    let t = '';
-    // ★ 以卡片位置为界：上一张卡片之后 → 这张卡片之前，这段正文就是这张图的（不跨图片）。
-    if (typeof anchor?.__sctScriptText === 'string' && anchor.__sctScriptText) {
-      t = String(anchor.__sctScriptText || '');
-    } else {
-      t = textBeforeCard(anchor);   // 现场按 DOM 位置切，绝不退回整条消息
-    }
-    if (!t) return [];
-    t = t.replace(/image###[\s\S]*?###/g, ' ').replace(/<video>[\s\S]*?<\/video>/gi, ' ')
-      .replace(/🎬\s*视频提示词已就绪/g, ' ').trim();
-    const out = [];
-    const push = (s) => {
-      const v = String(s || '').replace(/\s+/g, ' ').trim();
-      if (!v || v.length > 120) return;
-      if (out.includes(v)) return;
-      out.push(v);
-    };
-    const pats = [/「([^「」]{1,120})」/g, /『([^『』]{1,120})』/g, /“([^“”]{1,120})”/g, /"([^"\n]{1,120})"/g];
-    pats.forEach((re) => {
-      let m;
-      while ((m = re.exec(t)) !== null) push(m[1]);
-    });
-    return out.slice(0, 3);
-  }
-
-  // 弹窗里每句台词的归属：{ her: [...], him: [...] }（标成"不用"的直接丢掉）
-  function pickedDialogueLines(dialog, lines) {
-    const her = [];
-    const him = [];
-    try {
-      const sels = dialog.querySelectorAll('.sct-bk-line-voice');
-      if (sels.length) {
-        sels.forEach((sel) => {
-          const v = String(sel.value || '');
-          const i = parseInt(sel.dataset.idx, 10);
-          const text = Number.isFinite(i) ? (lines || [])[i] : '';
-          if (!text) return;
-          if (v === 'her') her.push(String(text));
-          else if (v === 'him') him.push(String(text));
-        });
-      } else {
-        (lines || []).forEach((t) => her.push(String(t)));
-      }
-    } catch (_) {}
-    return { her, him };
-  }
 
   // ✏️ 编辑弹窗的一键指令预设（省得每次手打）
   const SCT_EDIT_PRESETS = {
@@ -5713,390 +4942,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     style: '保持画面里的人物、长相、姿势、构图和背景完全不变，只调整画风与光线：改成\n（在这里写你要的风格，例：暖色黄昏逆光、胶片颗粒感、更精致的光影、厚涂质感）。\n人物的身份和五官不要改变，不要换人。'
   };
 
-  // 抓这张图「上方那段」正文：作为【这一幕的正文】显式塞进重写要求里。
-  // 位置判定：上一张卡片之后 → 这张卡片之前（不跨图片，也不退回整条消息）
-  function extractSceneText(anchor) {
-    let raw = '';
-    if (typeof anchor?.__sctScriptText === 'string' && anchor.__sctScriptText) {
-      raw = String(anchor.__sctScriptText || '');
-    } else {
-      raw = textBeforeCard(anchor);
-    }
-    if (!raw) return '';
-    let t = raw
-      .replace(/<video>[\s\S]*?<\/video>/gi, ' ')
-      .replace(/&lt;video&gt;[\s\S]*?&lt;\/video&gt;/gi, ' ')
-      .replace(/video###[\s\S]*?###/gi, ' ')
-      .replace(/<image>[\s\S]*?<\/image>/gi, ' ')
-      .replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, ' ')
-      .replace(/image###[\s\S]*?###/gi, ' ')
-      .replace(/🎬\s*视频提示词已就绪/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return t.length > 1200 ? t.slice(0, 1200) + '…' : t;
-  }
 
-  // ---- 读酒馆「已经保存好」的三样东西：连接配置 / 模型 / 对话预设 ----
-
-  // 连接配置（酒馆的「连接配置」= 一份 API + 地址 + 密钥 + 模型，独立保存的那种）
-  function listConnectionProfiles() {
-    try {
-      const cm = getSTContext()?.extensionSettings?.connectionManager;
-      const arr = Array.isArray(cm?.profiles) ? cm.profiles : [];
-      const list = arr.map((p) => ({
-        id: String(p?.id || ''),
-        name: String(p?.name || p?.id || ''),
-        api: String(p?.api || ''),
-        model: String(p?.model || '')
-      })).filter((p) => p.id);
-      return { list, current: String(cm?.selectedProfile || '') };
-    } catch (_) { return { list: [], current: '' }; }
-  }
-
-  // 对话预设：优先用酒馆的 presetManager，读不到就退回设置面板里的下拉
-  // 对话预设：直接读酒馆设置面板里的下拉 —— option.value 是序号、option.text 才是预设名。
-  // ★ 之前拿 value 当名字显示，所以下拉里是一串 0/1/2/3（用户反馈"谁看得懂"）。
-  function listChatPresets() {
-    const list = [];
-    let current = '';
-    try {
-      const sel = document.getElementById('settings_preset_openai');
-      if (sel) {
-        [...sel.options].forEach((o) => {
-          const label = String(o.text || '').trim();
-          if (!label) return;
-          list.push({ label, value: String(o.value) });
-        });
-        const cur = sel.selectedOptions && sel.selectedOptions[0];
-        current = cur ? String(cur.text || '').trim() : '';
-      }
-    } catch (_) {}
-    if (!list.length) {
-      // 兜底：presetManager 的 preset_names（名字 → 序号）
-      try {
-        const pm = getSTContext()?.getPresetManager?.('openai');
-        const names = pm?.getPresetList?.()?.preset_names;
-        if (names && typeof names === 'object') {
-          Object.keys(names).forEach((name) => list.push({ label: name, value: String(names[name]) }));
-        }
-        current = current || (pm?.getSelectedPresetName?.() || '');
-      } catch (_) {}
-    }
-    return { list, current };
-  }
-
-  // 预设「名字」→ 酒馆下拉里的值（序号）；找不到返回空
-  function presetValueOf(label) {
-    try {
-      const sel = document.getElementById('settings_preset_openai');
-      if (!sel) return '';
-      const hit = [...sel.options].find((o) => String(o.text || '').trim() === label);
-      if (hit) return String(hit.value);
-      const pm = getSTContext()?.getPresetManager?.('openai');
-      if (pm?.findPreset) {
-        const v = pm.findPreset(label);
-        if (v !== undefined && v !== null && String(v) !== '') return String(v);
-      }
-    } catch (_) {}
-    return '';
-  }
-
-  // 模型清单：option.value = 模型 id，option.text = 给人看的名字
-  function listChatModels(profileModel = '') {
-    const list = [];
-    const seen = new Set();
-    try {
-      const sel = document.getElementById('model_openai_select');
-      if (sel) {
-        [...sel.options].forEach((o) => {
-          const value = String(o.value || '').trim();
-          if (!value || seen.has(value)) return;
-          seen.add(value);
-          list.push({ value, label: String(o.text || value).trim() || value });
-        });
-      }
-    } catch (_) {}
-    if (profileModel && !seen.has(profileModel)) {
-      list.unshift({ value: profileModel, label: `${profileModel}（连接配置里存的）` });
-    }
-    let current = '';
-    try { current = document.getElementById('model_openai_select')?.value || ''; } catch (_) {}
-    return { list, current };
-  }
-
-  // 给 <select> 赋值并触发 change（等于用户自己在下拉里选）；选项不存在时可按需补一个
-  function setSelectValue(el, value, allowAdd = false) {
-    if (!el || !value) return false;
-    try {
-      if (![...el.options].some((o) => o.value === value)) {
-        if (!allowAdd) return false;
-        el.add(new Option(value, value));
-      }
-      el.value = value;
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    } catch (_) { return false; }
-  }
-
-  // 只在这一次「看图重写」里临时换成 指定连接配置 / 模型 / 对话预设；
-  // 无论成功失败都在 finally 里按「模型 → 预设 → 连接配置」逆序还原
-  async function withTemporaryModelSettings({ profile, preset, model }, fn) {
-    const profilesSel = () => document.getElementById('connection_profiles');
-    const origProfile = String(getSTContext()?.extensionSettings?.connectionManager?.selectedProfile || '');
-    const origPreset = getSTContext()?.getPresetManager?.('openai')?.getSelectedPresetName?.() || '';
-    const origModel = document.getElementById('model_openai_select')?.value || '';
-    let profileSwapped = false;
-    let presetSwapped = false;
-    let modelSwapped = false;
-    try {
-      // 1) 换连接配置（连 API/地址/密钥一起换，酒馆要一点时间刷新模型清单）
-      if (profile && profile !== origProfile) {
-        const sel = profilesSel();
-        if (sel && setSelectValue(sel, profile)) {
-          profileSwapped = true;
-          await new Promise((r) => setTimeout(r, 1200));
-        }
-      }
-      // 2) 换模型（等下拉刷新，最多重试 3 次；手填的模型 ID 若不在清单里就补一个选项，否则设不上）
-      if (model) {
-        for (let i = 0; i < 3; i++) {
-          const sel = document.getElementById('model_openai_select');
-          if (sel && [...sel.options].some((o) => o.value === model)) break;
-          await new Promise((r) => setTimeout(r, 500));
-        }
-        modelSwapped = setSelectValue(document.getElementById('model_openai_select'), model, true);
-      }
-      // 3) 换对话预设（入参是「名字」，这里换成酒馆下拉里的值=序号）
-      if (preset && preset !== origPreset) {
-        const pm = getSTContext()?.getPresetManager?.('openai');
-        const presetVal = presetValueOf(preset);
-        if (pm?.selectPreset && presetVal) {
-          await pm.selectPreset(presetVal);
-          presetSwapped = true;
-        } else if (presetVal) {
-          presetSwapped = setSelectValue(document.getElementById('settings_preset_openai'), presetVal, true);
-        }
-      }
-      return await fn();
-    } finally {
-      try { if (modelSwapped) setSelectValue(document.getElementById('model_openai_select'), origModel, true); } catch (_) {}
-      try {
-        if (presetSwapped) {
-          const pm = getSTContext()?.getPresetManager?.('openai');
-          const back = presetValueOf(origPreset);   // origPreset 是名字，要换成序号
-          if (pm?.selectPreset && back) await pm.selectPreset(back);
-          else if (back) setSelectValue(document.getElementById('settings_preset_openai'), back, true);
-        }
-      } catch (_) {}
-      try {
-        if (profileSwapped && origProfile) {
-          setSelectValue(profilesSel(), origProfile, true);
-          await new Promise((r) => setTimeout(r, 600));
-        }
-      } catch (_) {}
-    }
-  }
-
-  // 走「独立 API」：直接向 OpenAI 兼容的 /chat/completions 发图 + 指令。
-  // 好处：不动酒馆的连接配置，模型随便填；代价：酒馆预设里的提示词模板用不上，
-  //       只会借用该预设的采样参数（temperature / top_p）。
-  async function callExternalVisionApi(opts) {
-    const url = String(opts.url || '').trim();
-    if (!url) throw new Error('还没填 API 地址');
-    const model = String(opts.model || '').trim();
-    if (!model) throw new Error('还没填模型名');
-    const body = {
-      model,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: String(opts.prompt || '') },
-          { type: 'image_url', image_url: { url: String(opts.dataUrl || '') } }
-        ]
-      }],
-      max_tokens: Math.max(256, Math.min(8000, parseInt(opts.maxTokens, 10) || 1600))
-    };
-    if (Number.isFinite(opts.temperature)) body.temperature = opts.temperature;
-    if (Number.isFinite(opts.topP)) body.top_p = opts.topP;
-    const headers = { 'Content-Type': 'application/json' };
-    if (opts.key) headers.Authorization = 'Bearer ' + String(opts.key).trim();
-    const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-    const txt = await res.text();
-    let data = null;
-    try { data = JSON.parse(txt); } catch (_) {}
-    if (!res.ok) {
-      const msg = data?.error?.message || data?.message || txt.slice(0, 200) || ('HTTP ' + res.status);
-      throw new Error('独立 API 返回 ' + res.status + '：' + msg);
-    }
-    const c = data?.choices?.[0]?.message?.content;
-    let out = '';
-    if (typeof c === 'string') out = c;
-    else if (Array.isArray(c)) out = c.map((p) => (typeof p === 'string' ? p : p?.text || '')).join('');
-    out = String(out || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    if (!out) throw new Error('独立 API 没返回内容');
-    return out;
-  }
-
-  // 由 chat/completions 地址推出 /models 地址
-  function modelsUrlFrom(chatUrl) {
-    const u = String(chatUrl || '').trim();
-    if (!u) return '';
-    try {
-      const url = new URL(u);
-      let p = url.pathname.replace(/\/+$/, '');
-      if (/\/chat\/completions$/i.test(p)) p = p.replace(/\/chat\/completions$/i, '/models');
-      else if (!/\/models$/i.test(p)) p = p + '/models';
-      url.pathname = p;
-      return url.toString();
-    } catch (_) {
-      if (/\/chat\/completions$/i.test(u)) return u.replace(/\/chat\/completions$/i, '/models');
-      return u.replace(/\/+$/, '') + '/models';
-    }
-  }
-
-  // 拉模型清单（OpenAI 兼容 GET /models）
-  async function fetchApiModelList(url, key) {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: key ? { Authorization: 'Bearer ' + String(key).trim() } : {}
-    });
-    const txt = await res.text();
-    let data = null;
-    try { data = JSON.parse(txt); } catch (_) {}
-    if (!res.ok) {
-      const msg = data?.error?.message || data?.message || txt.slice(0, 200) || ('HTTP ' + res.status);
-      throw new Error('HTTP ' + res.status + '：' + msg);
-    }
-    const arr = Array.isArray(data)
-      ? data
-      : (Array.isArray(data?.data) ? data.data : (Array.isArray(data?.models) ? data.models : []));
-    return arr.map((m) => (typeof m === 'string' ? m : (m?.id || m?.name || ''))).filter(Boolean);
-  }
-
-  async function rewriteVideoPromptByMainModel(dialog) {
-    const ctx = getSTContext();
-    const ta = dialog.querySelector('.sct-bk-text');
-    const btn = dialog.querySelector('.sct-bk-ai-rewrite');
-    if (!ta) return;
-    if (typeof ctx?.generateQuietPrompt !== 'function') {
-      showToast('当前酒馆版本没有 generateQuietPrompt，无法用主模型重写（请更新酒馆）', 'warning');
-      return;
-    }
-    if (!sctBackendDialogSource) {
-      showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning');
-      return;
-    }
-    const blockers = imageToModelBlockers();
-    if (blockers.length > 0) {
-      const ok = window.confirm('注意：主模型很可能看不到这张图。\n\n原因：\n· ' + blockers.join('\n· ')
-        + '\n\n另外模型本身也必须支持看图（GPT-4o / Claude / Gemini / Qwen-VL 这类）。\n\n仍然要用主模型重写吗？');
-      if (!ok) return;
-    }
-
-    const draft = String(ta.value || '').trim();
-    const noteEl = dialog.querySelector('.sct-bk-director');
-    const directorNote = String(noteEl?.value || '').trim();
-    if (directorNote) saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
-    const sceneText = extractSceneText(dialog.__sctAnchor);
-    const dialogueLines = extractDialogueLines(dialog.__sctAnchor);
-    const picked = pickedDialogueLines(dialog, dialogueLines);
-    const oldText = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ 主模型看图重写中…'; }
-    try {
-      const blob = await toImageBlob(sctBackendDialogSource);
-      const dataUrl = await blobToDataUrl(blob);
-      const prompt = [
-        '你现在扮演「视频提示词助手」。下面这张图就是这条消息里要拿去做视频的那张画面，请你**看着这张图**，写一份 MiniMax H3 用的六段式英文提示词。',
-        '硬性要求：',
-        '1) 六段齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:',
-        '2) ★最重要：人物长相、服装、场景、画风必须与你**看到的这张图**完全一致，不许换人 / 换景 / 换画风。',
-        `3) ${videoShotRulesForRewrite(getSettings().comfyVideoPromptMode)}`,
-        '4) 人物外观（发色、瞳色、服装、配饰、姿势、背景）必须按你**实际看到的这张图**写；图里看不清或你不确定的部分就写 "as shown in <Picture 1>"，绝不编造。',
-        '5) 全片纯 2D 日式赛璐璐风格（如果这张图就是这种风格），并写死 "no 3D rendering, no CGI shading, no realistic skin texture"。',
-        '6) 画面里只有这一个角色；不得出现文字、字幕、水印、分格或画框。',
-        '7) 只输出这六段英文，不要中文解释、不要 markdown 围栏、不要 JSON。台词本身可以保留中文原句。',
-        sceneText
-          ? `\n【这一幕的正文（酒馆里这条消息的文字，用来说明剧情与动作；画面细节仍以图为准）】\n${sceneText}`
-          : '',
-        (picked.her.length || picked.him.length)
-          ? `\n【★ 必须写进提示词的台词（从正文里抓的，原样引用，不许改写/翻译/加戏）】\n${picked.her.map((s) => `· [女声] 「${s}」`).join('\n')}${picked.her.length ? '\n（女声＝你看到的这个角色：写进对应镜头，双引号包住原句，写 she says it aloud with natural lip movement, the quoted line is clearly heard in the audio）' : ''}${picked.him.length ? `\n${picked.him.map((s) => `· [男声] 「${s}」`).join('\n')}\n（男声＝另一个人的话，画面里不出现他：写成 off-screen male voice，只在音轨/overall_soundscape 里交代，写 the male line is clearly heard in the audio；女主**不要**为这句对口型）` : ''}`
-          : '',
-        directorNote
-          ? `\n【用户想要的效果（中文指导，必须尽量满足）】\n${directorNote}\n（注意：指导里如果要求在画面里做动作，就把动作写进 [Shot 1] 的画面内部微动里；但"镜头不许动、不许重新取景"这条永远优先，冲突时以镜头不动为准。）`
-          : '',
-        draft ? `\n【初稿（是之前没看图时写的，凡与图不符一律以图为准）】\n${draft}` : ''
-      ].filter(Boolean).join('\n');
-
-      const modeSel = dialog.querySelector('.sct-bk-rewrite-mode');
-      const rewriteMode = String(modeSel?.value || getSettings().comfyRewriteMode || 'tavern');
-      const profileSel = dialog.querySelector('.sct-bk-profile');
-      const presetSel = dialog.querySelector('.sct-bk-preset');
-      const wantProfile = String(profileSel?.value || '').trim();
-      const wantPreset = String(presetSel?.value || '').trim();
-      saveSettings({
-        comfyRewriteMode: rewriteMode,
-        comfyRewriteProfile: wantProfile, comfyRewritePreset: wantPreset
-      });
-
-      let reply = '';
-      if (rewriteMode === 'api') {
-        // ★ 独立 API：地址/Key/模型自己填（留空就用「AI 辅助」那套），完全不动酒馆的连接配置
-        const cur = getSettings();
-        const apiUrl = String(dialog.querySelector('.sct-bk-api-url')?.value || '').trim() || String(cur.comfyAiAssistEndpoint || '');
-        const apiKey = String(dialog.querySelector('.sct-bk-api-key')?.value || '').trim() || String(cur.comfyAiAssistKey || '');
-        const apiModel = String(dialog.querySelector('.sct-bk-api-model')?.value || '').trim() || String(cur.comfyAiAssistModel || '');
-        saveSettings({ comfyRewriteApiUrl: apiUrl, comfyRewriteApiKey: apiKey, comfyRewriteApiModel: apiModel });
-        // 预设只借它的采样参数（提示词模板属于酒馆内部管线，外部接口用不上）
-        let pset = {};
-        try { pset = (wantPreset && ctx.getPresetManager?.('openai')?.getPresetSettings?.(wantPreset)) || {}; } catch (_) {}
-        reply = await callExternalVisionApi({
-          url: apiUrl, key: apiKey, model: apiModel, prompt, dataUrl,
-          temperature: Number(pset?.temperature),
-          topP: Number(pset?.top_p),
-          maxTokens: cur.comfyRewriteMaxTokens
-        });
-      } else {
-        reply = await withTemporaryModelSettings({ profile: wantProfile, preset: wantPreset }, () =>
-          ctx.generateQuietPrompt({
-            quietPrompt: prompt,
-            quietImage: dataUrl,          // ★ 把图一起发给主模型（ST 会做 base64 内联）
-            quietToLoud: false,
-            removeReasoning: true,
-            responseLength: 1600
-          })
-        );
-      }
-
-      const six = parseSixSectionPrompt(reply);
-      if (!six) {
-        ta.value = String(reply || '').trim();
-        showToast('主模型回复里没认出六段结构，已把原文放进框里，你自己改一下', 'warning');
-      } else {
-        ta.value = six;
-        showToast('已用主模型（当前角色卡 + 对话预设 + 这张图）重写完成', 'success');
-      }
-      sctBackendDialogPrefillFromAi = true;   // 场景专属，不覆盖全局默认模板
-      sctBackendDialogRewritten = true;
-      const tagEl = dialog.querySelector('.sct-bk-video-src');
-      if (tagEl) {
-        const bits = [];
-        if (wantPreset) bits.push(`预设 ${wantPreset}`);
-        if (wantModel) bits.push(`模型 ${wantModel}`);
-        tagEl.textContent = `当前来源：🧠 主模型看图重写的（只用于本条${bits.length ? ' · ' + bits.join(' / ') : ''}）`;
-      }
-    } catch (e) {
-      showToast('主模型重写失败：' + (e?.message || e), 'error');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = oldText || '🧠 让主模型看图重写'; }
-    }
-  }
-
-  /* ------------------------------- 编辑 / 视频对话框 ------------------------------- */
+  /* ------------------------------- 图像编辑对话框 ------------------------------- */
 
   /* ---------------------------------------------------------------------------
      卡片按钮的「总部兜底」：在聊天区装一次委托监听（捕获阶段）。
      不管卡片是哪一次渲染出来的、有没有成功绑上按钮事件、页面更新后 DOM 有没有被重刷，
-     点「✏️ 编辑 / 🎬 视频 / 立即开始生图 / 🔄 重新生成」都能用。
+     点「✏️ 编辑 / 立即开始生图 / 🔄 重新生成」都能用。
      --------------------------------------------------------------------------- */
   function cardCurrentImage(container) {
     try {
@@ -6132,7 +4984,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     chatRoot.__sctActionDelegate = true;
     chatRoot.addEventListener('click', (e) => {
       const t = e.target && e.target.closest
-        ? e.target.closest('.sct-bk-edit-btn, .sct-bk-video-btn, .sct-start-draw, .sct-retry-btn')
+        ? e.target.closest('.sct-bk-edit-btn, .sct-start-draw, .sct-retry-btn')
         : null;
       if (!t) return;
       const container = t.closest('.sct-comfy-card-container');
@@ -6143,11 +4995,10 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const taskKey = container.dataset.sctTaskKey || null;
       const textEl = container.closest('.mes')?.querySelector('.mes_text');
       try {
-        if (t.classList.contains('sct-bk-edit-btn') || t.classList.contains('sct-bk-video-btn')) {
-          const kind = t.classList.contains('sct-bk-video-btn') ? 'video' : 'edit';
+        if (t.classList.contains('sct-bk-edit-btn')) {
           const { url } = cardCurrentImage(container);
           if (!url) { showToast('这张卡的图片信息丢了：请点「🔄 重新生成」再来', 'warning'); return; }
-          openBackendDialogSafe(kind, container, url);
+          openBackendDialogSafe('edit', container, url);
           return;
         }
         // 立即开始生图 / 重新生成
@@ -6203,53 +5054,18 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   function openBackendDialog(kind, anchor, sourceUrl) {
     closeBackendDialog();
     const s = getSettings();
-    const isVideo = kind === 'video';
     sctBackendDialogSource = sourceUrl || null;
 
     // ★ 用原生 <dialog> + showModal()：弹窗被放进浏览器的「顶层(top layer)」，
     //   无论酒馆 UI / 主题 / 其它插件用什么 z-index 都不可能盖住它。
-    //   （上一版是普通 div + z-index，被酒馆页面盖住了 —— 比数字的笨办法不可靠）
     const canUseDialog = typeof window.HTMLDialogElement !== 'undefined'
       && typeof document.createElement('dialog').showModal === 'function';
     const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
     overlay.className = canUseDialog ? 'sct-bk-dialog' : 'sct-bk-dialog sct-bk-fallback';
-    overlay.__sctAnchor = anchor;      // 「看图重写」要抓这条消息的正文
+    overlay.__sctAnchor = anchor;
 
-    // 🎬 视频提示词预填优先级：聊天模型写好的（本条消息这个槽位） > 设置里的默认模板
-    let videoPrefill = '';
-    sctBackendDialogPrefillFromAi = false;
-    sctBackendDialogRewritten = false;
-    let videoSourceLabel = '设置里的默认模板';
-    if (isVideo) {
-      const slotIdx = String(anchor?.dataset?.sctSlotIdx ?? '0');
-      const aiVp = String(anchor?.__sctVideoPrompt || '').trim()
-        || getChatMessageVideoPrompt(mesIdOf(anchor), slotIdx);
-      if (aiVp) {
-        videoPrefill = aiVp;
-        sctBackendDialogPrefillFromAi = true;
-        videoSourceLabel = '聊天主模型写好的（可以直接改，也能换成默认模板）';
-      } else {
-        videoPrefill = String(s.comfyVideoPrompt || '');
-      }
-    }
-    // 「看图重写」用的连接配置/预设/模型清单（酒馆里已经保存的那些）
-    const profileInfo = isVideo ? listConnectionProfiles() : { list: [], current: '' };
-    const presetInfo = isVideo ? listChatPresets() : { names: [], current: '' };
-    const savedProfile = String(s.comfyRewriteProfile || '');
-    const savedPreset = String(s.comfyRewritePreset || '');
-    // 看图重写走哪：'tavern' 走酒馆主模型；'api' 走独立 API（地址/Key/模型自己填，留空复用「AI 辅助」那套）
-    const rewriteMode = String(s.comfyRewriteMode || 'tavern');
-    const apiPrefill = {
-      url: String(s.comfyRewriteApiUrl || s.comfyAiAssistEndpoint || ''),
-      key: String(s.comfyRewriteApiKey || s.comfyAiAssistKey || ''),
-      model: String(s.comfyRewriteApiModel || s.comfyAiAssistModel || '')
-    };
-    const apiModelCache = Array.isArray(sctApiModelCache) ? sctApiModelCache.slice() : [];
-    // 🔊 本条消息里的台词（从引号里抓），提交时可以追加进提示词
-    const dialogLines = isVideo ? extractDialogueLines(anchor) : [];
-    // ➕ 第二张参考图的下拉选项：聊天里其他已出图卡片（编辑模式才有）
+    // ➕ 第二张参考图的下拉选项：聊天里其他已出图卡片
     const ref2Options = (() => {
-      if (isVideo) return '';
       const opts = [];
       try {
         document.querySelectorAll('#chat .mes').forEach((mes) => {
@@ -6270,7 +5086,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.innerHTML = `
       <div class="sct-bk-modal">
         <div class="sct-bk-head">
-          <span class="sct-bk-title">${isVideo ? '🎬 MiniMax H3 图生视频' : '✏️ Qwen-Image 2.1 图像编辑'}</span>
+          <span class="sct-bk-title">✏️ Qwen-Image 2.1 图像编辑</span>
           <button type="button" class="sct-bk-x sct-bk-quit" title="关闭这个窗口">✕ 关闭</button>
         </div>
         <div class="sct-bk-body">
@@ -6283,7 +5099,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <div class="sct-bk-hint">源图会先上传到本机 ComfyUI 的 input 目录</div>
             </div>
           </div>
-          ${isVideo ? '' : `<div class="sct-bk-srcrow" style="margin-top:6px;">
+          <div class="sct-bk-srcrow" style="margin-top:6px;">
             <img class="sct-bk-ref2-preview" alt="参考图2" src="${escapeHtml(typeof sctBackendDialogRef2 === 'string' ? sctBackendDialogRef2 : '')}" style="${sctBackendDialogRef2 ? 'max-width:72px;' : 'display:none; max-width:72px;'}" />
             <div class="sct-bk-srcside">
               <div class="sct-bk-srctag">➕ 第二张参考图（可选）</div>
@@ -6295,121 +5111,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <input type="file" accept="image/*" class="sct-bk-ref2-file" style="display:none;" />
               <div class="sct-bk-hint">两张图会一起编码给模型（最多支持 16 张）。用法举例：<b>「把图二里那个人身上的衣服穿到图一的人身上」</b>、<b>「让图一的人和图二的人抱在一起」</b>。图一＝上面那张源图，图二＝这里选的。</div>
             </div>
-          </div>`}
+          </div>
           <div class="sct-setting-col">
-            <label>${isVideo ? '视频提示词（六段式，英文最好用；可在设置里改默认模板）' : '编辑指令（直接写中文，例如：把头发改成粉色，其他别动）'}</label>
-            ${isVideo ? `<textarea class="text_pole sct-bk-director" rows="2" placeholder="🧭 中文指导（可选）：想让它变成什么样的情况，直接写中文。例：她坐在窗边慢慢转头看向你；或者：把外套脱掉后轻轻转个身">${escapeHtml(String(s.comfyVideoDirectorNote || ''))}</textarea>
-            <div class="sct-bk-hint" style="margin:2px 0 4px;">上面这行是给「主模型」看的：点下面的「🧠 让主模型看图重写」时，它会带着这张图 + <b>这条消息的正文</b> + 当前角色卡与对话预设，按你写的中文意思重写六段式（人物可以动，但镜头依旧不动）。</div>` : ''}
-            <textarea class="text_pole sct-bk-text" rows="${isVideo ? 6 : 3}">${escapeHtml(isVideo ? videoPrefill : '')}</textarea>
-            ${isVideo ? '' : `<div class="sct-bk-fillrow">
+            <label>编辑指令（直接写中文，例如：把头发改成粉色，其他别动）</label>
+            <textarea class="text_pole sct-bk-text" rows="3"></textarea>
+            <div class="sct-bk-fillrow">
               <span class="sct-bk-hint">一键填指令：</span>
               <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="swap">🔁 角色替换（图二的人→放进图一）</button>
               <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="outfit">👕 换装（穿图二的衣服）</button>
               <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="duo">👥 双人合片（拥抱）</button>
               <button type="button" class="sct-comfy-btn sct-bk-fill" data-preset="style">🎨 只改画风/光线</button>
               <span class="sct-bk-hint">（先选好「第二张参考图」再点；填完还能继续手改）</span>
-            </div>`}
-            ${isVideo ? `<div class="sct-setting-col" style="margin-top:4px;">
-              <label>🧠 看图重写走哪个接口</label>
-              <select class="text_pole sct-bk-rewrite-mode">
-                <option value="tavern" ${rewriteMode !== 'api' ? 'selected' : ''}>走酒馆主模型（预设的提示词模板完整生效；需要模型能看图）</option>
-                <option value="api" ${rewriteMode === 'api' ? 'selected' : ''}>走独立 API（自己填地址/Key/模型；不动酒馆配置，预设只借采样参数）</option>
-              </select>
-              <div class="sct-bk-api-fields" style="display:${rewriteMode === 'api' ? '' : 'none'}; margin-top:6px;">
-                <input type="text" class="text_pole sct-bk-api-url" placeholder="API 地址（OpenAI 兼容 …/v1/chat/completions）" value="${escapeHtml(apiPrefill.url)}" />
-                <input type="password" class="text_pole sct-bk-api-key" placeholder="API Key（Bearer）" value="${escapeHtml(apiPrefill.key)}" style="margin-top:4px;" />
-                <input type="text" class="text_pole sct-bk-api-model" placeholder="模型名（要能看图，如 gpt-4o / qwen-vl-max）" value="${escapeHtml(apiPrefill.model)}" style="margin-top:4px;" />
-                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
-                  <button type="button" class="sct-comfy-btn sct-bk-api-connect" title="用上面的地址和 Key 请求一次 /models，把它返回的模型列出来">🔗 连接并获取模型</button>
-                  <select class="text_pole sct-bk-api-model-select" style="flex:1; min-width:150px;">
-                    <option value="">（连接后在这里选模型）</option>
-                    ${apiModelCache.map((m) => `<option value="${escapeHtml(m)}" ${m === apiPrefill.model ? 'selected' : ''}>${escapeHtml(m)}</option>`).join('')}
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div class="sct-bk-two" style="margin-top:4px;">
-              <div class="sct-setting-col sct-bk-profile-col">
-                <label>🧠 重写用「连接配置」（酒馆里保存的 API 配置）</label>
-                <select class="text_pole sct-bk-profile">
-                  <option value="">（跟随酒馆当前${profileInfo.current ? `：${escapeHtml((profileInfo.list.find((p) => p.id === profileInfo.current) || {}).name || profileInfo.current)}` : ''}）</option>
-                  ${profileInfo.list.map((p) => `<option value="${escapeHtml(p.id)}" ${p.id === savedProfile ? 'selected' : ''}>${escapeHtml(p.name)}${p.model ? ` · ${escapeHtml(p.model)}` : ''}</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-setting-col">
-                <label>🧠 重写用「对话预设」（显示预设名）</label>
-                <select class="text_pole sct-bk-preset">
-                  <option value="">（跟随酒馆当前${presetInfo.current ? `：${escapeHtml(presetInfo.current)}` : ''}）</option>
-                  ${presetInfo.list.map((p) => `<option value="${escapeHtml(p.label)}" ${p.label === savedPreset ? 'selected' : ''}>${escapeHtml(p.label)}</option>`).join('')}
-                </select>
-              </div>
-            </div>
-            <div class="sct-bk-hint" style="margin-top:2px;">${(profileInfo.list.length || presetInfo.list.length)
-              ? '这两样都只影响「看图重写」这一次，跑完会<b>自动还原</b>你原来的连接配置 / 预设。模型不用在这里选：走酒馆主模型时用连接配置自带的模型，走独立 API 时用上面拉到的模型。'
-              : '（读不到酒馆的连接配置 / 预设清单 —— 可能「连接配置」扩展没启用，或酒馆版本较旧；这里会自动跟随当前设置）'}</div>` : ''}
-            ${isVideo ? `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px;">
-              <button type="button" class="sct-comfy-btn sct-bk-ai-rewrite" title="把这张图发给酒馆主模型（带当前角色卡与对话预设），让它看着图重写六段式">🧠 让主模型看图重写</button>
-              <button type="button" class="sct-comfy-btn sct-bk-use-default">↩️ 换成设置里的默认模板</button>
-              <span class="sct-bk-hint sct-bk-video-src">当前来源：${escapeHtml(videoSourceLabel)}</span>
-            </div>` : ''}
-          </div>
-          ${isVideo ? `
-          <div class="sct-bk-two">
-            <div class="sct-setting-col">
-              <label>时长（6 秒≈7 分钟 · 15 秒要 20 分钟以上）</label>
-              <select class="text_pole sct-bk-seconds">
-                ${[3, 5, 6, 10, 15].map((v) => `<option value="${v}" ${v === (parseInt(s.comfyVideoSeconds, 10) || 6) ? 'selected' : ''}>${v} 秒</option>`).join('')}
-              </select>
-            </div>
-            <div class="sct-setting-col">
-              <label>画面比例</label>
-              <select class="text_pole sct-bk-aspect">
-                ${SCT_VIDEO_ASPECTS.map((v) => `<option value="${escapeHtml(v)}" ${v === (s.comfyVideoAspect || '16:9 (Widescreen)') ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
-              </select>
             </div>
           </div>
-          <label class="sct-bk-check" for="sct-bk-onepass"><input type="checkbox" id="sct-bk-onepass" class="sct-bk-onepass" ${s.comfyVideoOnePassOnly ? 'checked' : ''} /> <b>只跑一采（不跑二采）</b><span class="sct-bk-hint"> — 快很多、显存更省；代价是只有一采的草稿画质，没有二采的高清成品</span></label>
-          <label class="sct-bk-check" for="sct-bk-speak"><input type="checkbox" id="sct-bk-speak" class="sct-bk-speak" ${s.comfyVideoSpeakLines !== false ? 'checked' : ''} /> <b>🔊 让角色念出正文台词</b><span class="sct-bk-hint"> — ${dialogLines.length ? `本条识别到 ${dialogLines.length} 句，下面每一句「谁说的」都可以改（女声/男声都会写进提示词，选'不用'才丢掉）：` : '本条正文里没识别到引号台词（用「」『』“”或英文双引号写的才算）'}</span></label>
-          ${dialogLines.length ? `<div class="sct-bk-lines">
-            ${dialogLines.map((l, i) => `<div class="sct-bk-line-row">
-              <span class="sct-bk-line-text">「${escapeHtml(l)}」</span>
-              <select class="text_pole sct-bk-line-voice" data-idx="${i}">
-                <option value="her" selected>👩 她说（女声·对口型）</option>
-                <option value="him">👨 他说（男声·画外音）</option>
-                <option value="none">🚫 不用（不写进提示词）</option>
-              </select>
-            </div>`).join('')}
-          </div>` : ''}
-          <div class="sct-bk-srcrow" style="margin-top:6px;">
-            <div class="sct-bk-srcside">
-              <div class="sct-bk-srctag">🎞 参考视频（可选 · 角色替换）</div>
-              <button type="button" class="sct-comfy-btn sct-bk-refvid-pick">🎞 上传一段参考视频</button>
-              <input type="file" accept="video/*" class="sct-bk-refvid-file" style="display:none;" />
-              <div class="sct-bk-two" style="margin-top:4px;">
-                <div class="sct-setting-col">
-                  <label>✂️ 从第几秒开始截</label>
-                  <input type="number" class="text_pole sct-bk-refvid-start" min="0" step="0.5" value="${Number(s.comfyH3RefStartSec) || 0}" />
-                </div>
-                <div class="sct-setting-col">
-                  <label>截取预览（选文件后自动算）</label>
-                  <div class="sct-bk-hint sct-bk-refvid-dur">还没选视频</div>
-                </div>
-              </div>
-              <span class="sct-bk-hint sct-bk-refvid-name">${sctBackendDialogRefVideo ? escapeHtml(sctBackendDialogRefVideo.name || '已选一段视频') : '没选就按普通「图生视频」跑'}</span>
-              <div class="sct-bk-hint"><b>角色替换玩法</b>：图一＝要用的角色，这段视频＝动作/镜头/背景来源 → 「<b>把图一的角色替换到这段视频里</b>」。动作、运镜、背景照视频走，人物长相按图一。<br>💡 <b>实测要点</b>：① 参考图给<b>真人</b>才能出真人质感（给动漫图出来就是动漫脸）；② 参考图要含<b>全身（有鞋）</b>，否则模型会自己编脚 —— 四视图建议「正面格＋侧面格」拼一张，并把底部标签文字切掉；③ 衣服也按参考图来（想换裙子就换参考图）。</div>
-              <label class="sct-bk-check" for="sct-bk-swapmode"><input type="checkbox" id="sct-bk-swapmode" class="sct-bk-swapmode" ${s.comfyH3SwapMode ? 'checked' : ''} /> <b>🎭 换头换装（动作迁移 · 更保脸）</b><span class="sct-bk-hint"> — 把参考视频当动作模板（AddGuide，frame_idx=0）+ 挂 character_swap LoRA + 自动加 <code>body_swap:</code> 触发词；需要 LoRA：<code>${escapeHtml(String(s.comfyH3SwapLora || '（未设置）'))}</code>（放 ComfyUI 的 <code>models/loras/</code>）</span></label>
-              <div class="sct-setting-col" style="max-width:320px;">
-                <label for="sct-bk-swapstyle">🎨 换人后画风</label>
-                <select class="text_pole sct-bk-swapstyle" id="sct-bk-swapstyle">
-                  <option value="video" ${String(s.comfyH3SwapStyle || 'video') === 'video' ? 'selected' : ''}>跟参考视频（不加风格句 · 实测最稳）</option>
-                  <option value="realistic" ${s.comfyH3SwapStyle === 'realistic' ? 'selected' : ''}>写实实拍（短英文句 · 参考视频是真人时用）</option>
-                  <option value="anime" ${s.comfyH3SwapStyle === 'anime' ? 'selected' : ''}>纯平涂 2D 赛璐璐（要动漫感时用）</option>
-                  <option value="custom" ${s.comfyH3SwapStyle === 'custom' ? 'selected' : ''}>自定义（用设置里那句）</option>
-                </select>
-                <div class="sct-bk-hint">⚠️ 实测：<b>画风上限由参考图决定</b>——你给动漫图，出来就是动漫脸（跟画风选项无关）；想要真人质感，参考图得换真人照片。长句中式"写实"描述会<b>反向变平涂</b>，所以写实选项用的是短英文句。</div>
-              </div>
-            </div>
-          </div>` : `
           <div class="sct-bk-two">
             <div class="sct-setting-col">
               <label>重绘步数（20~30 步够用，越高越慢）</label>
@@ -6423,12 +5137,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <label>输出像素（1.0 MP ≈ 1024×1024）</label>
               <input type="number" class="text_pole sct-bk-mp" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
             </div>
-          </div>`}
+          </div>
           <div class="sct-bk-foot">
             <button type="button" class="sct-comfy-btn sct-bk-go">🚀 开始</button>
-            <button type="button" class="sct-comfy-btn sct-bk-free" title="让 ComfyUI 卸载已加载的模型并释放显存（跑视频前点一下更稳，不会自动跑）">🧹 腾显存</button>
+            <button type="button" class="sct-comfy-btn sct-bk-free" title="让 ComfyUI 卸载已加载的模型并释放显存（不会自动跑）">🧹 腾显存</button>
             <button type="button" class="sct-comfy-btn sct-bk-quit">✖ 关闭（不生成）</button>
-            <span class="sct-bk-hint">${isVideo ? '生成期间别关页面；关了就等它跑完，文件会落在 ComfyUI 的 output/video/SCT_H3' : '编辑器会让它按指令改图，原图不动'}</span>
+            <span class="sct-bk-hint">编辑器会让它按指令改图，原图不动</span>
           </div>
         </div>
       </div>`;
@@ -6436,7 +5150,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     sctBackendDialogEl = overlay;
     if (canUseDialog) {
       try {
-        overlay.showModal();                        // 进顶层(top layer)
+        overlay.showModal();
       } catch (err) {
         console.warn('[SCT] showModal 失败，退回普通浮层：', err);
         overlay.classList.add('sct-bk-fallback');
@@ -6446,7 +5160,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       overlay.classList.add('sct-bk-fallback');
       showToast('本机浏览器太旧（没有 dialog 顶层弹窗），已用兜底模式；关不掉的请点底部「✖ 关闭」', 'warning');
     }
-    // 浏览器自己关掉（按 Esc / 表单 method=dialog）时同步清状态，别留残留节点
     overlay.addEventListener('close', () => {
       if (sctBackendDialogEl === overlay) {
         sctBackendDialogEl = null;
@@ -6454,13 +5167,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       }
     });
 
-    // 没源图时先别显示破图占位
     if (!sctBackendDialogSource) {
       const pv = overlay.querySelector('.sct-bk-preview');
       if (pv) pv.style.display = 'none';
     }
 
-    // 关闭：顶栏「✕ 关闭」/ 底部「✖ 关闭」/ 点暗色背景 / 按 Esc —— 四条路都能关
     overlay.querySelectorAll('.sct-bk-quit').forEach((btn) => bindBackendTap(btn, () => closeBackendDialog()));
     const onBackdrop = (e) => { if (e.target === overlay) closeBackendDialog(); };
     overlay.addEventListener('click', onBackdrop);
@@ -6481,9 +5192,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     });
 
     bindBackendTap(overlay.querySelector('.sct-bk-free'), () => freeComfyMemory(true));
-    bindBackendTap(overlay.querySelector('.sct-bk-ai-rewrite'), () => rewriteVideoPromptByMainModel(overlay));
 
-    // 🔁 一键填编辑指令（角色替换 / 换装 / 双人合片 / 只改画风）
     overlay.querySelectorAll('.sct-bk-fill').forEach((btn) => {
       bindBackendTap(btn, () => {
         const key = String(btn.dataset.preset || '');
@@ -6498,46 +5207,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       });
     });
 
-    // 🎞 参考视频（可选）：选了就按「角色替换」跑
-    const refVidFile = overlay.querySelector('.sct-bk-refvid-file');
-    bindBackendTap(overlay.querySelector('.sct-bk-refvid-pick'), () => refVidFile?.click());
-    refVidFile?.addEventListener('change', () => {
-      const f = refVidFile.files && refVidFile.files[0];
-      if (!f) return;
-      sctBackendDialogRefVideo = f;      const tag = overlay.querySelector('.sct-bk-refvid-name');
-      if (tag) tag.textContent = `已选：${f.name}（${(f.size / 1048576).toFixed(1)} MB）`;
-      // 选了参考视频 → 默认勾上「换头换装」（要的是保脸效果）
-      // ✂️ 探测视频时长 + 更新截取预览
-      const durEl = overlay.querySelector('.sct-bk-refvid-dur');
-      const readStart = () => Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0);
-      const readLen = () => {
-        const v = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value);
-        return Number.isFinite(v) ? v : 6;
-      };
-      const updCutPreview = () => {
-        if (!durEl) return;
-        const d = sctBackendDialogRefVideoDur;
-        const st = readStart();
-        const len = readLen();
-        if (!d) { durEl.textContent = st > 0 ? `将从 ${st} 秒起截 ${len} 秒（视频时长未知，按 24fps 取帧）` : '还没选视频'; return; }
-        const end = st + len;
-        const bad = end > d + 0.05;
-        durEl.innerHTML = `视频 <b>${d.toFixed(1)}</b> 秒 · 截 <b>${st.toFixed(1)}→${Math.min(end, d).toFixed(2)}</b> 秒（${len} 秒）` +
-          (bad ? ` <span style="color:#e06c6c;">⚠️ 超出视频长度，实际只到 ${d.toFixed(1)} 秒</span>` : '');
-      };
-      probeVideoDuration(f, (d) => { sctBackendDialogRefVideoDur = d; updCutPreview(); });
-      overlay.querySelector('.sct-bk-refvid-start')?.addEventListener('input', updCutPreview);
-      overlay.querySelector('.sct-bk-seconds')?.addEventListener('change', updCutPreview);
-      const swapBox = overlay.querySelector('.sct-bk-swapmode');
-      if (swapBox && !swapBox.checked) {
-        swapBox.checked = true;
-        showToast('已自动勾上「🎭 换头换装（动作迁移）」：会挂 character_swap LoRA + 加 body_swap 触发词', 'info');
-      } else {
-        showToast('参考视频已选：开始后会先把图一的角色替换进这段视频的动作里', 'info');
-      }
-    });
-
-    // ➕ 第二张参考图：从聊天里别的图选，或从相册选
     const ref2Sel = overlay.querySelector('.sct-bk-ref2');
     const ref2File = overlay.querySelector('.sct-bk-ref2-file');
     const showRef2Preview = (val) => {
@@ -6560,121 +5229,16 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       showRef2Preview(URL.createObjectURL(f));
     });
 
-    // 🔗 独立 API「连接并获取模型」：GET /models，把清单灌进下拉
-    bindBackendTap(overlay.querySelector('.sct-bk-api-connect'), async () => {
-      const btn = overlay.querySelector('.sct-bk-api-connect');
-      const urlEl = overlay.querySelector('.sct-bk-api-url');
-      const keyEl = overlay.querySelector('.sct-bk-api-key');
-      const url = String(urlEl?.value || '').trim();
-      const key = String(keyEl?.value || '').trim();
-      if (!url) { showToast('先填 API 地址', 'warning'); return; }
-      const old = btn ? btn.textContent : '';
-      if (btn) { btn.disabled = true; btn.textContent = '⏳ 连接中…'; }
-      try {
-        saveSettings({ comfyRewriteApiUrl: url, comfyRewriteApiKey: key });
-        const modelsUrl = modelsUrlFrom(url);
-        let list = [];
-        try {
-          list = await fetchApiModelList(modelsUrl, key);
-        } catch (e1) {
-          // 有的服务 /models 不带 /v1 前缀，退一步再试一次
-          const alt = String(url).replace(/\/+$/, '').replace(/\/chat\/completions$/i, '') + '/models';
-          if (alt !== modelsUrl) list = await fetchApiModelList(alt, key);
-          else throw e1;
-        }
-        sctApiModelCache = list.slice();
-        const sel = overlay.querySelector('.sct-bk-api-model-select');
-        if (sel) {
-          sel.innerHTML = `<option value="">（选一个模型）</option>` +
-            list.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
-        }
-        showToast(list.length
-          ? `连接成功，读到 ${list.length} 个模型 · 下面选一个`
-          : '连接成功，但这个接口没返回模型列表 —— 直接手填模型名', list.length ? 'success' : 'warning');
-      } catch (e) {
-        showToast('连接失败：' + (e?.message || e), 'error');
-      } finally {
-        if (btn) { btn.disabled = false; btn.textContent = old || '🔗 连接并获取模型'; }
-      }
-    });
-
-    // 下拉选模型 → 同步进「模型」输入框（真正提交用的是那个输入框）
-    overlay.querySelector('.sct-bk-api-model-select')?.addEventListener('change', (e) => {
-      const v = String(e.target.value || '');
-      const input = overlay.querySelector('.sct-bk-api-model');
-      if (v && input) input.value = v;
-    });
-
-    // 切「走酒馆主模型 / 走独立 API」：显示对应输入（独立 API 模式下不需要连接配置）
-    const syncRewriteMode = () => {
-      const mode = overlay.querySelector('.sct-bk-rewrite-mode')?.value || 'tavern';
-      const apiBox = overlay.querySelector('.sct-bk-api-fields');
-      const profCol = overlay.querySelector('.sct-bk-profile-col');
-      if (apiBox) apiBox.style.display = mode === 'api' ? '' : 'none';
-      if (profCol) profCol.style.display = mode === 'api' ? 'none' : '';
-      try { saveSettings({ comfyRewriteMode: mode }); } catch (_) {}
-    };
-    overlay.querySelector('.sct-bk-rewrite-mode')?.addEventListener('change', syncRewriteMode);
-    syncRewriteMode();
-
-    bindBackendTap(overlay.querySelector('.sct-bk-use-default'), () => {
-      const ta = overlay.querySelector('.sct-bk-text');
-      if (ta) {
-        ta.value = String(getSettings().comfyVideoPrompt || '');
-        const srcEl = overlay.querySelector('.sct-bk-hint');
-        if (srcEl) srcEl.textContent = '当前来源：设置里的默认模板';
-      }
-    });
-
     bindBackendTap(overlay.querySelector('.sct-bk-go'), async () => {
-      let text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
-      if (!text) { showToast(isVideo ? '先写视频提示词（六段式）' : '先写编辑指令', 'warning'); return; }
+      const text = (overlay.querySelector('.sct-bk-text')?.value || '').trim();
+      if (!text) { showToast('先写编辑指令', 'warning'); return; }
       if (!sctBackendDialogSource) { showToast('还没有源图：先在卡片上点图，或从手机相册选一张', 'warning'); return; }
 
-      // 🧭 填了中文指导但还没重写：先问一句要不要重写（不偷偷多花一次模型调用）
-      const noteEl = overlay.querySelector('.sct-bk-director');
-      const directorNote = String(noteEl?.value || '').trim();
-      if (isVideo && directorNote) {
-        saveSettings({ comfyVideoDirectorNote: directorNote.slice(0, 4000) });
-        if (!sctBackendDialogRewritten) {
-          const wantRewrite = window.confirm('你填了「🧭 中文指导」，但还没让主模型照着重写。\n\n确定 = 先让主模型看图重写（会多一次模型调用），再开始生成\n取消 = 直接按现在框里的提示词生成（中文指导不会生效）');
-          if (wantRewrite) {
-            await rewriteVideoPromptByMainModel(overlay);
-            const after = String(overlay.querySelector('.sct-bk-text')?.value || '').trim();
-            if (!after) { showToast('重写没有产出内容，已取消这次生成', 'warning'); return; }
-            text = after;
-          }
-        }
-      }
       const source = sctBackendDialogSource;
-      const seconds = parseFloat(overlay.querySelector('.sct-bk-seconds')?.value) || parseFloat(s.comfyVideoSeconds) || 6;
-      const aspect = overlay.querySelector('.sct-bk-aspect')?.value || s.comfyVideoAspect || '16:9 (Widescreen)';
-      const onePassEl = overlay.querySelector('.sct-bk-onepass');
-      const onePassOnly = !!(onePassEl && onePassEl.checked);
       const steps = parseInt(overlay.querySelector('.sct-bk-steps')?.value, 10);
       const cfg = parseFloat(overlay.querySelector('.sct-bk-cfg')?.value);
       const mp = parseFloat(overlay.querySelector('.sct-bk-mp')?.value);
-      if (isVideo) {
-        const speakEl = overlay.querySelector('.sct-bk-speak');
-        const speak = !!(speakEl && speakEl.checked);
-        saveSettings({ comfyVideoSpeakLines: speak });
-        // 🔊 台词兜底：按你标的「她说 / 他说」分组追加（已经写进提示词的那句不重复加）
-        if (speak) {
-          const usePicked = pickedDialogueLines(overlay, dialogLines);
-          const needHer = usePicked.her.filter((l) => !String(text).includes(l));
-          const needHim = usePicked.him.filter((l) => !String(text).includes(l));
-          const extras = [];
-          if (needHer.length) extras.push(`Spoken line (she says it aloud with natural lip movement; the line is clearly heard in the audio): ${needHer.map((l) => `"${l}"`).join(' / ')}`);
-          if (needHim.length) extras.push(`Spoken line (a male voice, off-screen, says it clearly in the audio; her lips do not move for this line): ${needHim.map((l) => `"${l}"`).join(' / ')}`);
-          if (extras.length) text = `${text}\n\n${extras.join('\n')}`;
-        }
-        saveSettings({ comfyVideoSeconds: seconds, comfyVideoAspect: aspect, comfyVideoOnePassOnly: onePassOnly });
-        // 只有「用设置里的默认模板 + 手改过」才把它记成新的默认；
-        // 模型写的 / 看图重写的都是场景专属的，不该覆盖全局默认
-        if (!sctBackendDialogPrefillFromAi && text !== String(videoPrefill || '').trim()) {
-          saveSettings({ comfyVideoPrompt: text.slice(0, 20000) });
-        }
-      } else saveSettings({
+      saveSettings({
         comfyEditSteps: Number.isFinite(steps) ? steps : s.comfyEditSteps,
         comfyEditCfg: Number.isFinite(cfg) ? cfg : s.comfyEditCfg,
         comfyEditMegapixels: Number.isFinite(mp) ? mp : s.comfyEditMegapixels
@@ -6682,23 +5246,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       closeBackendDialog();
       const cardEl = createBackendCardContainer(anchor, kind);
       cardEl.__sctSourceUrl = typeof source === 'string' ? source : '';
-      // ✂️ 参考视频裁剪越界提醒（不阻断）
-      if (isVideo && sctBackendDialogRefVideo && sctBackendDialogRefVideoDur > 0) {
-        const st = Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0);
-        const len = seconds;
-        if (st + len > sctBackendDialogRefVideoDur + 0.05) {
-          showToast(`截取 ${st}→${(st+len).toFixed(1)} 秒超出视频长度 ${sctBackendDialogRefVideoDur.toFixed(1)} 秒，实际只截到结尾`, 'warning');
-        }
-        saveSettings({ comfyH3RefStartSec: st });
-      }
-      if (isVideo) await triggerComfyH3Video(source, text, cardEl, {
-        seconds, aspect, onePassOnly,
-        refVideo: sctBackendDialogRefVideo,
-        swapMode: !!overlay.querySelector('.sct-bk-swapmode')?.checked,
-        swapStyle: String(overlay.querySelector('.sct-bk-swapstyle')?.value || ''),
-        refStart: Math.max(0, parseFloat(overlay.querySelector('.sct-bk-refvid-start')?.value) || 0)
-      });
-      else await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
+      await triggerComfyQwenEdit(source, text, cardEl, null, sctBackendDialogRef2);
     });
   }
 
@@ -7153,15 +5701,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return;
     }
 
-    // ★ 文生图后端可选：MOSS-Image（本机大模型，写中文最准，不参与 LoRA 链）
-    if (String(s.comfyTxt2ImgBackend || 'sdxl') === 'moss') {
-      if (taskKey) {
-        container.dataset.sctTaskKey = taskKey;
-        sctDrawingTasks.set(taskKey, { status: 'running', images: [], prompt: promptText, container: container });
-      }
-      return triggerComfyMossDraw(promptText, container, taskKey);
-    }
-
     // 记下本轮之前已有的图:「重新生成」时它们会留在轮播里(可翻回去对比),而不是被新图顶掉
     const previousImages = collectExistingImages(container, taskKey);
 
@@ -7188,7 +5727,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     // 注入 LoRA 角色特征词到正向提示词中 (含通用常驻角色关键词与激活词分组)
     const loraInjection = buildLoraTriggerInjection(activeLoras, { promptText, fullText: mesTextForLora });
-    
+
     // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀，最后套用通用排除关键词
     const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim());
     const negativePrompt = s.comfyFixedNegative || '';
@@ -7562,10 +6101,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return genId;
     })();
 
-    // 0. 先把「视频提示词标签」摘出来（聊天主模型在生图标签后面顺带写的六段式），
-    //    正文里换成一枚小徽章；这样后面那套图片标签处理逻辑完全不受影响
-    const videoPrompts = extractVideoPrompts(textEl);
-
     // 1. 扫描并替换生图标签 (同时完全兼容纯文本 image###...###、带标签 <image>...</image>、Markdown 代码包裹等多种形态)
     const textHtml = textEl.innerHTML;
     if (textHtml.includes('image###') || textHtml.includes('<image') || textHtml.includes('&lt;image') || textHtml.includes('img_prompt')) {
@@ -7626,16 +6161,10 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           cardContainer.dataset.sctSlotIdx = String(idx);
           // 这张图「上面那段」正文（台词/剧情只认这一段）
           cardContainer.__sctScriptText = String(item.script || '');
-          // 🎬 聊天模型顺带写好的视频提示词（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
-          const vpFromAi = (videoPrompts.byImage || {})[idx] || '';
-          cardContainer.__sctVideoPrompt = vpFromAi || getChatMessageVideoPrompt(mesId, idx) || '';
-          if (vpFromAi && vpFromAi !== getChatMessageVideoPrompt(mesId, idx)) {
-            saveChatMessageVideoPrompt(mesId, idx, vpFromAi);
-          }
           cardContainer.setAttribute('aria-hidden', 'true');
           cardContainer.setAttribute('translate', 'no');
 
-          // 核心事件隔离：阻断卡片内所有交互事件向外层消息容器冒泡，彻底避免触发酒馆朗读消息或意外划选
+          // 核心事件隔离：阻断卡片内所有交互事件向外层消息容器冒泡，彻底避免触发酒馆的消息交互或意外划选
           ['click', 'dblclick', 'mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend'].forEach(evt => {
             cardContainer.addEventListener(evt, (e) => {
               e.stopPropagation();
@@ -7679,11 +6208,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           // 严禁在浏览器刷新/初始载入历史消息 (isInitialLoad) 或正在切换角色聊天 (isChatSwitching) 时自动狂刷所有历史消息！
           // 仅允许在当前会话中实时接收到的新消息 (newlyReceivedMesIds) 且开启了 comfyAutoDrawTags 时自动开跑。
           const isNewlyReceived = newlyReceivedMesIds.has(String(mesId));
-          const isLastMessage = mesEl === document.querySelector('#chat .mes:last-child') || 
+          const isLastMessage = mesEl === document.querySelector('#chat .mes:last-child') ||
                                 mesEl.matches('#chat .mes:nth-last-child(-n+2)');
-          const allowAutoDraw = s.comfyAutoDrawTags && 
-                                !isInitialLoad && 
-                                !isChatSwitching && 
+          const allowAutoDraw = s.comfyAutoDrawTags &&
+                                !isInitialLoad &&
+                                !isChatSwitching &&
                                 (isNewlyReceived || isLastMessage);
 
           if (allowAutoDraw) {
@@ -7721,19 +6250,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     // 2. 注入消息工具栏操作按钮 (mes_buttons)
     const btnBar = mesEl.querySelector('.mes_buttons');
     if (btnBar) {
-      if (s.ttsShowMesButton && !btnBar.querySelector('.sct-mes-tts-btn')) {
-        const ttsBtn = document.createElement('div');
-        ttsBtn.className = 'sct-mes-action-btn sct-mes-tts-btn';
-        ttsBtn.textContent = '🔊';
-        ttsBtn.title = '朗读此条消息';
-        ttsBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const cleanText = getCleanMessageText(textEl);
-          speakText(cleanText);
-        });
-        btnBar.appendChild(ttsBtn);
-      }
-
       if (s.comfyShowMesButton && !btnBar.querySelector('.sct-mes-draw-btn')) {
         const drawBtn = document.createElement('div');
         drawBtn.className = 'sct-mes-action-btn sct-mes-draw-btn';
@@ -7773,361 +6289,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   function scanAllMessages() {
     installCardActionDelegate();   // 每次扫描顺手确保「卡片按钮委托」在（幂等）
     document.querySelectorAll('#chat .mes').forEach(processSingleMessage);
-  }
-
-  /* ==========================================================================
-     8. TTS 语音朗读核心实现 (Web Speech API & OpenAI Audio)
-     ========================================================================== */
-
-  // 从消息 DOM 容器中提取纯净正文（克隆节点并彻底移除生图卡片、操作按钮、提示标签等所有扩展注入元素）
-  function getCleanMessageText(textEl) {
-    if (!textEl) return '';
-    try {
-      const clone = textEl.cloneNode(true);
-      clone.querySelectorAll(`
-        .sct-comfy-card-container,
-        .sct-comfy-card,
-        .sct-comfy-slot,
-        .sct-mes-action-btn,
-        .sct-floating-tts,
-        .sct-tts-status-badge,
-        .sct-tts-pill-btn,
-        .sct-inpaint-overlay,
-        .sct-inpaint-dialog,
-        .sct-inpaint-btn
-      `).forEach((el) => el.remove());
-      return cleanTextForTts(clone.textContent || '');
-    } catch (_) {
-      return cleanTextForTts(textEl.textContent || '');
-    }
-  }
-
-  function cleanTextForTts(rawText) {
-    if (!rawText) return '';
-    let text = rawText;
-    const s = getSettings();
-    if (s.ttsFilterThinking) {
-      text = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
-      text = text.replace(/<thought>[\s\S]*?<\/thought>/gi, '');
-    }
-    // 过滤生图标签 (闭合与未闭合)
-    text = text.replace(/<image>[\s\S]*?<\/image>/gi, '');
-    text = text.replace(/&lt;image&gt;[\s\S]*?&lt;\/image&gt;/gi, '');
-    text = text.replace(/<image>[\s\S]*?$/gi, '');
-    text = text.replace(/<img_prompt>[\s\S]*?<\/img_prompt>/gi, '');
-    text = text.replace(/&lt;img_prompt&gt;[\s\S]*?&lt;\/img_prompt&gt;/gi, '');
-    text = text.replace(/image###[\s\S]*?###/gi, '');
-    text = text.replace(/image###[\s\S]*?$/gi, '');
-    text = text.replace(/###[\s\S]*?###/gi, '');
-
-    // 彻底剥离 ComfyUI 轮播卡片与操作按钮残留文本 (杜绝在朗读时念出卡片上的操作标签与 LoRA 名字)
-    text = text.replace(/🎨?\s*ComfyUI\s*(生图|绘图)?/gi, '');
-    text = text.replace(/LoRA:\s*[^,\n\r，。！\s]+([,\n\r，。！\s]|$)/gi, '');
-    text = text.replace(/点击图片放大查看/g, '');
-    text = text.replace(/[🔄◀▶\s]*重新生成/g, '');
-    text = text.replace(/[◀▶\s]*上一张/g, '');
-    text = text.replace(/[◀▶\s]*下一张/g, '');
-    text = text.replace(/[🖌️\s]*局部重绘/g, '');
-    text = text.replace(/长按重绘[·\s]*点击放大/g, '');
-    text = text.replace(/检测到绘画提示词[:：]?[\s\S]*?立即开始生图/gi, '');
-    text = text.replace(/立即开始生图/g, '');
-    text = text.replace(/ComfyUI\s*正在后台生成画面中[….]*/gi, '');
-    text = text.replace(/生图失败/g, '');
-    text = text.replace(/🛑?\s*中止此次生图并清空排队/g, '');
-    text = text.replace(/🛑?\s*清空后台排队/g, '');
-    text = text.replace(/\b\d+\s*\/\s*\d+\b/g, '');
-
-    text = text.replace(/```[\s\S]*?```/g, ' [代码块已省略] ');
-    text = text.replace(/`([^`]+)`/g, '$1');
-    text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-    text = text.replace(/[*_~#]/g, '');
-    return text.trim();
-  }
-
-  function setTtsPlayingState(playing, text = '') {
-    isTtsPlaying = playing;
-    currentPlayingText = playing ? text : '';
-
-    if (ttsButton) {
-      if (playing) {
-        ttsButton.className = 'sct-tts-pill-btn sct-tts-playing';
-        ttsButton.innerHTML = '<span>⏹</span> <span>停止朗读</span>';
-      } else {
-        ttsButton.className = 'sct-tts-pill-btn sct-tts-idle';
-        ttsButton.innerHTML = '<span>🔊</span> <span>朗读选中文字</span>';
-      }
-    }
-
-    const badge = getGlobalTtsBadge();
-    if (badge) {
-      if (playing) {
-        badge.style.display = 'flex';
-        badge.innerHTML = '<span>🔊</span> <span>正在朗读… [点击停止]</span>';
-      } else {
-        badge.style.display = 'none';
-      }
-    }
-
-    document.querySelectorAll('.sct-mes-tts-btn').forEach((btn) => {
-      const parentMes = btn.closest('.mes');
-      const mesText = parentMes ? parentMes.querySelector('.mes_text')?.textContent || '' : '';
-      if (playing && currentPlayingText && mesText.includes(currentPlayingText.slice(0, 30))) {
-        btn.classList.add('sct-active');
-        btn.textContent = '⏹';
-        btn.title = '停止朗读';
-      } else {
-        btn.classList.remove('sct-active');
-        btn.textContent = '🔊';
-        btn.title = '朗读此条消息';
-      }
-    });
-  }
-
-  async function speakText(rawText) {
-    const text = cleanTextForTts(rawText);
-    if (!text) {
-      showToast('没有可朗读的文本', 'warning');
-      return;
-    }
-
-    const s = getSettings();
-    if (!s.ttsEnabled) {
-      showToast('TTS 语音功能已在插件设置中关闭', 'warning');
-      return;
-    }
-
-    if (isTtsPlaying) {
-      stopTts();
-      return;
-    }
-
-    setTtsPlayingState(true, text);
-
-    // 引擎分支 1：小米 MiMo 在线 TTS (原厂高品质拟真人声)
-    if (s.ttsEngine === 'xiaomi') {
-      try {
-        const apiKey = (s.ttsXiaomiKey || '').trim();
-        if (!apiKey) {
-          showToast('请先在插件设置中填写小米 MiMo API Key', 'warning');
-          setTtsPlayingState(false);
-          return;
-        }
-
-        const endpoint = (s.ttsXiaomiEndpoint || 'https://api.xiaomimimo.com/v1/chat/completions').trim();
-        const model = s.ttsXiaomiModel || 'mimo-v2.5-tts';
-
-        let requestBody = {
-          model: model,
-          messages: []
-        };
-
-        if (model === 'mimo-v2.5-tts-voicedesign') {
-          const prompt = (s.ttsXiaomiVoiceDesignPrompt || '年轻活泼的女性声音，亲切自然，语调轻快').trim();
-          requestBody.messages = [
-            { role: 'user', content: prompt },
-            { role: 'assistant', content: text }
-          ];
-          requestBody.audio = { format: 'mp3' };
-        } else if (model === 'mimo-v2.5-tts-voiceclone') {
-          let sample = (s.ttsXiaomiCloneSample || '').trim();
-          if (!sample) {
-            throw new Error('语音克隆模式需要填写参考音频 Base64 数据');
-          }
-          if (!sample.startsWith('data:audio/')) {
-            sample = 'data:audio/wav;base64,' + sample;
-          }
-          requestBody.messages = [
-            { role: 'assistant', content: text }
-          ];
-          requestBody.audio = {
-            voice: sample,
-            format: 'mp3'
-          };
-        } else {
-          // mimo-v2.5-tts 内置音色
-          let speakContent = text;
-          if (s.ttsXiaomiSinging && !speakContent.startsWith('(唱歌)') && !speakContent.startsWith('(sing)')) {
-            speakContent = '(唱歌)' + speakContent;
-          }
-          requestBody.messages = [
-            { role: 'assistant', content: speakContent }
-          ];
-          requestBody.audio = {
-            voice: s.ttsXiaomiVoice || '冰糖',
-            format: 'mp3'
-          };
-        }
-
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            'api-key': apiKey,
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify(requestBody)
-        });
-
-        if (!res.ok) {
-          const errBody = await res.text().catch(() => '');
-          throw new Error(`HTTP ${res.status}: ${errBody || res.statusText}`);
-        }
-
-        const data = await res.json();
-        const audioBase64 = data?.choices?.[0]?.message?.audio?.data;
-        if (!audioBase64) {
-          throw new Error('小米 TTS 返回无音频数据 (choices[0].message.audio.data 为空)');
-        }
-
-        const audioUrl = `data:audio/mp3;base64,${audioBase64}`;
-        const audio = new Audio(audioUrl);
-        currentAudio = audio;
-        audio.volume = Math.min(1.0, Math.max(0, s.ttsVolume || 1.0));
-
-        audio.onended = () => {
-          currentAudio = null;
-          setTtsPlayingState(false);
-        };
-        audio.onerror = () => {
-          currentAudio = null;
-          setTtsPlayingState(false);
-          showToast('小米 TTS 音频播放失败', 'error');
-        };
-
-        await audio.play();
-        return;
-      } catch (err) {
-        showToast(`小米 TTS 失败 (${err.message})，转为浏览器原生朗读`, 'warning');
-      }
-    }
-
-    // 引擎分支 2：OpenAI 兼容协议
-    if (s.ttsEngine === 'openai' && s.ttsOpenAiEndpoint) {
-      try {
-        const ep = s.ttsOpenAiEndpoint.trim().replace(/\/+$/, '');
-        const url = ep.endsWith('/speech') ? ep : `${ep}/v1/audio/speech`;
-        const headers = { 'Content-Type': 'application/json' };
-        if (s.ttsOpenAiKey) headers['Authorization'] = `Bearer ${s.ttsOpenAiKey.trim()}`;
-
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify({
-            model: s.ttsOpenAiModel || 'tts-1',
-            input: text,
-            voice: s.ttsOpenAiVoice || 'alloy',
-            speed: s.ttsRate || 1.0,
-            response_format: 'mp3'
-          })
-        });
-
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        const blob = await res.blob();
-        const audioUrl = URL.createObjectURL(blob);
-        const audio = new Audio(audioUrl);
-        currentAudio = audio;
-        audio.volume = Math.min(1.0, Math.max(0, s.ttsVolume || 1.0));
-
-        audio.onended = () => {
-          URL.revokeObjectURL(audioUrl);
-          currentAudio = null;
-          setTtsPlayingState(false);
-        };
-        audio.onerror = () => {
-          URL.revokeObjectURL(audioUrl);
-          currentAudio = null;
-          setTtsPlayingState(false);
-          showToast('音频解码播放失败', 'error');
-        };
-
-        await audio.play();
-        return;
-      } catch (err) {
-        showToast(`OpenAI TTS 失败 (${err.message})，转为浏览器原生朗读`, 'warning');
-      }
-    }
-
-    // 引擎分支 2：浏览器原生 Web Speech API
-    if (typeof window.speechSynthesis !== 'undefined') {
-      try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        currentUtterance = utterance;
-
-        utterance.rate = s.ttsRate || 1.0;
-        utterance.pitch = s.ttsPitch || 1.0;
-        utterance.volume = s.ttsVolume || 1.0;
-
-        const voices = window.speechSynthesis.getVoices();
-        if (s.ttsVoice) {
-          const matched = voices.find((v) => v.voiceURI === s.ttsVoice || v.name === s.ttsVoice);
-          if (matched) utterance.voice = matched;
-        } else {
-          const zhVoice = voices.find((v) => v.lang && (v.lang.startsWith('zh') || v.lang.startsWith('cmn')));
-          if (zhVoice) utterance.voice = zhVoice;
-        }
-
-        utterance.onend = () => {
-          currentUtterance = null;
-          setTtsPlayingState(false);
-        };
-
-        utterance.onerror = () => {
-          currentUtterance = null;
-          setTtsPlayingState(false);
-        };
-
-        window.speechSynthesis.speak(utterance);
-        return;
-      } catch (err) {
-        setTtsPlayingState(false);
-        showToast(`语音朗读失败: ${err.message}`, 'error');
-      }
-    } else {
-      setTtsPlayingState(false);
-      showToast('当前浏览器环境不支持 Web Speech API', 'error');
-    }
-  }
-
-  function stopTts() {
-    if (typeof window.speechSynthesis !== 'undefined') {
-      window.speechSynthesis.cancel();
-      currentUtterance = null;
-    }
-    if (currentAudio) {
-      currentAudio.pause();
-      currentAudio = null;
-    }
-    setTtsPlayingState(false);
-  }
-
-  function getTtsButton() {
-    if (ttsButton) return ttsButton;
-    const btn = document.createElement('div');
-    btn.id = 'sct-tts-selection-pill';
-    btn.className = 'sct-tts-pill-btn sct-tts-idle';
-    btn.innerHTML = '<span>🔊</span> <span>朗读选中文字</span>';
-
-    btn.addEventListener('mousedown', (e) => e.preventDefault());
-    btn.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const now = Date.now();
-      if (now - lastActionTime < 300) return;
-      lastActionTime = now;
-
-      if (isTtsPlaying) {
-        stopTts();
-      } else {
-        speakText(selectedTextCache);
-      }
-    });
-
-    (document.body || document.documentElement).appendChild(btn);
-    ttsButton = btn;
-    return btn;
   }
 
   // 自动生图浮动开关:正文抽卡时不想立刻出图,一键关掉,满意后再手动点「立即开始生图」
@@ -8187,87 +6348,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     return btn;
   }
 
-  function getGlobalTtsBadge() {
-    if (playingBadge) return playingBadge;
-    const badge = document.createElement('div');
-    badge.id = 'sct-global-tts-badge';
-    badge.className = 'sct-global-tts-badge';
-    badge.innerHTML = '<span>🔊</span> <span>正在朗读… [点击停止]</span>';
-
-    badge.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      stopTts();
-    });
-
-    (document.body || document.documentElement).appendChild(badge);
-    playingBadge = badge;
-    return badge;
-  }
-
-  function updateSelectionPosition() {
-    const s = getSettings();
-    if (!s.ttsEnabled || !s.ttsFloatingSelection) {
-      if (ttsButton) ttsButton.style.display = 'none';
-      return;
-    }
-
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-      if (!isTtsPlaying && ttsButton) ttsButton.style.display = 'none';
-      return;
-    }
-
-    const text = sel.toString().trim();
-    if (!text || text.length < 2) {
-      if (!isTtsPlaying && ttsButton) ttsButton.style.display = 'none';
-      return;
-    }
-
-    selectedTextCache = text;
-    const range = sel.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-    if (rect.width === 0 && rect.height === 0) return;
-
-    const btn = getTtsButton();
-    btn.style.display = 'flex';
-
-    const btnWidth = btn.offsetWidth || 140;
-    const btnHeight = btn.offsetHeight || 36;
-
-    let left = rect.left + rect.width / 2 - btnWidth / 2;
-    let top = rect.top - btnHeight - 10;
-
-    const margin = 12;
-    if (left < margin) left = margin;
-    if (left + btnWidth > window.innerWidth - margin) {
-      left = window.innerWidth - btnWidth - margin;
-    }
-    if (top < margin) {
-      top = rect.bottom + 10;
-    }
-
-    btn.style.left = `${Math.round(left)}px`;
-    btn.style.top = `${Math.round(top)}px`;
-  }
-
-  function bindSelectionListeners() {
-    let timer = null;
-    function debouncedUpdate() {
-      clearTimeout(timer);
-      timer = setTimeout(updateSelectionPosition, 180);
-    }
-
-    document.addEventListener('selectionchange', debouncedUpdate);
-    document.addEventListener('mouseup', debouncedUpdate);
-    document.addEventListener('touchend', debouncedUpdate);
-
-    document.addEventListener('mousedown', (e) => {
-      if (ttsButton && !ttsButton.contains(e.target) && !isTtsPlaying) {
-        ttsButton.style.display = 'none';
-      }
-    });
-  }
 
   /* ==========================================================================
      9. 斜杠命令注册 (Slash Commands)
@@ -8299,46 +6379,15 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       triggerComfyDraw(p, container, activeLoras);
     }, [], '使用 ComfyUI (含多 LoRA 工作流) 根据提示词生成插画', true, true);
 
-    ctx.registerSlashCommand('tts', (args) => {
-      const t = (args || '').trim();
-      if (!t) {
-        showToast('用法: /tts <需要朗读的文本>', 'warning');
-        return;
-      }
-      speakText(t);
-    }, [], '使用 TTS 语音朗读指定文本', true, true);
   }
 
   /* ==========================================================================
      10. 原生配置面板与多 LoRA 规则设计 (Comprehensive Settings UI)
      ========================================================================== */
 
-  function populateVoiceList(selectEl) {
-    if (!selectEl || typeof window.speechSynthesis === 'undefined') return;
-    const voices = window.speechSynthesis.getVoices();
-    const curVal = getSettings().ttsVoice;
-    selectEl.innerHTML = '<option value="">(自动匹配默认语言)</option>';
-
-    voices.forEach((v) => {
-      const opt = document.createElement('option');
-      opt.value = v.voiceURI || v.name;
-      opt.textContent = `${v.name} (${v.lang})${v.default ? ' [默认]' : ''}`;
-      if (opt.value === curVal) opt.selected = true;
-      selectEl.appendChild(opt);
-    });
-  }
 
   const expandedLoraIndices = new Set();
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
 
   function renderLoraList(container) {
     const s = getSettings();
@@ -10245,11 +8294,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     container.innerHTML = `
       <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-          <b>🎨 ComfyUI 绘图 & 🔊 TTS 语音朗读 (原生工作流版)</b>
+          <b>🎨 ComfyUI 绘图 (原生工作流版)</b>
           <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
         </div>
         <div class="inline-drawer-content" style="display: none;">
-          
+
           <!-- 板块 1: ComfyUI 基础连接与模型选择 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
@@ -10577,7 +8626,31 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             </div><!-- /③ C 站对照表 -->
           </div>
 
-          <!-- 板块 5: 自动配图指令与消息交互 -->
+          <!-- 板块 5: 图像编辑 (Qwen-Image 2.1) -->
+          <div class="sct-settings-section">
+            <div class="sct-settings-section-title purple">
+              <span>✏️</span>
+              <span>图像编辑 (Qwen-Image 2.1)</span>
+            </div>
+
+            <div class="sct-bk-two">
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-steps">编辑步数（卡片底栏「✏️ 编辑」）</label>
+                <input type="number" id="sct-cfg-edit-steps" class="text_pole" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-cfg">编辑 CFG（★ 关键：1.0 几乎不改图，3.5~5 才真的改）</label>
+                <input type="number" id="sct-cfg-edit-cfg" class="text_pole" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
+              </div>
+              <div class="sct-setting-col">
+                <label for="sct-cfg-edit-mp">编辑输出像素（1.0 MP ≈ 1024×1024）</label>
+                <input type="number" id="sct-cfg-edit-mp" class="text_pole" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
+              </div>
+            </div>
+            <div class="sct-hint">编辑走本机 Qwen-Image 2.1 编辑工作流：点图片卡片底栏「✏️ 编辑」→ 源图默认就是卡片当前这张（也能从手机相册选）→ 写中文指令（例：把头发改成亮粉色，其他别动）→ 源图先上传到 ComfyUI 的 input 目录再改图。还能再挂一张参考图做角色替换 / 换装 / 双人合片。<br><b>★ 实测</b>：本机这份工作流存档里 CFG=1.0，出图几乎和源图一模一样（像素差≈1、发色不变）；把 CFG 提到 4.0 才会真的按指令改（像素差≈5.6、头发明显变粉）。所以默认给了 4.0。</div>
+          </div>
+
+          <!-- 板块 6: 自动配图指令与消息交互 -->
           <div class="sct-settings-section">
             <div class="sct-settings-section-title purple">
               <span>🤖</span>
@@ -10599,30 +8672,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <input type="checkbox" id="sct-cfg-auto-inject-inst" ${s.autoInjectImageInstruction ? 'checked' : ''} />
             </div>
 
-            <div class="sct-setting-row">
-              <label for="sct-cfg-auto-video-prompt">🎬 让聊天模型在写生图标签时，顺手写视频提示词 <span style="opacity:.6; font-size:11px;">(会在生图标签后追加 &lt;video&gt;六段式&lt;/video&gt;；会明显加长每条回复、多花 token)</span></label>
-              <input type="checkbox" id="sct-cfg-auto-video-prompt" ${s.comfyAutoVideoPrompt ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-video-prompt-mode">视频提示词详略</label>
-              <select id="sct-cfg-video-prompt-mode" class="text_pole" style="max-width:300px;">
-                <option value="compact" ${(s.comfyVideoPromptMode || 'compact') === 'compact' ? 'selected' : ''}>精简版：1 镜 + 轻微运镜（≤350 词 · 3~6 秒）</option>
-                <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：2~3 镜、允许运镜（≤900 词 · 10~15 秒）</option>
-                <option value="free" ${s.comfyVideoPromptMode === 'free' ? 'selected' : ''}>自由发挥：按正文设计 3~5 镜 + 运镜 + 台词（≤700 词 · 推荐 15 秒）</option>
-              </select>
-            </div>
-            <div class="sct-hint">开启后：模型每插入一个 <code>&lt;image&gt;</code> 标签，就在后面补一个 <code>&lt;video&gt;…&lt;/video&gt;</code>（第 N 个视频标签配第 N 个图标签，正文里会显示成一枚「🎬 视频提示词已就绪」小徽章）。<br>点图片卡片上的「🎬 视频」，弹窗会**自动填进模型写好的那份**；想临时换就当场改，改完会记成新的默认。</div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-video-inst">📐 分镜 / 写作规则（高级 · 平时不用填）</label>
-              <textarea id="sct-cfg-video-inst" class="text_pole" rows="6" placeholder="留空就行：AI 会自己按分镜写（每个镜头标清 景别 / 机位 / 运镜 / 动作 / 台词 / 音效）。只有想强行改掉它的写法时才填；标签格式 <video>…</video> 由插件固定。">${escapeHtml(s.comfyVideoInstructionText || '')}</textarea>
-              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;">
-                <button type="button" class="sct-comfy-btn" id="sct-btn-fill-video-inst">↩️ 填入内置规则（当模板改）</button>
-                <button type="button" class="sct-comfy-btn" id="sct-btn-clear-video-inst">🧹 清空（回到内置）</button>
-              </div>
-              <div class="sct-hint">这块是"高级覆盖"：留空时 AI 会自己排分镜（精简 1 镜 / 完整 2~3 镜 / 自由发挥 3~5 镜，每镜都有景别·机位·运镜·台词）。填了才会整段替换掉内置写法。</div>
-            </div>
 
             <div class="sct-setting-col">
               <label>配图指示词模板 (支持一键复制到角色卡或世界书)</label>
@@ -10634,241 +8683,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             </div>
           </div>
 
-          <!-- 板块 7: 多后端(图像编辑 / MOSS 文生图 / H3 图生视频) -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title purple">
-              <span>🧩</span>
-              <span>多后端(编辑 · MOSS 文生图 · H3 视频)</span>
-            </div>
-
-            <div class="sct-setting-col">
-              <label for="sct-cfg-t2i-backend">文生图后端（卡片里的 🎨 生图走哪套工作流）</label>
-              <select id="sct-cfg-t2i-backend" class="text_pole">
-                <option value="sdxl" ${(s.comfyTxt2ImgBackend || 'sdxl') === 'sdxl' ? 'selected' : ''}>SDXL 内置工作流（原行为 · 支持 LoRA 链与高清放大）</option>
-                <option value="moss" ${s.comfyTxt2ImgBackend === 'moss' ? 'selected' : ''}>MOSS-Image 本机工作流（写中文最准 · 不挂 LoRA）</option>
-              </select>
-              <div class="sct-hint">选 MOSS 后所有 🎨 生图都改走本机 MOSS-Image（<code>models/moss_image</code> 里的模型目录），LoRA 链、高清放大、外部 VAE 都不参与。</div>
-            </div>
-
-            <div id="sct-wrap-moss" style="${s.comfyTxt2ImgBackend === 'moss' ? '' : 'display:none;'}">
-              <div class="sct-setting-col">
-                <label for="sct-cfg-moss-dir">MOSS 模型目录（加载器读的是<b>目录</b>，不是单个文件）</label>
-                <input type="text" id="sct-cfg-moss-dir" class="text_pole" value="${escapeHtml(s.comfyMossModelDir || '')}" />
-                <div class="sct-hint">SFT 版排版更整齐（推荐）；Base 版适合自己训 LoRA。两个目录都在 <code>D:/ComfyUI-aki-1115/ComfyUI/models/moss_image/</code> 下。</div>
-              </div>
-              <div class="sct-bk-two">
-                <div class="sct-setting-col">
-                  <label for="sct-cfg-moss-dtype">精度</label>
-                  <select id="sct-cfg-moss-dtype" class="text_pole">
-                    ${['fp8_e4m3fn', 'bf16', 'fp32', 'fp8_e4m3fn_fast', 'fp8_e5m2', 'default'].map(v => `<option value="${v}" ${(s.comfyMossDtype || 'fp8_e4m3fn') === v ? 'selected' : ''}>${v}</option>`).join('')}
-                  </select>
-                </div>
-                <div class="sct-setting-col">
-                  <label for="sct-cfg-moss-steps">步数（官方推荐 50，快试构图 20）</label>
-                  <input type="number" id="sct-cfg-moss-steps" class="text_pole" min="4" max="80" value="${parseInt(s.comfyMossSteps, 10) || 20}" />
-                </div>
-              </div>
-              <div class="sct-bk-two">
-                <div class="sct-setting-col">
-                  <label for="sct-cfg-moss-w">宽（16 的整数倍）</label>
-                  <input type="number" id="sct-cfg-moss-w" class="text_pole" min="256" max="2048" step="16" value="${parseInt(s.comfyMossWidth, 10) || 1024}" />
-                </div>
-                <div class="sct-setting-col">
-                  <label for="sct-cfg-moss-h">高（16 的整数倍）</label>
-                  <input type="number" id="sct-cfg-moss-h" class="text_pole" min="256" max="2048" step="16" value="${parseInt(s.comfyMossHeight, 10) || 1024}" />
-                </div>
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-moss-neg">MOSS 负向提示词</label>
-                <input type="text" id="sct-cfg-moss-neg" class="text_pole" value="${escapeHtml(s.comfyMossNegative || '')}" />
-              </div>
-            </div>
-
-            <div class="sct-bk-two">
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-steps">图像编辑步数（卡片底栏「✏️ 编辑」）</label>
-                <input type="number" id="sct-cfg-edit-steps" class="text_pole" min="4" max="60" value="${parseInt(s.comfyEditSteps, 10) || 30}" />
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-cfg">编辑 CFG（★ 关键：1.0 几乎不改图，3.5~5 才真的改）</label>
-                <input type="number" id="sct-cfg-edit-cfg" class="text_pole" min="1" max="8" step="0.5" value="${parseFloat(s.comfyEditCfg) || 4.0}" />
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-edit-mp">编辑输出像素（1.0 MP ≈ 1024×1024）</label>
-                <input type="number" id="sct-cfg-edit-mp" class="text_pole" min="0.2" max="4" step="0.1" value="${parseFloat(s.comfyEditMegapixels) || 1.0}" />
-              </div>
-            </div>
-            <div class="sct-hint">编辑走本机 Qwen-Image 2.1 编辑工作流：点卡片底栏「✏️ 编辑」→ 源图默认就是卡片当前这张（也能从手机相册选）→ 写中文指令（例：把头发改成亮粉色，其他别动）→ 源图先上传到 ComfyUI 的 input 目录再改图。<br><b>★ 实测</b>：本机这份工作流存档里 CFG=1.0，出图几乎和源图一模一样（像素差≈1、发色不变）；把 CFG 提到 4.0 才会真的按指令改（像素差≈5.6、头发明显变粉）。所以默认给了 4.0。</div>
-
-            <div class="sct-bk-two">
-              <div class="sct-setting-col">
-                <label for="sct-cfg-video-seconds">图生视频默认时长（卡片底栏「🎬 视频」）</label>
-                <select id="sct-cfg-video-seconds" class="text_pole">
-                  ${[3, 5, 6, 10, 15].map(v => `<option value="${v}" ${(parseInt(s.comfyVideoSeconds, 10) || 6) === v ? 'selected' : ''}>${v} 秒</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-video-aspect">视频画面比例</label>
-                <select id="sct-cfg-video-aspect" class="text_pole">
-                  ${SCT_VIDEO_ASPECTS.map(v => `<option value="${escapeHtml(v)}" ${(s.comfyVideoAspect || '16:9 (Widescreen)') === v ? 'selected' : ''}>${escapeHtml(v)}</option>`).join('')}
-                </select>
-              </div>
-              <div class="sct-setting-col">
-                <label for="sct-cfg-video-mp">视频像素（0.2 MP 最省，一采 608×352 → 二采翻倍）</label>
-                <input type="number" id="sct-cfg-video-mp" class="text_pole" min="0.1" max="1" step="0.1" value="${parseFloat(s.comfyVideoMegapixels) || 0.2}" />
-              </div>
-            </div>
-            <div class="sct-setting-col">
-              <label for="sct-cfg-video-prompt">视频提示词默认模板（六段式 · 每次点 🎬 都会预填这份，可当场改）</label>
-              <textarea id="sct-cfg-video-prompt" class="text_pole" rows="8">${escapeHtml(s.comfyVideoPrompt || '')}</textarea>
-              <div class="sct-hint">本机 MiniMax H3 二采：输出固定 24fps + AAC 双声道。6 秒正好卡在单块上限（约 7 分钟）；15 秒要跑 20 分钟以上。源图会先上传到 ComfyUI 的 input 目录。</div>
-            </div>
-          </div>
-
-          <!-- 板块 6: 纯净 TTS 语音朗读 -->
-          <div class="sct-settings-section">
-            <div class="sct-settings-section-title">
-              <span>🔊</span>
-              <span>TTS 语音朗读设置</span>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-tts-enabled">启用 TTS 语音功能</label>
-              <input type="checkbox" id="sct-cfg-tts-enabled" ${s.ttsEnabled ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-float-sel">划选文本弹出「🔊 朗读」胶囊</label>
-              <input type="checkbox" id="sct-cfg-float-sel" ${s.ttsFloatingSelection ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-mes-tts-btn">在每条消息下显示朗读按钮</label>
-              <input type="checkbox" id="sct-cfg-mes-tts-btn" ${s.ttsShowMesButton ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-filter-think">朗读时自动过滤思考过程 &lt;think&gt;</label>
-              <input type="checkbox" id="sct-cfg-filter-think" ${s.ttsFilterThinking ? 'checked' : ''} />
-            </div>
-
-            <div class="sct-setting-col">
-              <label>选择 TTS 语音引擎</label>
-              <div class="sct-chip-group sct-engine-chips" style="margin-bottom:8px;">
-                <button type="button" class="sct-chip-btn sct-engine-btn ${s.ttsEngine === 'xiaomi' ? 'active' : ''}" data-engine="xiaomi">🔴 小米 MiMo 在线 TTS (原厂拟真人声 · 推荐)</button>
-                <button type="button" class="sct-chip-btn sct-engine-btn ${s.ttsEngine === 'webspeech' ? 'active' : ''}" data-engine="webspeech">🌐 浏览器原生 Web Speech (免配置)</button>
-                <button type="button" class="sct-chip-btn sct-engine-btn ${s.ttsEngine === 'openai' ? 'active' : ''}" data-engine="openai">🔌 OpenAI 兼容音频服务</button>
-              </div>
-            </div>
-
-            <!-- 小米 MiMo 在线 TTS 设置面板 -->
-            <div id="sct-wrap-xiaomi" style="${s.ttsEngine === 'xiaomi' ? '' : 'display:none;'}" class="sct-engine-box">
-              <div class="sct-engine-box-header">
-                <span>🔴 小米 MiMo 在线 TTS 授权与音色设置</span>
-              </div>
-
-              <div class="sct-setting-col" style="margin-bottom: 10px;">
-                <label for="sct-cfg-xiaomi-key">小米 MiMo API Key <span style="color:#ef4444; font-weight:bold;">* (必填)</span></label>
-                <div style="display:flex; gap:6px;">
-                  <input type="password" id="sct-cfg-xiaomi-key" class="text_pole" placeholder="在此填入小米开放平台 API Key (sk-...)" value="${escapeHtml(s.ttsXiaomiKey || '')}" style="flex:1;" />
-                  <button type="button" class="sct-comfy-btn" id="sct-toggle-key-vis" style="padding:4px 10px; font-size:11px;">👁️ 显示/隐藏</button>
-                </div>
-                <div style="font-size:11px; opacity:0.6; margin-top:2px;">前往小米开放平台 (api.xiaomimimo.com) 获取 API Key 即可直连调用。</div>
-              </div>
-
-              <div class="sct-setting-col" style="margin-bottom: 10px;">
-                <label for="sct-cfg-xiaomi-model">模型类型 (Model)</label>
-                <select id="sct-cfg-xiaomi-model" class="text_pole">
-                  <option value="mimo-v2.5-tts" ${s.ttsXiaomiModel === 'mimo-v2.5-tts' ? 'selected' : ''}>mimo-v2.5-tts (预设音色 · 支持唱歌模式 · 推荐)</option>
-                  <option value="mimo-v2.5-tts-voicedesign" ${s.ttsXiaomiModel === 'mimo-v2.5-tts-voicedesign' ? 'selected' : ''}>mimo-v2.5-tts-voicedesign (语音设计 · 自定义音色描述)</option>
-                  <option value="mimo-v2.5-tts-voiceclone" ${s.ttsXiaomiModel === 'mimo-v2.5-tts-voiceclone' ? 'selected' : ''}>mimo-v2.5-tts-voiceclone (语音克隆 · 参考音频复刻)</option>
-                </select>
-              </div>
-
-              <!-- 内置音色选择与唱歌模式 -->
-              <div id="sct-wrap-xiaomi-builtin" style="${(!s.ttsXiaomiModel || s.ttsXiaomiModel === 'mimo-v2.5-tts') ? '' : 'display:none;'}">
-                <div class="sct-setting-col" style="margin-bottom: 10px;">
-                  <label>预设角色音色 (Voice - 点击选择)</label>
-                  <div class="sct-chip-group sct-voice-chips" style="margin-bottom:6px;">
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === '冰糖' ? 'active' : ''}" data-v="冰糖">🍬 冰糖 (甜美清新女声 · 推荐)</button>
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === '茉莉' ? 'active' : ''}" data-v="茉莉">🌸 茉莉 (知性温婉女声)</button>
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === 'Mia' ? 'active' : ''}" data-v="Mia">✨ Mia (活泼灵动女声)</button>
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === 'Chloe' ? 'active' : ''}" data-v="Chloe">👠 Chloe (沉稳干练女声)</button>
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === 'Milo' ? 'active' : ''}" data-v="Milo">☀️ Milo (阳光活力男声)</button>
-                    <button type="button" class="sct-chip-btn sct-v-chip ${s.ttsXiaomiVoice === 'Dean' ? 'active' : ''}" data-v="Dean">🎙️ Dean (成熟磁性男声)</button>
-                  </div>
-                  <div style="display:flex; gap:6px;">
-                    <input type="text" id="sct-cfg-xiaomi-voice-custom" class="text_pole" placeholder="或输入自定义音色名" value="${escapeHtml(s.ttsXiaomiVoice || '冰糖')}" style="flex:1;" />
-                  </div>
-                </div>
-
-                <div class="sct-setting-row" style="margin-bottom: 10px;">
-                  <label for="sct-cfg-xiaomi-singing">开启唱歌模式 (自动为朗读注入旋律)</label>
-                  <input type="checkbox" id="sct-cfg-xiaomi-singing" ${s.ttsXiaomiSinging ? 'checked' : ''} />
-                </div>
-              </div>
-
-              <!-- 语音设计 -->
-              <div id="sct-wrap-xiaomi-design" style="${s.ttsXiaomiModel === 'mimo-v2.5-tts-voicedesign' ? '' : 'display:none;'}">
-                <div class="sct-setting-col" style="margin-bottom: 10px;">
-                  <label for="sct-cfg-xiaomi-prompt">语音设计音色描述 (Prompt)</label>
-                  <textarea id="sct-cfg-xiaomi-prompt" class="text_pole sct-textarea-autowrap" rows="2" placeholder="例如：年轻活泼的女性声音，亲切自然，语调轻快">${escapeHtml(s.ttsXiaomiVoiceDesignPrompt || '年轻活泼的女性声音，亲切自然，语调轻快')}</textarea>
-                </div>
-              </div>
-
-              <!-- 语音克隆 -->
-              <div id="sct-wrap-xiaomi-clone" style="${s.ttsXiaomiModel === 'mimo-v2.5-tts-voiceclone' ? '' : 'display:none;'}">
-                <div class="sct-setting-col" style="margin-bottom: 10px;">
-                  <label for="sct-cfg-xiaomi-clone">克隆参考音频 (Base64 或 data:audio/wav;base64,...)</label>
-                  <textarea id="sct-cfg-xiaomi-clone" class="text_pole sct-textarea-autowrap" rows="2" placeholder="粘贴音频 Base64 数据">${escapeHtml(s.ttsXiaomiCloneSample || '')}</textarea>
-                </div>
-              </div>
-
-              <div class="sct-setting-col" style="margin-bottom: 10px;">
-                <label for="sct-cfg-xiaomi-ep">小米 API 端点 (Endpoint)</label>
-                <input type="text" id="sct-cfg-xiaomi-ep" class="text_pole" placeholder="https://api.xiaomimimo.com/v1/chat/completions" value="${escapeHtml(s.ttsXiaomiEndpoint || 'https://api.xiaomimimo.com/v1/chat/completions')}" />
-              </div>
-            </div>
-
-            <!-- 原生 Web Speech 设置 -->
-            <div class="sct-setting-col" id="sct-wrap-voice-ws" style="${s.ttsEngine === 'webspeech' ? '' : 'display:none;'}">
-              <label for="sct-cfg-voice">发音人音色 (Voice)</label>
-              <select id="sct-cfg-voice" class="text_pole">
-                <option value="">加载中…</option>
-              </select>
-            </div>
-
-            <!-- OpenAI 兼容音频服务设置 -->
-            <div id="sct-wrap-openai" style="${s.ttsEngine === 'openai' ? '' : 'display:none;'}">
-              <div class="sct-setting-col" style="margin-bottom: 8px;">
-                <label for="sct-cfg-openai-ep">API 端点 (如 http://127.0.0.1:8000)</label>
-                <input type="text" id="sct-cfg-openai-ep" class="text_pole" placeholder="http://127.0.0.1:8000" value="${s.ttsOpenAiEndpoint || ''}" />
-              </div>
-              <div class="sct-setting-col" style="margin-bottom: 8px;">
-                <label for="sct-cfg-openai-key">API Key (留空免鉴权)</label>
-                <input type="password" id="sct-cfg-openai-key" class="text_pole" placeholder="sk-..." value="${s.ttsOpenAiKey || ''}" />
-              </div>
-              <div class="sct-setting-col" style="margin-bottom: 8px;">
-                <label for="sct-cfg-openai-voice">音色名称 (如 alloy / echo)</label>
-                <input type="text" id="sct-cfg-openai-voice" class="text_pole" value="${s.ttsOpenAiVoice || 'alloy'}" />
-              </div>
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-rate">朗读语速 (0.5x - 2.0x): <span id="sct-rate-val">${s.ttsRate || 1.0}</span></label>
-              <input type="range" id="sct-cfg-rate" min="0.5" max="2.0" step="0.1" value="${s.ttsRate || 1.0}" />
-            </div>
-
-            <div class="sct-setting-row">
-              <label for="sct-cfg-pitch">声音音调 (0.5 - 1.5): <span id="sct-pitch-val">${s.ttsPitch || 1.0}</span></label>
-              <input type="range" id="sct-cfg-pitch" min="0.5" max="1.5" step="0.1" value="${s.ttsPitch || 1.0}" />
-            </div>
-
-            <div class="sct-test-btn-group">
-              <button type="button" class="sct-comfy-btn" id="sct-btn-test-tts">▶ 试听语音效果</button>
-              <button type="button" class="sct-comfy-btn" id="sct-btn-stop-tts">⏹ 停止</button>
-            </div>
-          </div>
 
         </div>
       </div>
@@ -11186,35 +9000,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     container.querySelector('#sct-cfg-comfy-host').addEventListener('input', (e) => saveSettings({ comfyHost: e.target.value.trim() }));
     container.querySelector('#sct-cfg-workflow').addEventListener('change', (e) => saveSettings({ comfyWorkflow: e.target.value }));
 
-    // ---- 🧩 多后端（MOSS 文生图 / Qwen 编辑 / H3 视频）----
-    const t2iBackendSel = container.querySelector('#sct-cfg-t2i-backend');
-    const mossWrapEl = container.querySelector('#sct-wrap-moss');
-    const syncMossWrap = () => {
-      if (mossWrapEl) mossWrapEl.style.display = (t2iBackendSel && t2iBackendSel.value === 'moss') ? '' : 'none';
-    };
-    t2iBackendSel?.addEventListener('change', (e) => {
-      saveSettings({ comfyTxt2ImgBackend: e.target.value });
-      syncMossWrap();
-      showToast(e.target.value === 'moss'
-        ? '文生图已切到 MOSS-Image（本机大模型，写中文准；不挂 LoRA）'
-        : '文生图已切回 SDXL 内置工作流', 'info');
-    });
-    syncMossWrap();
-    container.querySelector('#sct-cfg-moss-dir')?.addEventListener('change', (e) => saveSettings({ comfyMossModelDir: String(e.target.value || '').trim() }));
-    container.querySelector('#sct-cfg-moss-dtype')?.addEventListener('change', (e) => saveSettings({ comfyMossDtype: e.target.value }));
-    container.querySelector('#sct-cfg-moss-steps')?.addEventListener('change', (e) => saveSettings({ comfyMossSteps: parseInt(e.target.value, 10) || 20 }));
-    container.querySelector('#sct-cfg-moss-w')?.addEventListener('change', (e) => saveSettings({ comfyMossWidth: parseInt(e.target.value, 10) || 1024 }));
-    container.querySelector('#sct-cfg-moss-h')?.addEventListener('change', (e) => saveSettings({ comfyMossHeight: parseInt(e.target.value, 10) || 1024 }));
-    container.querySelector('#sct-cfg-moss-neg')?.addEventListener('change', (e) => saveSettings({ comfyMossNegative: e.target.value }));
+    // ---- ✏️ 图像编辑（Qwen-Image 2.1）----
     container.querySelector('#sct-cfg-edit-steps')?.addEventListener('change', (e) => saveSettings({ comfyEditSteps: parseInt(e.target.value, 10) || 30 }));
     container.querySelector('#sct-cfg-edit-cfg')?.addEventListener('change', (e) => saveSettings({ comfyEditCfg: parseFloat(e.target.value) || 4.0 }));
     container.querySelector('#sct-cfg-edit-mp')?.addEventListener('change', (e) => saveSettings({ comfyEditMegapixels: parseFloat(e.target.value) || 1.0 }));
-    container.querySelector('#sct-cfg-video-seconds')?.addEventListener('change', (e) => saveSettings({ comfyVideoSeconds: parseFloat(e.target.value) || 6 }));
-    container.querySelector('#sct-cfg-video-aspect')?.addEventListener('change', (e) => saveSettings({ comfyVideoAspect: e.target.value }));
-    container.querySelector('#sct-cfg-video-mp')?.addEventListener('change', (e) => saveSettings({ comfyVideoMegapixels: parseFloat(e.target.value) || 0.2 }));
-    container.querySelector('#sct-cfg-video-prompt')?.addEventListener('change', (e) => saveSettings({ comfyVideoPrompt: e.target.value }));
+
     container.querySelector('#sct-cfg-checkpoint').addEventListener('input', (e) => saveSettings({ comfyCheckpoint: e.target.value.trim() }));
-    
+
     const ckptSelect = container.querySelector('#sct-ckpt-select');
     ckptSelect.addEventListener('change', (e) => {
       if (e.target.value) {
@@ -11606,50 +9398,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       showToast('已恢复最新规范(仅女性角色出图;男女同场时男方只露局部肢体)', 'success');
     });
 
-    // 🎬 让聊天主模型顺手写视频提示词（会加长回复、多花 token）
-    const refreshInstPreview = () => {
-      const preview = container.querySelector('#sct-inst-preview');
-      if (preview) preview.textContent = composedInstructionText(getSettings());
-    };
-    container.querySelector('#sct-cfg-auto-video-prompt')?.addEventListener('change', (e) => {
-      saveSettings({ comfyAutoVideoPrompt: e.target.checked });
-      refreshInstPreview();
-      showToast(e.target.checked
-        ? '已开启：聊天模型会在生图标签后顺带写 <video> 六段式（回复会变长）'
-        : '已关闭：不再让聊天模型写视频提示词（🎬 弹窗改回用设置里的默认模板）', 'info');
-    });
-    container.querySelector('#sct-cfg-video-prompt-mode')?.addEventListener('change', (e) => {
-      saveSettings({ comfyVideoPromptMode: e.target.value });
-      refreshInstPreview();
-      const m = e.target.value;
-      showToast(m === 'free'
-        ? '视频提示词换成「自由发挥」：按正文设计 3~5 镜 + 运镜 + 台词（适合 15 秒）'
-        : (m === 'full'
-          ? '视频提示词换成「完整版」：2~3 镜、允许运镜（10~15 秒）'
-          : '视频提示词换成「精简版」：1 镜 + 轻微运镜（3~6 秒）'), 'info');
-    });
-
-    // 📐 分镜/写作规则自定义
-    container.querySelector('#sct-cfg-video-inst')?.addEventListener('change', (e) => {
-      saveSettings({ comfyVideoInstructionText: String(e.target.value || '') });
-      refreshInstPreview();
-    });
-    container.querySelector('#sct-btn-fill-video-inst')?.addEventListener('click', () => {
-      const box = container.querySelector('#sct-cfg-video-inst');
-      if (!box) return;
-      const rules = defaultVideoRules(getSettings().comfyVideoPromptMode).trim();
-      box.value = rules;
-      saveSettings({ comfyVideoInstructionText: rules });
-      refreshInstPreview();
-      showToast('已把内置规则填进框里，直接在上面改就行', 'info');
-    });
-    container.querySelector('#sct-btn-clear-video-inst')?.addEventListener('click', () => {
-      const box = container.querySelector('#sct-cfg-video-inst');
-      if (box) box.value = '';
-      saveSettings({ comfyVideoInstructionText: '' });
-      refreshInstPreview();
-      showToast('已清空：回到内置规则（跟着「详略」档位自动切换）', 'info');
-    });
 
     // 探查 ComfyUI 资产
     container.querySelector('#sct-btn-test-comfy').addEventListener('click', async () => {
@@ -11661,7 +9409,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         if (assets.checkpoints.length > 0 || assets.loras.length > 0) {
           showToast(`连通成功！探查到 ${assets.checkpoints.length} 个模型, ${assets.loras.length} 个 LoRA`, 'success');
           // 更新 Checkpoint 下拉
-          ckptSelect.innerHTML = '<option value="">(模型列表)</option>' + 
+          ckptSelect.innerHTML = '<option value="">(模型列表)</option>' +
             assets.checkpoints.map(c => `<option value="${c}">${c}</option>`).join('');
           if (!container.querySelector('#sct-cfg-checkpoint').value && assets.checkpoints[0]) {
             container.querySelector('#sct-cfg-checkpoint').value = assets.checkpoints[0];
@@ -11669,11 +9417,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           }
           // 更新采样器下拉
           if (assets.samplers.length > 0) {
-            container.querySelector('#sct-cfg-sampler').innerHTML = 
+            container.querySelector('#sct-cfg-sampler').innerHTML =
               assets.samplers.map(s => `<option value="${s}">${s}</option>`).join('');
           }
           if (assets.schedulers.length > 0) {
-            container.querySelector('#sct-cfg-scheduler').innerHTML = 
+            container.querySelector('#sct-cfg-scheduler').innerHTML =
               assets.schedulers.map(sc => `<option value="${sc}">${sc}</option>`).join('');
           }
           // 重新刷新 LoRA 列表下拉
@@ -11704,138 +9452,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       await clearComfyQueue();
     });
 
-    // TTS 绑定
-    const voiceSelect = container.querySelector('#sct-cfg-voice');
-    populateVoiceList(voiceSelect);
-    if (typeof window.speechSynthesis !== 'undefined') {
-      window.speechSynthesis.onvoiceschanged = () => populateVoiceList(voiceSelect);
-    }
-
-    // TTS 引擎切换绑定 (大卡片直选按钮)
-    const wrapWs = container.querySelector('#sct-wrap-voice-ws');
-    const wrapXiaomi = container.querySelector('#sct-wrap-xiaomi');
-    const wrapOai = container.querySelector('#sct-wrap-openai');
-    const engineBtns = container.querySelectorAll('.sct-engine-btn');
-
-    engineBtns.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        engineBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const val = btn.dataset.engine;
-        saveSettings({ ttsEngine: val });
-        if (wrapWs) wrapWs.style.display = val === 'webspeech' ? '' : 'none';
-        if (wrapXiaomi) wrapXiaomi.style.display = val === 'xiaomi' ? '' : 'none';
-        if (wrapOai) wrapOai.style.display = val === 'openai' ? '' : 'none';
-      });
-    });
-
-    // 小米 TTS 专属事件绑定
-    const xiaomiKeyInput = container.querySelector('#sct-cfg-xiaomi-key');
-    if (xiaomiKeyInput) {
-      xiaomiKeyInput.addEventListener('input', (e) => saveSettings({ ttsXiaomiKey: e.target.value.trim() }));
-    }
-
-    const toggleKeyBtn = container.querySelector('#sct-toggle-key-vis');
-    if (toggleKeyBtn && xiaomiKeyInput) {
-      toggleKeyBtn.addEventListener('click', () => {
-        if (xiaomiKeyInput.type === 'password') {
-          xiaomiKeyInput.type = 'text';
-          toggleKeyBtn.textContent = '🔒 隐藏';
-        } else {
-          xiaomiKeyInput.type = 'password';
-          toggleKeyBtn.textContent = '👁️ 显示/隐藏';
-        }
-      });
-    }
-
-    const xiaomiEpInput = container.querySelector('#sct-cfg-xiaomi-ep');
-    if (xiaomiEpInput) {
-      xiaomiEpInput.addEventListener('input', (e) => saveSettings({ ttsXiaomiEndpoint: e.target.value.trim() }));
-    }
-    
-    const mimoModelSelect = container.querySelector('#sct-cfg-xiaomi-model');
-    const wrapMimoBuiltin = container.querySelector('#sct-wrap-xiaomi-builtin');
-    const wrapMimoDesign = container.querySelector('#sct-wrap-xiaomi-design');
-    const wrapMimoClone = container.querySelector('#sct-wrap-xiaomi-clone');
-    if (mimoModelSelect) {
-      mimoModelSelect.addEventListener('change', (e) => {
-        const m = e.target.value;
-        saveSettings({ ttsXiaomiModel: m });
-        if (wrapMimoBuiltin) wrapMimoBuiltin.style.display = m === 'mimo-v2.5-tts' ? '' : 'none';
-        if (wrapMimoDesign) wrapMimoDesign.style.display = m === 'mimo-v2.5-tts-voicedesign' ? '' : 'none';
-        if (wrapMimoClone) wrapMimoClone.style.display = m === 'mimo-v2.5-tts-voiceclone' ? '' : 'none';
-      });
-    }
-
-    // 小米预设音色快捷芯片
-    const voiceChips = container.querySelectorAll('.sct-v-chip');
-    const mimoVoiceCustom = container.querySelector('#sct-cfg-xiaomi-voice-custom');
-
-    voiceChips.forEach((chip) => {
-      chip.addEventListener('click', () => {
-        voiceChips.forEach(c => c.classList.remove('active'));
-        chip.classList.add('active');
-        const v = chip.dataset.v;
-        if (mimoVoiceCustom) mimoVoiceCustom.value = v;
-        saveSettings({ ttsXiaomiVoice: v });
-      });
-    });
-
-    if (mimoVoiceCustom) {
-      mimoVoiceCustom.addEventListener('input', (e) => {
-        const val = e.target.value.trim();
-        voiceChips.forEach(c => {
-          c.classList.toggle('active', c.dataset.v === val);
-        });
-        saveSettings({ ttsXiaomiVoice: val });
-      });
-    }
-
-    const xiaomiSinging = container.querySelector('#sct-cfg-xiaomi-singing');
-    if (xiaomiSinging) {
-      xiaomiSinging.addEventListener('change', (e) => saveSettings({ ttsXiaomiSinging: e.target.checked }));
-    }
-
-    const xiaomiPrompt = container.querySelector('#sct-cfg-xiaomi-prompt');
-    if (xiaomiPrompt) {
-      xiaomiPrompt.addEventListener('input', (e) => saveSettings({ ttsXiaomiVoiceDesignPrompt: e.target.value.trim() }));
-    }
-
-    const xiaomiClone = container.querySelector('#sct-cfg-xiaomi-clone');
-    if (xiaomiClone) {
-      xiaomiClone.addEventListener('input', (e) => saveSettings({ ttsXiaomiCloneSample: e.target.value.trim() }));
-    }
-
-    container.querySelector('#sct-cfg-tts-enabled').addEventListener('change', (e) => saveSettings({ ttsEnabled: e.target.checked }));
-    container.querySelector('#sct-cfg-float-sel').addEventListener('change', (e) => saveSettings({ ttsFloatingSelection: e.target.checked }));
-    container.querySelector('#sct-cfg-mes-tts-btn').addEventListener('change', (e) => saveSettings({ ttsShowMesButton: e.target.checked }));
-    container.querySelector('#sct-cfg-filter-think').addEventListener('change', (e) => saveSettings({ ttsFilterThinking: e.target.checked }));
-    voiceSelect.addEventListener('change', (e) => saveSettings({ ttsVoice: e.target.value }));
-
-    container.querySelector('#sct-cfg-openai-ep').addEventListener('input', (e) => saveSettings({ ttsOpenAiEndpoint: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-openai-key').addEventListener('input', (e) => saveSettings({ ttsOpenAiKey: e.target.value.trim() }));
-    container.querySelector('#sct-cfg-openai-voice').addEventListener('input', (e) => saveSettings({ ttsOpenAiVoice: e.target.value.trim() }));
-
-    const rateRange = container.querySelector('#sct-cfg-rate');
-    const rateVal = container.querySelector('#sct-rate-val');
-    rateRange.addEventListener('input', (e) => {
-      rateVal.textContent = e.target.value;
-      saveSettings({ ttsRate: parseFloat(e.target.value) });
-    });
-
-    const pitchRange = container.querySelector('#sct-cfg-pitch');
-    const pitchVal = container.querySelector('#sct-pitch-val');
-    pitchRange.addEventListener('input', (e) => {
-      pitchVal.textContent = e.target.value;
-      saveSettings({ ttsPitch: parseFloat(e.target.value) });
-    });
-
-    container.querySelector('#sct-btn-test-tts').addEventListener('click', () => {
-      speakText('您好！这是 SillyTavern 智能语音朗读与 ComfyUI 原生生图测试，祝您使用愉快！');
-    });
-    container.querySelector('#sct-btn-stop-tts').addEventListener('click', () => {
-      stopTts();
-    });
   }
 
   function updateWandAutoDrawLabel() {
@@ -11860,7 +9476,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       item.innerHTML = `
         <a id="sct-wand-item" class="list-group-item" href="#" title="${DISPLAY_NAME} v${SCT_BUILD}">
           <i class="fa-solid fa-palette"></i>
-          <span>ComfyUI & 语音朗读 <small style="opacity:.55">v${SCT_BUILD}</small></span>
+          <span>ComfyUI 绘图 <small style="opacity:.55">v${SCT_BUILD}</small></span>
         </a>
       `;
 
@@ -11938,7 +9554,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
   function init() {
     console.log(`[${DISPLAY_NAME}] 正在初始化 ComfyUI 原生工作流扩展…`);
 
-    bindSelectionListeners();
     registerSlashCommands();
     updateExtensionPrompt();
 
@@ -11975,7 +9590,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       }
       if (et.CHAT_CHANGED) {
         es.on(et.CHAT_CHANGED, () => {
-          stopTts();
           isChatSwitching = true;
           newlyReceivedMesIds.clear();
           setTimeout(() => {
@@ -12006,19 +9620,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     }
 
     const chatObserver = new MutationObserver((mutations) => {
-      // 检查变动是否全是插件自身的卡片、加载状态、TTS 浮条、消息按钮或插槽更新，若是则完全忽略，绝不触发重新扫描
+      // 检查变动是否全是插件自身的卡片、加载状态、消息按钮或插槽更新，若是则完全忽略，绝不触发重新扫描
       let hasExternalChange = false;
       for (const m of mutations) {
         const target = m.target;
-        if (target && target.closest && target.closest('.sct-comfy-card, .sct-comfy-card-container, .sct-floating-tts, .sct-tts-status-badge, .sct-mes-action-btn, .sct-comfy-slot')) {
+        if (target && target.closest && target.closest('.sct-comfy-card, .sct-comfy-card-container, .sct-mes-action-btn, .sct-comfy-slot')) {
           continue;
         }
         let allSctNodes = true;
         if (m.addedNodes && m.addedNodes.length > 0) {
           for (const node of m.addedNodes) {
             if (node.nodeType === Node.ELEMENT_NODE) {
-              if (!node.classList?.contains('sct-comfy-card') && 
-                  !node.classList?.contains('sct-comfy-card-container') && 
+              if (!node.classList?.contains('sct-comfy-card') &&
+                  !node.classList?.contains('sct-comfy-card-container') &&
                   !node.classList?.contains('sct-comfy-slot') &&
                   !node.classList?.contains('sct-mes-action-btn')) {
                 allSctNodes = false;
