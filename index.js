@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.3.1';
+  const SCT_BUILD = '3.3.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -40,23 +40,39 @@
   const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
 
   const VIDEO_RULES_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:
-【★★ 首帧锁】<Picture 1> 既是身份锚也是首帧。detailed_description 开头必须写 the first frame must be indistinguishable from <Picture 1>；[Shot 1] 只写「画面就是参考图 + 一个微动」，绝不引入新姿势、不换机位、不换场景。
-【★★ 四把锁（缺一不可）】
-1 首帧锁：见上。
-2 COSTUME LOCK：逐件点名服装（衬衫/领结/裙子/鞋/配饰），并明确哪块裸哪块穿，写死 No garment is removed, pulled down, pulled up further, replaced or added。
-3 BACKGROUND LOCK：逐项点名背景（树/墙/路/花瓣/光向/色温），写死 the camera never reveals any part of the place that is not visible in <Picture 1>。
-4 FRAME LOCK：no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark。
+
+【★★★ 这是「图生视频」，不是文生视频 —— 参考图就是第一帧，不是参考素材】
+<Picture 1> 同时承担三件事，缺一不可：
+  (a) 身份锚：脸型、五官、发色、瞳色、体型、年龄感全部按它；
+  (b) 首帧：视频第 0 帧必须和它**像素级一致**（构图、机位、景别、裁切、人物位置、朝向、姿势全部照抄）；
+  (c) 场景锚：背景、光线方向、色温、道具全部按它。
+**绝对不许**自己设计镜头、换机位、换景别、换角度、换场景、换姿势 —— 这些都由参考图决定。
+
+【★★ 四把锁（缺一不可，必须逐条写进 detailed_description）】
+1 FIRST-FRAME LOCK（首帧锁）：
+   必须原样写这句：The first frame must be indistinguishable from <Picture 1>: same framing, same camera angle, same crop, same pose, same position in frame, same background, same lighting.
+   [Shot 1] 只写「画面就是参考图 + 一个微动」，绝不引入新姿势、不换机位、不换场景。
+2 COSTUME LOCK（服装锁）：
+   逐件点名参考图里能看见的每一件（衬衫/领结/裙子/鞋/袜子/配饰/发饰），并明确哪块裸哪块穿；
+   必须原样写这句：No garment is removed, pulled down, pulled up further, replaced or added. Every piece stays exactly as in <Picture 1>.
+3 BACKGROUND LOCK（场景锁）：
+   逐项点名参考图里的背景元素（墙/窗/树/路/家具/花瓣/光向/色温）；
+   必须原样写这句：The camera never reveals any part of the place that is not visible in <Picture 1>. The background stays exactly as in <Picture 1>.
+4 FRAME LOCK（画面锁）：
+   必须原样写这句：no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark.
+
 【其他硬性要求】
 · Exactly one woman on screen（正面句）；no mirror, no reflection。
 · 台词：正文里角色说了话，就把那句台词原样写进对应镜头，格式 <Subject 1> says <d>[Chinese] 台词</d>；台词写 8–10 个汉字（3 字最容易跑成英文）；每句台词都要单独写一次 <Subject N> says，不能只写一次。
 · 台词块里只放 <d> 行，不要在旁边写中文说明（会被当台词念）。
 · [Shot 1] 不带时间戳；第 2 镜起写 At 00:03.000 - 00:06.500。
+· 如果正文要求的动作会破坏首帧锁（比如要求角色走路、转身、换场景），**优先保首帧锁**，把动作降级成「原地微动」。
 `;
 
   const VIDEO_RULES_SHOT = {
-    compact: `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]：只写「画面就是参考图 + 一个微动」（眨眼/呼吸/头发轻摆/光影微变），不写走路、转身、换姿势。控制在 350 个英文单词以内。`,
-    full: `5. detailed_description 先写一句全片风格声明，然后写 2~3 个镜头：第 1 镜写 [Shot 1]（不带时间戳），第 2 镜起写 At MM:SS.mmm；每镜标清 景别/机位/运镜/动作/台词/音效。第一镜必须与参考图构图一致。控制在 900 个英文单词以内。`,
-    free: `5. detailed_description 先写一句全片风格声明，然后按正文当剧本拆成 2~5 个镜头：每镜写 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 角色动作 + 台词 + 音效。分镜、镜头、动作、台词全部由你根据正文设计。控制在 700 个英文单词以内。`,
+    compact: `5. detailed_description 先写一句全片风格声明，然后写 1 个 [Shot 1]：**画面就是参考图 + 一个微动**（眨眼 / 呼吸起伏 / 头发轻摆 / 光影微变 / 衣角微动），不写走路、转身、换姿势、换机位。控制在 350 个英文单词以内。`,
+    full: `5. detailed_description 先写一句全片风格声明，然后写 2~3 个镜头：第 1 镜写 [Shot 1]（不带时间戳，**必须与参考图构图完全一致**），第 2 镜起写 At MM:SS.mmm；每镜标清 景别/机位/运镜/动作/台词/音效。**后续镜头只允许在参考图同一场景内做小幅运镜（推近/拉远/轻微平移），不许换场景、不许换机位到看不见的角度、不许换姿势。** 控制在 900 个英文单词以内。`,
+    free: `5. detailed_description 先写一句全片风格声明，然后按正文拆成 2~5 个镜头：每镜写 [Shot N] At MM:SS.mmm + 景别 + 机位 + 运镜 + 角色动作 + 台词 + 音效。**但首帧锁优先：第 1 镜必须与参考图完全一致；后续镜头只允许在参考图同一场景内做小幅运镜与原地动作，不许换场景、不许换到看不见的角度、不许让角色走出画面。** 控制在 700 个英文单词以内。`,
   };
 
   const VIDEO_RULES_TAIL = `6. overall_soundscape 写环境底噪 + 与动作严格同步的拟音；角色说的话要在这一段音轨里有交代。
@@ -198,7 +214,7 @@
     comfyVideoMegapixels: 0.92,
     comfyVideoSteps: 12,
     comfyVideoAutoPrompt: true,                   // 让聊天模型在写生图标签时顺手写六段式
-    comfyVideoPromptMode: 'free',                 // 'compact' | 'full' | 'free'
+    comfyVideoPromptMode: 'compact',              // 'compact' 单镜微动（图生视频最稳）| 'full' | 'free'
     comfyVideoPrompt: '',                         // 默认六段式模板（留空用内置）
     comfyVideoDeleteCloud: true,                  // 下载后删云端任务
 
@@ -4650,23 +4666,23 @@
     if (el.isConnected) el.remove();
   }
 
-  /** 内置六段式模板（用户没填默认模板时用） */
+  /** 内置六段式模板（用户没填默认模板时用）—— 图生视频：锁首帧 + 锁服装 + 锁场景 */
   function buildVideoTemplate() {
     return `subject_definitions:
-<Picture 1> is the identity anchor AND the first frame; it fixes her face, hair, eye colour and body proportions.
+<Picture 1> is the identity anchor AND the first frame. It fixes her face, facial features, hair colour, hairstyle, eye colour, body proportions and age impression. It also fixes the framing, camera angle, crop, pose, position in frame, background, lighting direction and colour temperature.
 <Subject 1> is the girl in <Picture 1>, drawn in pure flat 2D Japanese anime cel style: clean ink lineart, flat colour fills with simple two-tone shading, big expressive anime eyes and a small mouth; no 3D rendering, no CGI shading, no realistic skin texture anywhere.
-<Subject 2> is, in the same flat 2D anime style, the scene she is placed in.
+<Subject 2> is, in the same flat 2D anime style, the exact scene visible in <Picture 1> - the same background elements, the same lighting direction and the same colour temperature.
 
 summary:
-[reference generation] The target video is a flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>: the first frame must be indistinguishable from <Picture 1>, then she makes one tiny motion only. Exactly one woman on screen. No garment is removed, pulled down, pulled up further, replaced or added.
+[reference generation] The target video is a flat-2D anime shot of <Subject 1> using the exact appearance from <Picture 1>. The first frame must be indistinguishable from <Picture 1>: same framing, same camera angle, same crop, same pose, same position in frame, same background, same lighting. After that she makes one tiny motion only. Exactly one woman on screen. No garment is removed, pulled down, pulled up further, replaced or added.
 
 retention_analysis:
-<Subject 1> (appears in [Shot 1] through [Shot 1]): fully_preserved - face, hair, eyes and outfit from <Picture 1>.
-<Picture 1> (identity anchor): fully_preserved - its views guide proportions, features and costume.
-<Subject 2> (appears in [Shot 1] through [Shot 1]): fully_preserved - the scenery stays consistent.
+<Subject 1> (appears in [Shot 1] through [Shot 1]): fully_preserved - face, facial features, hair colour, hairstyle, eye colour, body proportions and every garment from <Picture 1>.
+<Picture 1> (identity anchor AND first frame): fully_preserved - its framing, camera angle, crop, pose, position in frame, background and lighting all carry over unchanged.
+<Subject 2> (appears in [Shot 1] through [Shot 1]): fully_preserved - the background elements, lighting direction and colour temperature stay exactly as in <Picture 1>.
 
 detailed_description:
-The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. The first frame must be indistinguishable from <Picture 1>. [Shot 1] The frame is exactly the reference image plus one micro-motion: she blinks slowly and her hair sways slightly. No new pose, no camera move, no scene change. COSTUME LOCK: every garment stays exactly as in <Picture 1>; no garment is removed, pulled down, pulled up further, replaced or added. BACKGROUND LOCK: the camera never reveals any part of the place that is not visible in <Picture 1>. FRAME LOCK: no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark. Exactly one woman on screen; no mirror, no reflection.
+The whole video is drawn in flat 2D Japanese anime cel style with clean lineart and flat colour, never photoreal, never 3D. The first frame must be indistinguishable from <Picture 1>: same framing, same camera angle, same crop, same pose, same position in frame, same background, same lighting. [Shot 1] The frame is exactly the reference image plus one micro-motion: she blinks slowly, her chest rises with a soft breath, and a few strands of hair sway slightly. No new pose, no camera move, no scene change, no new object entering the frame. COSTUME LOCK: every garment visible in <Picture 1> stays exactly as it is - same pieces, same colours, same fit, same position on the body. No garment is removed, pulled down, pulled up further, replaced or added. Every piece stays exactly as in <Picture 1>. BACKGROUND LOCK: the camera never reveals any part of the place that is not visible in <Picture 1>. The background stays exactly as in <Picture 1>. FRAME LOCK: no photo frame, no corner marks, no REC indicator, no timecode, no crosshair, no comic effect symbols, no text, no logo, no watermark. Exactly one woman on screen; no mirror, no reflection.
 
 overall_soundscape:
 A quiet room tone with faint ambience, strictly action-synced: soft breathing and a light cloth rustle land exactly on the matching motion.
@@ -8677,9 +8693,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             <div class="sct-setting-col">
               <label for="sct-cfg-video-mode">六段式详略</label>
               <select id="sct-cfg-video-mode" class="text_pole" style="max-width:320px;">
-                <option value="compact" ${(s.comfyVideoPromptMode || 'free') === 'compact' ? 'selected' : ''}>精简版：1 镜 + 微动（≤350 词 · 5 秒）</option>
+                <option value="compact" ${(s.comfyVideoPromptMode || 'compact') === 'compact' ? 'selected' : ''}>精简版：1 镜 + 微动（≤350 词 · 推荐，首帧锁最稳）</option>
                 <option value="full" ${s.comfyVideoPromptMode === 'full' ? 'selected' : ''}>完整版：2~3 镜（≤900 词 · 10~15 秒）</option>
-                <option value="free" ${(s.comfyVideoPromptMode || 'free') === 'free' ? 'selected' : ''}>自由发挥：按正文拆 2~5 镜（≤700 词 · 推荐）</option>
+                <option value="free" ${s.comfyVideoPromptMode === 'free' ? 'selected' : ''}>自由发挥：按正文拆 2~5 镜（≤700 词 · 容易破首帧锁）</option>
               </select>
             </div>
 
