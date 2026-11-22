@@ -5,6 +5,8 @@
 
 > ⚠️ **v3.1.0 起只保留 SDXL 文生图一条链路**。已移除：MOSS 文生图、TTS 语音朗读、MiniMax H3 图生视频、Qwen-Image 图像编辑。
 > 老配置里对应的设置键会在首次加载时自动清理，其它配置不受影响。
+>
+> 🆕 **v3.2.0 新增「🎨 画风控制」**：一键切换 二次元 / 2.5D / 3D / 真人写实，自动往正向/负向提示词追加风格词。
 
 ---
 
@@ -59,6 +61,26 @@
 - 可搜索、看大图、下载、复制提示词、一键设为某个角色的 LoRA 预览图、从记录里删除。
 - 手机本地图库（IndexedDB）缓存，服务器 output 被清理后依然能看。
 
+### 5. 🎨 画风控制（v3.2.0）
+设置面板 → 「✨ 固定质量提示词与出图尺寸」→ 顶部一排芯片，点一下即切换：
+
+| 档位 | 正向追加 | 负向追加 |
+| :--- | :--- | :--- |
+| **不控制**（默认） | 无 | 无 |
+| **二次元** | `anime style, japanese anime, cel shading, clean lineart, flat color, 2d illustration, anime coloring` | `photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, depth of field, bokeh` |
+| **2.5D** | `2.5d, semi-realistic, stylized 3d render, soft shading, subsurface scattering, volumetric lighting, detailed illustration, painterly` | `flat color, cel shading, pure lineart, cartoon, chibi, sketch, monochrome` |
+| **3D** | `3d render, cgi, octane render, unreal engine, physically based rendering, subsurface scattering, volumetric lighting, ray tracing, high poly, detailed 3d model` | `anime, cel shading, flat color, 2d, lineart, sketch, drawing, illustration, painting, hand drawn` |
+| **真人写实** | `photorealistic, realistic photo, raw photo, photograph, real person, live action, natural skin texture, skin pores, detailed face, 85mm lens, shallow depth of field, film grain, professional photography` | `anime, cartoon, 3d render, cgi, illustration, painting, drawing, sketch, cel shading, flat color, doll, plastic skin, oversaturated` |
+
+**设计要点**：
+
+- **只追加、不覆盖** —— 你自己填的「固定正向质量词」「画风后缀」「通用负向词」全部保留，风格词拼在最前面（SDXL 里靠前 token 权重更高）。
+- **正向 + 负向双向约束** —— 光加正向词不够，模型仍会往原画风漂；负向词把对立风格压掉才稳。
+- **`不控制` = 完全不动** —— 行为和加这个功能之前一模一样，老用户升级后不会突然变画风。
+- **切换即时生效** —— 点完芯片，下一次出图就用新画风，不用重启。
+
+> ⚠️ **画风上限由底模决定**：用 Illustrious / Pony 这类动漫底模，选「真人写实」也只能出半写实；要真写实得换 SDXL 写实底模（如 Juggernaut、RealVisXL）。
+
 ---
 
 ## ⚙️ 原生酒馆配置面板参数详解
@@ -76,7 +98,8 @@
 | | 激活关键词 | 正文或提示词包含此关键词时（如 `柚木凪, 银发`），自动激活挂载 |
 | | 角色特征激活词 | 激活时自动组合进正向提示词（如 `nagi, 1girl, silver hair...`） |
 | | 激活词分组 | 同一角色多套激活词（校服/泳装/便服…），出图时选其中一组生效 |
-| **质量词与尺寸** | 固定正向质量词 | 默认 `(masterpiece, best quality, highly detailed), ` |
+| **质量词与尺寸** | 🎨 画风控制 | 一键切换 不控制 / 二次元 / 2.5D / 3D / 真人写实，自动往正向+负向提示词追加风格词 |
+| | 固定正向质量词 | 默认 `(masterpiece, best quality, highly detailed), ` |
 | | 画风后缀提示词 | 默认 `, 8k, photorealistic, cinematic lighting` |
 | | 通用负向提示词 | 默认去畸变、坏手、低画质负向词库 |
 | | 图像尺寸 | 提供 `512x768`、`768x1024`、`1024x1024`、`768x512` 快捷芯片与自定义宽高 |

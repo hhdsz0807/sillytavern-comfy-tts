@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.1.0';
+  const SCT_BUILD = '3.2.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -49,6 +49,10 @@
     comfyVae: '',
     comfyAutoDrawTags: true,
     comfyShowMesButton: true,
+
+    // 🎨 画风控制：'off' 不控制 | 'anime' 二次元 | 'd25' 2.5D | 'd3' 3D | 'realistic' 真人写实
+    // 只往正向/负向提示词追加风格词，不改下面用户自己填的质量词
+    comfyStylePreset: 'off',
 
     // 固定的正向、负向质量提示词与前后缀
     comfyFixedPositive: '(masterpiece, best quality, highly detailed), ',
@@ -2779,6 +2783,65 @@
     return tokens.length > 0 ? `${tokens.join(', ')}, ` : '';
   }
 
+  /* ---------------------------------------------------------------------------
+     🎨 画风控制：一键切换 二次元 / 2.5D / 3D / 真人写实
+     ---------------------------------------------------------------------------
+     设计取舍：
+     · 只往「正向提示词」追加风格词、往「负向提示词」追加反向词，不改用户自己填的质量词；
+     · 风格词放在提示词最前面（SDXL 里靠前的 token 权重更高），避免被角色 tag 冲淡；
+     · 负向词只追加、不覆盖，用户原有的负向词照常生效；
+     · 'off' = 完全不动，行为和加这个功能之前一模一样。
+     --------------------------------------------------------------------------- */
+  const SCT_STYLE_PRESETS = {
+    off: {
+      label: '不控制（用下面的质量词原样出图）',
+      positive: '',
+      negative: '',
+    },
+    anime: {
+      label: '二次元（日系赛璐璐 / 动漫插画）',
+      positive: 'anime style, japanese anime, cel shading, clean lineart, flat color, 2d illustration, anime coloring',
+      negative: 'photorealistic, realistic, 3d, cgi, render, photo, photograph, real person, live action, depth of field, bokeh',
+    },
+    d25: {
+      label: '2.5D（半写实 / 厚涂立体感）',
+      positive: '2.5d, semi-realistic, stylized 3d render, soft shading, subsurface scattering, volumetric lighting, detailed illustration, painterly',
+      negative: 'flat color, cel shading, pure lineart, cartoon, chibi, sketch, monochrome',
+    },
+    d3: {
+      label: '3D（三维渲染 / CG 质感）',
+      positive: '3d render, cgi, octane render, unreal engine, physically based rendering, subsurface scattering, volumetric lighting, ray tracing, high poly, detailed 3d model',
+      negative: 'anime, cel shading, flat color, 2d, lineart, sketch, drawing, illustration, painting, hand drawn',
+    },
+    realistic: {
+      label: '真人写实（摄影 / 实拍质感）',
+      positive: 'photorealistic, realistic photo, raw photo, photograph, real person, live action, natural skin texture, skin pores, detailed face, 85mm lens, shallow depth of field, film grain, professional photography',
+      negative: 'anime, cartoon, 3d render, cgi, illustration, painting, drawing, sketch, cel shading, flat color, doll, plastic skin, oversaturated',
+    },
+  };
+
+  /** 取当前画风预设（找不到就回落到 off） */
+  function getStylePreset() {
+    const key = String(getSettings().comfyStylePreset || 'off');
+    return SCT_STYLE_PRESETS[key] || SCT_STYLE_PRESETS.off;
+  }
+
+  /** 把画风词拼到正向提示词最前面（off 时原样返回） */
+  function applyStyleToPositive(positive) {
+    const preset = getStylePreset();
+    const base = String(positive || '');
+    if (!preset.positive) return base;
+    return `${preset.positive}, ${base}`;
+  }
+
+  /** 把画风反向词追加到负向提示词末尾（off 时原样返回） */
+  function applyStyleToNegative(negative) {
+    const preset = getStylePreset();
+    const base = String(negative || '').trim();
+    if (!preset.negative) return base;
+    return base ? `${base}, ${preset.negative}` : preset.negative;
+  }
+
   // 通用排除关键词：从最终正向提示词中把命中的词剔除掉 (正向黑名单，不限 LoRA，始终生效)
   // 语法：逗号/换行分隔多个词；支持 * 通配 (hat* 前缀、*hat* 包含)；以"逗号分段 token"为粒度匹配，不误伤其它词
   function buildPositiveExclusionRegex(list) {
@@ -4669,8 +4732,8 @@
         promptText: inpaintPrompt,
         fullText: promptText || ''
       });
-      const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim());
-      const negativePrompt = s.comfyFixedNegative || '';
+      const fullPositivePrompt = applyPositiveExclusions(applyStyleToPositive(`${s.comfyFixedPositive || ''}${loraInjection}${inpaintPrompt}${s.comfyPromptSuffix || ''}`.trim()));
+      const negativePrompt = applyStyleToNegative(s.comfyFixedNegative || '');
 
       // 6. 动态生成局部重绘工作流
       const workflow = buildComfyInpaintWorkflow({
@@ -5051,8 +5114,8 @@
     const loraInjection = buildLoraTriggerInjection(activeLoras, { promptText, fullText: mesTextForLora });
 
     // 组合正向提示词：固定质量词 + LoRA 角色特征词 + 提取的标签提示词 + 后缀，最后套用通用排除关键词
-    const fullPositivePrompt = applyPositiveExclusions(`${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim());
-    const negativePrompt = s.comfyFixedNegative || '';
+    const fullPositivePrompt = applyPositiveExclusions(applyStyleToPositive(`${s.comfyFixedPositive || ''}${loraInjection}${promptText}${s.comfyPromptSuffix || ''}`.trim()));
+    const negativePrompt = applyStyleToNegative(s.comfyFixedNegative || '');
 
     // 探查可用 Checkpoint
     let ckpt = s.comfyCheckpoint || '';
@@ -7766,6 +7829,20 @@
             </div>
 
             <div class="sct-setting-col">
+              <label>🎨 画风控制（一键切换，会往正向/负向提示词追加风格词）</label>
+              <div class="sct-chip-group">
+                ${Object.entries(SCT_STYLE_PRESETS).map(([key, p]) => `
+                  <button type="button" class="sct-chip-btn sct-style-chip ${(s.comfyStylePreset || 'off') === key ? 'active' : ''}" data-style="${key}">${escapeHtml(p.label)}</button>
+                `).join('')}
+              </div>
+              <div class="sct-hint" id="sct-style-preview">${escapeHtml(
+                (SCT_STYLE_PRESETS[s.comfyStylePreset || 'off'] || SCT_STYLE_PRESETS.off).positive
+                  ? `正向追加：${(SCT_STYLE_PRESETS[s.comfyStylePreset || 'off'] || SCT_STYLE_PRESETS.off).positive}`
+                  : '当前不追加任何风格词，完全按下面的质量词出图。'
+              )}</div>
+            </div>
+
+            <div class="sct-setting-col">
               <label for="sct-cfg-fixed-pos">固定的正向质量提示词 (Prefix)</label>
               <input type="text" id="sct-cfg-fixed-pos" class="text_pole" value="${s.comfyFixedPositive || ''}" />
             </div>
@@ -8313,6 +8390,26 @@
       container.querySelector('#sct-cfg-vae').value = e.target.value;
       saveSettings({ comfyVae: e.target.value });
       showToast(`已指定外部 VAE:${e.target.value}(下次出图生效)`, 'success');
+    });
+
+    // 🎨 画风控制：点芯片切换，实时更新预览
+    container.querySelectorAll('.sct-style-chip').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const key = String(btn.dataset.style || 'off');
+        const preset = SCT_STYLE_PRESETS[key] || SCT_STYLE_PRESETS.off;
+        saveSettings({ comfyStylePreset: key });
+        container.querySelectorAll('.sct-style-chip').forEach((b) => {
+          b.classList.toggle('active', b.dataset.style === key);
+        });
+        const preview = container.querySelector('#sct-style-preview');
+        if (preview) {
+          preview.textContent = preset.positive
+            ? `正向追加：${preset.positive}`
+            : '当前不追加任何风格词，完全按下面的质量词出图。';
+        }
+        showToast(key === 'off' ? '画风控制已关闭' : `画风已切换：${preset.label}`, 'success');
+      });
     });
 
     container.querySelector('#sct-cfg-fixed-pos').addEventListener('input', (e) => saveSettings({ comfyFixedPositive: e.target.value }));
