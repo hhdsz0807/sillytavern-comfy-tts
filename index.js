@@ -4352,12 +4352,12 @@
 
   // 从 /history 任务里收集输出（图片走 images）
   function collectComfyApiOutputs(task, host) {
-    const images = [], videos = [];
+    const images = [];
     const byNode = {};
     const outputs = (task && task.outputs) || {};
     Object.keys(outputs).forEach((nid) => {
       const out = outputs[nid] || {};
-      const mine = { images: [], videos: [] };
+      const mine = { images: [] };
       Object.keys(out).forEach((key) => {
         const arr = out[key];
         if (!Array.isArray(arr)) return;
@@ -4366,26 +4366,19 @@
           const url = `${host}/view?filename=${encodeURIComponent(item.filename)}` +
             `&subfolder=${encodeURIComponent(item.subfolder || '')}` +
             `&type=${encodeURIComponent(item.type || 'output')}`;
-          const fn = String(item.filename).toLowerCase();
-          if (/\.(mp4|webm|mkv|mov|gif)$/.test(fn) || key === 'gifs' || key === 'videos') {
-            videos.push(url);
-            mine.videos.push(url);
-          } else {
-            images.push(url);
-            mine.images.push(url);
-          }
+          images.push(url);
+          mine.images.push(url);
         });
       });
-      if (mine.images.length || mine.videos.length) byNode[String(nid)] = mine;
+      if (mine.images.length) byNode[String(nid)] = mine;
     });
-    return { images, videos, byNode };
+    return { images, byNode };
   }
 
-  // 提交 API 工作流 + 轮询结果（图片与视频共用；options: {video, timeoutMs, onProgress}）
+  // 提交 API 工作流 + 轮询结果（options: {timeoutMs, onProgress}）
   async function submitComfyApiPrompt(promptObj, options = {}) {
     const host = getCleanComfyHost();
-    const wantsVideo = !!options.video;
-    const timeoutMs = options.timeoutMs || (wantsVideo ? 60 * 60 * 1000 : 15 * 60 * 1000);
+    const timeoutMs = options.timeoutMs || 15 * 60 * 1000;
     const clientId = 'sct_bk_' + Math.random().toString(36).slice(2, 10);
     const t0 = Date.now();
     const since = () => {
@@ -4394,7 +4387,6 @@
     };
 
     let ws = null;
-    let livePromptId = '';
     try {
       ws = new WebSocket(host.replace(/^http/i, 'ws') + `/ws?clientId=${clientId}`);
       ws.onmessage = (ev) => {
@@ -4408,10 +4400,6 @@
             options.onProgress(`⏳ 采样中 ${value}/${max} 步 (${pct}%) · 已用 ${since()}`);
           } else if (msg.type === 'executing' && d.node && options.onProgress) {
             options.onProgress(`⚙️ 正在执行节点 ${d.node}… · 已用 ${since()}`);
-          } else if (msg.type === 'executed' && d.node && options.onOutput) {
-            // ★ 逐节点输出：一采视频一好就先推给界面，不用等整条工作流跑完
-            if (livePromptId && d.prompt_id && String(d.prompt_id) !== String(livePromptId)) return;
-            options.onOutput(String(d.node), d.output || {});
           }
         } catch (_) {}
       };
@@ -4432,14 +4420,13 @@
         throw new Error('提交失败：' + detail);
       }
       promptId = data.prompt_id;
-      livePromptId = promptId;      // 让 ws 的 executed 只认本次任务
     } catch (e) {
       if (ws) { try { ws.close(); } catch (_) {} }
       throw e;
     }
 
-    if (options.onProgress) options.onProgress(wantsVideo ? '🎬 任务已入队，本机出片要几分钟，别关页面…' : '🎨 任务已入队，正在出图…');
-    const pollMs = wantsVideo ? 5000 : 2500;
+    if (options.onProgress) options.onProgress('🎨 任务已入队，正在出图…');
+    const pollMs = 2500;
     while (Date.now() - t0 < timeoutMs) {
       await new Promise((r) => setTimeout(r, pollMs));
       let task = null;
@@ -4457,12 +4444,9 @@
         throw new Error('ComfyUI 执行报错：' + (err || '详见 ComfyUI 控制台'));
       }
       const found = collectComfyApiOutputs(task, host);
-      if (found.images.length > 0 || found.videos.length > 0) {
+      if (found.images.length > 0) {
         if (ws) { try { ws.close(); } catch (_) {} }
         return found;
-      }
-      if (options.onProgress && wantsVideo) {
-        options.onProgress(`🎬 还在跑（已用 ${since()}）· 6 秒片约 7 分钟，15 秒要 20 分钟以上`);
       }
     }
     if (ws) { try { ws.close(); } catch (_) {} }
