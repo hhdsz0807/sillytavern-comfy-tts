@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.3.0';
+  const SCT_BUILD = '3.3.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4693,8 +4693,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.__sctAnchor = anchor;
     overlay.__sctSource = sourceUrl || '';
 
-    const secondsOpts = [5, 10, 15].map((v) =>
-      `<option value="${v}" ${v === (parseInt(s.comfyVideoSeconds, 10) || 5) ? 'selected' : ''}>${v} 秒（${v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币'}）</option>`
+    const curSec = parseInt(s.comfyVideoSeconds, 10) || 5;
+    const secondsOpts = [3, 5, 10, 15].map((v) =>
+      `<button type="button" class="sct-chip-btn sct-video-sec-pick ${v === curSec ? 'active' : ''}" data-sec="${v}">${v} 秒</button>`
     ).join('');
 
     overlay.innerHTML = `
@@ -4728,8 +4729,9 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
           <div class="sct-video-two">
             <div class="sct-setting-col">
-              <label>时长</label>
-              <select class="text_pole sct-video-seconds">${secondsOpts}</select>
+              <label>时长（点一下切换）</label>
+              <div class="sct-chip-group sct-video-sec-picks">${secondsOpts}</div>
+              <div class="sct-video-hint sct-video-sec-cost">${curSec <= 3 ? '约 45-60 币' : curSec <= 5 ? '约 70-90 币' : curSec <= 10 ? '约 150-180 币' : '约 215-260 币'}</div>
             </div>
             <div class="sct-setting-col">
               <label>账号</label>
@@ -4783,6 +4785,19 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (tag) tag.textContent = `参考图：相册选图 ${f.name}`;
     });
 
+    // 时长芯片
+    overlay.querySelectorAll('.sct-video-sec-pick').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const v = parseFloat(btn.dataset.sec) || 5;
+        overlay.querySelectorAll('.sct-video-sec-pick').forEach((b) => {
+          b.classList.toggle('active', parseFloat(b.dataset.sec) === v);
+        });
+        const cost = overlay.querySelector('.sct-video-sec-cost');
+        if (cost) cost.textContent = v <= 3 ? '约 45-60 币' : v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币';
+      });
+    });
+
     overlay.querySelector('.sct-video-fill')?.addEventListener('click', () => {
       const ta = overlay.querySelector('.sct-video-text');
       if (ta) {
@@ -4803,7 +4818,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       if (!text) { showToast('先写六段提示词', 'warning'); return; }
       const src = overlay.__sctSource;
       if (!src) { showToast('还没有参考图', 'warning'); return; }
-      const seconds = parseFloat(overlay.querySelector('.sct-video-seconds')?.value) || 5;
+      const secBtn = overlay.querySelector('.sct-video-sec-pick.active');
+      const seconds = parseFloat(secBtn?.dataset?.sec) || 5;
       const accIndex = parseInt(overlay.querySelector('.sct-video-acc')?.value, 10);
       saveSettings({
         comfyVideoSeconds: seconds,
@@ -4836,7 +4852,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       return false;
     }
     const seconds = parseFloat(opts.seconds) || parseFloat(s.comfyVideoSeconds) || 5;
-    const costHint = seconds <= 5 ? '约 70-90 币' : (seconds <= 10 ? '约 150-180 币' : '约 215-260 币');
+    const costHint = seconds <= 3 ? '约 45-60 币' : (seconds <= 5 ? '约 70-90 币' : (seconds <= 10 ? '约 150-180 币' : '约 215-260 币'));
 
     renderLoadingCard(container, prompt, `📤 正在上传参考图…`, null);
     let refName = '';
@@ -8620,10 +8636,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
                 </select>
               </div>
               <div class="sct-setting-col">
-                <label for="sct-cfg-video-seconds">默认时长</label>
-                <select id="sct-cfg-video-seconds" class="text_pole">
-                  ${[5, 10, 15].map(v => `<option value="${v}" ${(parseInt(s.comfyVideoSeconds, 10) || 5) === v ? 'selected' : ''}>${v} 秒（${v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币'}）</option>`).join('')}
-                </select>
+                <label>默认时长（点一下切换）</label>
+                <div class="sct-chip-group sct-video-sec-chips">
+                  ${[3, 5, 10, 15].map(v => `<button type="button" class="sct-chip-btn sct-video-sec-chip ${(parseInt(s.comfyVideoSeconds, 10) || 5) === v ? 'active' : ''}" data-sec="${v}">${v} 秒</button>`).join('')}
+                </div>
+                <div class="sct-hint" id="sct-video-sec-hint">${(() => {
+                  const v = parseInt(s.comfyVideoSeconds, 10) || 5;
+                  return v <= 3 ? '约 45-60 币' : v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币';
+                })()}</div>
               </div>
             </div>
 
@@ -9048,7 +9068,20 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     container.querySelector('#sct-cfg-video-enabled')?.addEventListener('change', (e) => saveSettings({ comfyVideoEnabled: e.target.checked }));
     container.querySelector('#sct-cfg-video-backend')?.addEventListener('change', (e) => saveSettings({ comfyVideoBackend: String(e.target.value || '').trim() }));
     container.querySelector('#sct-cfg-video-acc')?.addEventListener('change', (e) => saveSettings({ comfyVideoAccIndex: parseInt(e.target.value, 10) || 2 }));
-    container.querySelector('#sct-cfg-video-seconds')?.addEventListener('change', (e) => saveSettings({ comfyVideoSeconds: parseFloat(e.target.value) || 5 }));
+    // 时长芯片
+    container.querySelectorAll('.sct-video-sec-chip').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const v = parseFloat(btn.dataset.sec) || 5;
+        saveSettings({ comfyVideoSeconds: v });
+        container.querySelectorAll('.sct-video-sec-chip').forEach((b) => {
+          b.classList.toggle('active', parseFloat(b.dataset.sec) === v);
+        });
+        const hint = container.querySelector('#sct-video-sec-hint');
+        if (hint) hint.textContent = v <= 3 ? '约 45-60 币' : v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币';
+        showToast(`默认时长已设为 ${v} 秒`, 'success');
+      });
+    });
     container.querySelector('#sct-cfg-video-aspect')?.addEventListener('change', (e) => saveSettings({ comfyVideoAspect: e.target.value }));
     container.querySelector('#sct-cfg-video-mp')?.addEventListener('change', (e) => saveSettings({ comfyVideoMegapixels: parseFloat(e.target.value) || 0.92 }));
     container.querySelector('#sct-cfg-video-steps')?.addEventListener('change', (e) => saveSettings({ comfyVideoSteps: parseInt(e.target.value, 10) || 12 }));
