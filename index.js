@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.3.2';
+  const SCT_BUILD = '3.4.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4666,6 +4666,34 @@
     if (el.isConnected) el.remove();
   }
 
+  /** 🤖 让本机 agent 写六段式（后端拼装 + agent 描述外观，格式 100% 可控） */
+  async function generatePromptByAgent(opts = {}) {
+    const backend = getVideoBackend();
+    const s = getSettings();
+    const body = {
+      imageName: String(opts.imageName || ''),
+      imagePrompt: String(opts.imagePrompt || ''),
+      seconds: parseFloat(opts.seconds) || parseFloat(s.comfyVideoSeconds) || 5,
+      mode: String(s.comfyVideoPromptMode || 'compact'),
+      dialogue: String(opts.dialogue || ''),
+      note: String(opts.note || ''),
+      useAgent: true,
+    };
+    const res = await fetch(`${backend}/api/mm/agent-prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+      throw new Error(data.error || `生成失败 HTTP ${res.status}`);
+    }
+    if (!data.prompt || !String(data.prompt).includes('subject_definitions')) {
+      throw new Error('后端没返回六段式');
+    }
+    return { prompt: String(data.prompt), source: data.appearanceSource || 'template' };
+  }
+
   /** 内置六段式模板（用户没填默认模板时用）—— 图生视频：锁首帧 + 锁服装 + 锁场景 */
   function buildVideoTemplate() {
     return `subject_definitions:
@@ -4708,6 +4736,8 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.className = canUseDialog ? 'sct-video-dialog' : 'sct-video-dialog sct-video-fallback';
     overlay.__sctAnchor = anchor;
     overlay.__sctSource = sourceUrl || '';
+    // 这张图的出图提示词（agent 写六段式时的「画面事实来源」）
+    overlay.__sctImagePrompt = String(anchor?.dataset?.sctPrompt || '').trim();
 
     const curSec = parseInt(s.comfyVideoSeconds, 10) || 5;
     const secondsOpts = [3, 5, 10, 15].map((v) =>
@@ -4738,8 +4768,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
             </div>
             <textarea class="text_pole sct-video-text" rows="12">${escapeHtml(prefill)}</textarea>
             <div class="sct-video-fillrow">
+              <button type="button" class="sct-comfy-btn sct-video-agent" title="把参考图 + 台词 + 动作要求发给本机 agent，让它按四把锁写六段式">🤖 让本机 agent 写</button>
               <button type="button" class="sct-comfy-btn sct-video-fill">📋 填入模板</button>
               <button type="button" class="sct-comfy-btn sct-video-copy">📋 复制当前提示词</button>
+            </div>
+            <div class="sct-setting-col" style="margin-top:4px;">
+              <label for="sct-video-note">动作要求（中文，给 agent 看的）</label>
+              <input type="text" class="text_pole sct-video-note" placeholder="例：摇动屁股，精液从小穴和屁穴里流出" />
+            </div>
+            <div class="sct-setting-col" style="margin-top:4px;">
+              <label for="sct-video-dialogue">角色台词（可选，会写进提示词让角色念出来）</label>
+              <input type="text" class="text_pole sct-video-dialogue" placeholder="例：呜……小光……前面也被塞满了……" />
             </div>
           </div>
 
@@ -4812,6 +4851,47 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
         const cost = overlay.querySelector('.sct-video-sec-cost');
         if (cost) cost.textContent = v <= 3 ? '约 45-60 币' : v <= 5 ? '约 70-90 币' : v <= 10 ? '约 150-180 币' : '约 215-260 币';
       });
+    });
+
+    // 🤖 让本机 agent 写六段式
+    overlay.querySelector('.sct-video-agent')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const btn = e.currentTarget;
+      const ta = overlay.querySelector('.sct-video-text');
+      const noteEl = overlay.querySelector('.sct-video-note');
+      const dlgEl = overlay.querySelector('.sct-video-dialogue');
+      const secBtn = overlay.querySelector('.sct-video-sec-pick.active');
+      const seconds = parseFloat(secBtn?.dataset?.sec) || 5;
+      const oldText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ agent 正在写…';
+      try {
+        // 参考图文件名（后端要用来找图）
+        const src = overlay.__sctSource;
+        let imageName = '';
+        if (typeof src === 'string') {
+          const m = String(src).match(/[?&]filename=([^&]+)/);
+          if (m) imageName = decodeURIComponent(m[1]);
+        }
+        // 出图提示词（画面事实来源）
+        const imagePrompt = String(overlay.__sctImagePrompt || '').trim();
+        const r = await generatePromptByAgent({
+          imageName,
+          imagePrompt,
+          seconds,
+          dialogue: String(dlgEl?.value || '').trim(),
+          note: String(noteEl?.value || '').trim(),
+        });
+        if (ta) ta.value = r.prompt;
+        showToast(r.source === 'agent'
+          ? '✅ agent 写好了（外观由 agent 描述）'
+          : '✅ 写好了（agent 超时，用模板 + 出图提示词）', 'success');
+      } catch (err) {
+        showToast('agent 写失败：' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
+      }
     });
 
     overlay.querySelector('.sct-video-fill')?.addEventListener('click', () => {
