@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.5.2';
+  const SCT_BUILD = '3.6.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4794,6 +4794,285 @@
     return { prompt: String(data.prompt), source: data.appearanceSource || 'template' };
   }
 
+  /** 🎬 视频管理：拉列表 */
+  async function fetchVideoList() {
+    const backend = getVideoBackend();
+    const res = await fetch(`${backend}/api/mm/videos`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    return Array.isArray(data.videos) ? data.videos : [];
+  }
+
+  /** 🎬 视频管理：删除 */
+  async function deleteVideoFile(name) {
+    const backend = getVideoBackend();
+    const res = await fetch(`${backend}/api/mm/video-delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    return !!data.ok;
+  }
+
+  /** 🎬 视频管理：重命名 */
+  async function renameVideoFile(from, to) {
+    const backend = getVideoBackend();
+    const res = await fetch(`${backend}/api/mm/video-rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    return data.to || to;
+  }
+
+  let sctVideoManagerEl = null;
+  let sctVideoPlayerEl = null;
+
+  function closeVideoManager() {
+    const el = sctVideoManagerEl;
+    sctVideoManagerEl = null;
+    if (!el) return;
+    try { if (el.__sctEsc) document.removeEventListener('keydown', el.__sctEsc, true); } catch (_) {}
+    try { if (typeof el.close === 'function' && el.open) el.close(); } catch (_) {}
+    if (el.isConnected) el.remove();
+  }
+
+  function closeVideoPlayer() {
+    const el = sctVideoPlayerEl;
+    sctVideoPlayerEl = null;
+    if (!el) return;
+    try {
+      const v = el.querySelector('video');
+      if (v) { v.pause(); v.src = ''; }
+    } catch (_) {}
+    if (el.isConnected) el.remove();
+  }
+
+  /** 全屏播放视频 */
+  function playVideoFullscreen(url, name) {
+    closeVideoPlayer();
+    const overlay = document.createElement('div');
+    overlay.className = 'sct-video-player';
+    overlay.innerHTML = `
+      <div class="sct-video-player-inner">
+        <div class="sct-video-player-head">
+          <span class="sct-video-player-name">${escapeHtml(String(name || ''))}</span>
+          <button type="button" class="sct-video-x sct-vp-quit">✕ 关闭</button>
+        </div>
+        <video class="sct-video-player-video" src="${escapeHtml(url)}" controls autoplay playsinline></video>
+        <div class="sct-video-player-foot">
+          <button type="button" class="sct-comfy-btn sct-vp-download">⬇ 下载到手机</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    sctVideoPlayerEl = overlay;
+    overlay.querySelector('.sct-vp-quit')?.addEventListener('click', (e) => { e.preventDefault(); closeVideoPlayer(); });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeVideoPlayer(); });
+    overlay.querySelector('.sct-vp-download')?.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const btn = e.currentTarget;
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ 下载中';
+      try {
+        const r = await fetch(url);
+        const blob = await r.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = String(name || 'video.mp4');
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+        showToast('已开始下载', 'success');
+      } catch (err) {
+        showToast('下载失败：' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
+      }
+    });
+  }
+
+  /** 🎬 视频管理弹窗 */
+  async function openVideoManager() {
+    closeVideoManager();
+    const canUseDialog = typeof window.HTMLDialogElement !== 'undefined'
+      && typeof document.createElement('dialog').showModal === 'function';
+    const overlay = document.createElement(canUseDialog ? 'dialog' : 'div');
+    overlay.className = canUseDialog ? 'sct-video-dialog sct-vm-dialog' : 'sct-video-dialog sct-video-fallback sct-vm-dialog';
+
+    overlay.innerHTML = `
+      <div class="sct-video-modal sct-vm-modal">
+        <div class="sct-video-head">
+          <span class="sct-video-title">🎬 视频管理</span>
+          <button type="button" class="sct-video-x sct-vm-quit" title="关闭">✕ 关闭</button>
+        </div>
+        <div class="sct-video-body">
+          <div class="sct-vm-toolbar">
+            <button type="button" class="sct-comfy-btn sct-vm-refresh">🔄 刷新</button>
+            <span class="sct-video-hint sct-vm-count">加载中…</span>
+          </div>
+          <div class="sct-vm-list"></div>
+        </div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+    sctVideoManagerEl = overlay;
+    if (canUseDialog) {
+      try { overlay.showModal(); } catch (_) { overlay.classList.add('sct-video-fallback'); }
+    } else {
+      overlay.classList.add('sct-video-fallback');
+    }
+    overlay.addEventListener('close', () => {
+      if (sctVideoManagerEl === overlay) {
+        sctVideoManagerEl = null;
+        if (overlay.isConnected) overlay.remove();
+      }
+    });
+    overlay.querySelectorAll('.sct-vm-quit').forEach((btn) => {
+      btn.addEventListener('click', (e) => { e.preventDefault(); closeVideoManager(); });
+    });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeVideoManager(); });
+    const escHandler = (e) => { if (e.key === 'Escape') closeVideoManager(); };
+    document.addEventListener('keydown', escHandler, true);
+    overlay.__sctEsc = escHandler;
+
+    const listEl = overlay.querySelector('.sct-vm-list');
+    const countEl = overlay.querySelector('.sct-vm-count');
+
+    const render = async () => {
+      if (countEl) countEl.textContent = '加载中…';
+      if (listEl) listEl.innerHTML = '<div class="sct-video-hint" style="padding:12px;">读取中…</div>';
+      let videos = [];
+      try {
+        videos = await fetchVideoList();
+      } catch (err) {
+        if (listEl) listEl.innerHTML = `<div class="sct-vm-empty">读取失败：${escapeHtml(err.message)}<br><span class="sct-video-hint">检查后端地址和 8899 端口</span></div>`;
+        if (countEl) countEl.textContent = '读取失败';
+        return;
+      }
+      if (countEl) countEl.textContent = `共 ${videos.length} 个视频`;
+      if (!videos.length) {
+        if (listEl) listEl.innerHTML = '<div class="sct-vm-empty">还没有视频<br><span class="sct-video-hint">出图后点卡片「🎬 视频」生成</span></div>';
+        return;
+      }
+      const backend = getVideoBackend();
+      if (listEl) {
+        listEl.innerHTML = videos.map((v, i) => {
+          const dt = new Date(v.mtime);
+          const timeStr = `${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+          const displayName = String(v.name).replace(/\.(mp4|webm|mov)$/i, '');
+          return `
+            <div class="sct-vm-item" data-name="${escapeHtml(v.name)}" data-idx="${i}">
+              <div class="sct-vm-thumb">
+                <video class="sct-vm-preview" preload="metadata" muted playsinline
+                  src="${escapeHtml(backend + v.url)}#t=0.5"></video>
+                <button type="button" class="sct-vm-play" title="播放">▶</button>
+              </div>
+              <div class="sct-vm-info">
+                <div class="sct-vm-name" title="${escapeHtml(v.name)}">${escapeHtml(displayName)}</div>
+                <div class="sct-vm-meta">${timeStr} · ${v.sizeMb} MB</div>
+                <div class="sct-vm-actions">
+                  <button type="button" class="sct-comfy-btn sct-vm-download" title="下载到手机">⬇ 下载</button>
+                  <button type="button" class="sct-comfy-btn sct-vm-rename" title="重命名">✏️ 改名</button>
+                  <button type="button" class="sct-comfy-btn sct-btn-danger sct-vm-del" title="删除">🗑️ 删除</button>
+                </div>
+              </div>
+            </div>`;
+        }).join('');
+      }
+
+      listEl?.querySelectorAll('.sct-vm-play').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const item = btn.closest('.sct-vm-item');
+          const name = item?.dataset?.name || '';
+          const v = videos.find((x) => x.name === name);
+          if (!v) return;
+          playVideoFullscreen(backend + v.url, name);
+        });
+      });
+
+      listEl?.querySelectorAll('.sct-vm-download').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const item = btn.closest('.sct-vm-item');
+          const name = item?.dataset?.name || '';
+          const v = videos.find((x) => x.name === name);
+          if (!v) return;
+          const old = btn.textContent;
+          btn.disabled = true;
+          btn.textContent = '⏳ 下载中';
+          try {
+            const r = await fetch(backend + v.url);
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            const blob = await r.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+            showToast('已开始下载：' + name, 'success');
+          } catch (err) {
+            showToast('下载失败：' + err.message, 'error');
+          } finally {
+            btn.disabled = false;
+            btn.textContent = old;
+          }
+        });
+      });
+
+      listEl?.querySelectorAll('.sct-vm-rename').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const item = btn.closest('.sct-vm-item');
+          const name = item?.dataset?.name || '';
+          const cur = name.replace(/\.(mp4|webm|mov)$/i, '');
+          const next = prompt('新文件名（不用写扩展名）', cur);
+          if (!next || next === cur) return;
+          try {
+            await renameVideoFile(name, next);
+            showToast('已改名', 'success');
+            await render();
+          } catch (err) {
+            showToast('改名失败：' + err.message, 'error');
+          }
+        });
+      });
+
+      listEl?.querySelectorAll('.sct-vm-del').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const item = btn.closest('.sct-vm-item');
+          const name = item?.dataset?.name || '';
+          if (!confirm(`确定删除？\n${name}\n\n删了就找不回来了。`)) return;
+          try {
+            await deleteVideoFile(name);
+            showToast('已删除', 'success');
+            await render();
+          } catch (err) {
+            showToast('删除失败：' + err.message, 'error');
+          }
+        });
+      });
+    };
+
+    overlay.querySelector('.sct-vm-refresh')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      render();
+    });
+    await render();
+  }
+
   /** 内置六段式模板（用户没填默认模板时用）—— 图生视频：锁首帧 + 锁服装 + 锁场景 */
   function buildVideoTemplate() {
     return `subject_definitions:
@@ -8924,6 +9203,11 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <textarea id="sct-cfg-video-prompt" class="text_pole" rows="6" placeholder="留空就行：点 🎬 弹窗里的「📋 填入模板」会用内置模板">${escapeHtml(s.comfyVideoPrompt || '')}</textarea>
             </div>
 
+            <div class="sct-setting-row">
+              <label>视频管理 <span style="opacity:.6; font-size:11px;">(列出已生成的视频，可播放/下载/改名/删除)</span></label>
+              <button type="button" class="sct-comfy-btn sct-vm-open">🎬 打开视频管理</button>
+            </div>
+
             <div class="sct-hint">
               <b>用法</b>：图片卡片底栏点「🎬 视频」→ 确认参考图 → 六段提示词（聊天模型写好的会自动填入）→ 选时长 → 开始生成。<br>
               <b>成本</b>：5 秒约 70-90 币，15 秒约 215-260 币。免费币账号出片带「RunningHub AI生成」水印，付费币无水印。<br>
@@ -9298,6 +9582,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       container.querySelector('#sct-cfg-vae').value = e.target.value;
       saveSettings({ comfyVae: e.target.value });
       showToast(`已指定外部 VAE:${e.target.value}(下次出图生效)`, 'success');
+    });
+
+    // 🎬 视频管理
+    container.querySelector('.sct-vm-open')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      openVideoManager().catch((err) => showToast('打开失败：' + err.message, 'error'));
     });
 
     // 🎬 图生视频设置

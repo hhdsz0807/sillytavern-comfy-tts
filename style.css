@@ -2730,3 +2730,83 @@
 .sct-video-two > * { flex: 1 1 160px; min-width: 150px; }
 .sct-video-two .sct-setting-col { margin-bottom: 0; }
 .sct-video-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ==========================================================================
+   🎬 视频管理（列表 / 播放 / 下载 / 改名 / 删除）
+   ========================================================================== */
+
+.sct-vm-modal { max-width: 720px; }
+.sct-vm-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 2px 8px; flex-wrap: wrap;
+}
+.sct-vm-count { flex: 1 1 auto; }
+.sct-vm-list {
+  display: flex; flex-direction: column; gap: 10px;
+  max-height: 62vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
+}
+.sct-vm-empty {
+  padding: 28px 12px; text-align: center; font-size: 13px; opacity: 0.75; line-height: 1.8;
+}
+.sct-vm-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 8px; border-radius: var(--sct-radius-sm, 8px);
+  background: var(--sct-surface, #44444E);
+  border: 1px solid var(--sct-line, #53525D);
+}
+.sct-vm-thumb {
+  position: relative; flex: 0 0 auto;
+  width: 108px; height: 108px;
+  border-radius: var(--sct-radius-sm, 8px);
+  overflow: hidden; background: #000;
+}
+.sct-vm-preview {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.sct-vm-play {
+  position: absolute; inset: 0; margin: auto;
+  width: 40px; height: 40px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; color: #fff; cursor: pointer;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  padding-left: 3px;
+}
+.sct-vm-play:active { transform: scale(0.94); }
+.sct-vm-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sct-vm-name {
+  font-size: 12.5px; font-weight: 600; line-height: 1.4;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sct-vm-meta { font-size: 11px; opacity: 0.62; }
+.sct-vm-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.sct-vm-actions .sct-comfy-btn { font-size: 11.5px; padding: 3px 8px; }
+
+/* 全屏播放器 */
+.sct-video-player {
+  position: fixed; inset: 0; z-index: 2147483647;
+  display: flex; align-items: center; justify-content: center;
+  padding: 10px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  background: rgba(0, 0, 0, 0.88);
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+}
+.sct-video-player-inner {
+  width: 100%; max-width: 900px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sct-video-player-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  color: #fff; font-size: 12.5px;
+}
+.sct-video-player-name {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sct-video-player-video {
+  width: 100%; max-height: 72vh; border-radius: var(--sct-radius, 10px);
+  background: #000; display: block;
+}
+.sct-video-player-foot { display: flex; gap: 8px; justify-content: center; }
