@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.4.0';
+  const SCT_BUILD = '3.5.0';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -37,9 +37,41 @@
   // 🎬 图生视频：六段式提示词（MiniMax H3 硬规则）
   //    段名必须带冒号、顺序固定；summary 以 [reference generation] 开头
   // ---------------------------------------------------------------------------
-  const VIDEO_TAG_INTRO = `【顺带写视频提示词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）：\n<video>六段式英文提示词</video>\n`;
+  const VIDEO_TAG_INTRO = `【顺带写视频动作与台词】：每插入一个生图标签，就在它**紧后面**再插一个视频标签（第 N 个视频标签对应第 N 个图标签）。视频标签里只写两行，不要写六段式、不要写英文：
+<video>
+动作：这一张图接下来 3~5 秒里发生的**一个**小动作（中文，一句话，只写身体/表情/光影的微动，不写走路、转身、换场景）
+台词：这个角色在这一刻说的一句话（中文，8~10 个汉字，用引号括起来；没有台词就写「无」）
+</video>
+`;
 
-  const VIDEO_RULES_HEAD = `六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:
+  const VIDEO_RULES_HEAD = `【你只需要写「动作」和「台词」两行，六段式由插件后端生成，你不用管】
+
+【★★★ 这是「图生视频」：参考图就是第一帧】
+视频第 0 帧必须和参考图**像素级一致**（构图、机位、景别、裁切、人物位置、朝向、姿势全部照抄）。
+所以「动作」只能写**原地微动**：眨眼、呼吸起伏、头发轻摆、光影微变、衣角微动、液体滴落。
+**绝对不许**写走路、转身、换姿势、换机位、换场景 —— 这些会破坏首帧锁。
+
+【动作怎么写】
+· 一句话，中文，只写一个动作（3 秒最多 1 个，5 秒最多 2 个）
+· 只写身体/表情/光影的微动，不写剧情推进
+· 例：「轻轻眨眼，胸口随呼吸起伏」「头发被风轻轻吹动」「慢慢低下头，睫毛微颤」
+
+【台词怎么写】
+· 一句话，中文，8~10 个汉字（3 字最容易跑成英文）
+· 用引号括起来，例：「呜……小光……前面也被塞满了……」
+· 没有台词就写「无」
+· 台词必须是这个角色在这一刻真的会说的话，不要编旁白
+
+【格式（严格）】
+<video>
+动作：<一句话中文>
+台词：<一句话中文，或「无」>
+</video>
+
+【旧格式兼容】如果你已经写了六段式（subject_definitions: 开头），插件也能识别，但**优先用「动作/台词」两行格式**。
+
+--- 以下是给插件后端看的六段式规范，你不用输出 ---
+六段必须齐全、段名照抄、顺序固定、每段之间空一行：subject_definitions: / summary: / retention_analysis: / detailed_description: / overall_soundscape: / non_diegetic_music:
 
 【★★★ 这是「图生视频」，不是文生视频 —— 参考图就是第一帧，不是参考素材】
 <Picture 1> 同时承担三件事，缺一不可：
@@ -4420,7 +4452,37 @@
      六段提示词：可由聊天模型在写生图标签时一起生成（<video>…</video>），也可手写
      ========================================================================== */
 
-  /** 从消息 DOM 里摘出 <video>…</video> 六段式（按位置配对到第 N 张图） */
+  /** 从 <video> 标签内容里解析「动作」和「台词」（新格式），或识别六段式（旧格式） */
+  function parseVideoTagContent(raw) {
+    const txt = String(raw || '')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/<[^>]+>/g, '')
+      .trim();
+    if (!txt) return { action: '', dialogue: '', sixSection: '' };
+
+    // 旧格式：六段式
+    if (/subject_definitions\s*:/i.test(txt)) {
+      return { action: '', dialogue: '', sixSection: txt };
+    }
+
+    // 新格式：动作 / 台词
+    let action = '';
+    let dialogue = '';
+    const mAction = txt.match(/动作\s*[:：]\s*([^\n]+)/);
+    if (mAction) action = mAction[1].trim();
+    const mDialogue = txt.match(/台词\s*[:：]\s*([^\n]+)/);
+    if (mDialogue) {
+      let d = mDialogue[1].trim();
+      // 去掉「无」「none」「N/A」
+      if (/^(无|none|n\/a|没有|—|-)$/i.test(d)) d = '';
+      // 去掉外层引号
+      d = d.replace(/^["'「『“”]+|["'」』“”]+$/g, '').trim();
+      dialogue = d;
+    }
+    return { action, dialogue, sixSection: '' };
+  }
+
+  /** 从消息 DOM 里摘出 <video>…</video>（按位置配对到第 N 张图） */
   function extractVideoPrompts(textEl) {
     const list = [];
     const byImage = {};
@@ -4440,6 +4502,16 @@
       list.forEach((v, i) => { byImage[i] = v; });
     } catch (_) {}
     return { list, byImage };
+  }
+
+  /** 解析出「动作 + 台词」（按图序号） */
+  function extractVideoMeta(textEl) {
+    const { byImage } = extractVideoPrompts(textEl);
+    const meta = {};
+    Object.keys(byImage || {}).forEach((k) => {
+      meta[k] = parseVideoTagContent(byImage[k]);
+    });
+    return meta;
   }
 
   /** 把 <video> 标签从正文里换成小徽章（不污染正文） */
@@ -4738,6 +4810,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.__sctSource = sourceUrl || '';
     // 这张图的出图提示词（agent 写六段式时的「画面事实来源」）
     overlay.__sctImagePrompt = String(anchor?.dataset?.sctPrompt || '').trim();
+    // 🎬 动作 / 台词：优先用正文里模型写好的，其次从正文引号里抓
+    overlay.__sctVideoAction = String(anchor?.__sctVideoAction || '').trim();
+    overlay.__sctVideoDialogue = String(anchor?.__sctVideoDialogue || '').trim();
+    if (!overlay.__sctVideoDialogue) {
+      // 兜底：从这张图上方的正文里抓引号台词
+      try {
+        const script = String(anchor?.__sctScriptText || '');
+        const m = script.match(/[「『“"]([^「」『』“”"]{4,40})[」』”"]/);
+        if (m) overlay.__sctVideoDialogue = m[1].trim();
+      } catch (_) {}
+    }
 
     const curSec = parseInt(s.comfyVideoSeconds, 10) || 5;
     const secondsOpts = [3, 5, 10, 15].map((v) =>
@@ -4773,12 +4856,12 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
               <button type="button" class="sct-comfy-btn sct-video-copy">📋 复制当前提示词</button>
             </div>
             <div class="sct-setting-col" style="margin-top:4px;">
-              <label for="sct-video-note">动作要求（中文，给 agent 看的）</label>
-              <input type="text" class="text_pole sct-video-note" placeholder="例：摇动屁股，精液从小穴和屁穴里流出" />
+              <label>动作（从正文自动提取，可改）</label>
+              <input type="text" class="text_pole sct-video-note" placeholder="正文里没写动作 —— 可以手填，例：轻轻眨眼，胸口随呼吸起伏" />
             </div>
             <div class="sct-setting-col" style="margin-top:4px;">
-              <label for="sct-video-dialogue">角色台词（可选，会写进提示词让角色念出来）</label>
-              <input type="text" class="text_pole sct-video-dialogue" placeholder="例：呜……小光……前面也被塞满了……" />
+              <label>台词（从正文自动提取，可改）</label>
+              <input type="text" class="text_pole sct-video-dialogue" placeholder="正文里没写台词 —— 可以手填，例：呜……小光……" />
             </div>
           </div>
 
@@ -4808,6 +4891,13 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
 
     document.body.appendChild(overlay);
     sctVideoDialogEl = overlay;
+    // 自动填入动作 / 台词
+    try {
+      const noteEl = overlay.querySelector('.sct-video-note');
+      const dlgEl = overlay.querySelector('.sct-video-dialogue');
+      if (noteEl && overlay.__sctVideoAction) noteEl.value = overlay.__sctVideoAction;
+      if (dlgEl && overlay.__sctVideoDialogue) dlgEl.value = overlay.__sctVideoDialogue;
+    } catch (_) {}
     if (canUseDialog) {
       try { overlay.showModal(); } catch (_) { overlay.classList.add('sct-video-fallback'); }
     } else {
@@ -6219,11 +6309,14 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
           cardContainer.dataset.sctTaskKey = taskKey;
           cardContainer.dataset.sctMesId = String(mesId);
           cardContainer.dataset.sctSlotIdx = String(idx);
-          // 🎬 聊天模型顺带写好的六段式（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
-          const vpFromAi = (videoPrompts.byImage || {})[idx] || '';
-          cardContainer.__sctVideoPrompt = vpFromAi || getVideoPromptFor(cardContainer, mesId, idx) || '';
-          if (vpFromAi && vpFromAi !== getVideoPromptFor(cardContainer, mesId, idx)) {
-            saveVideoPromptFor(mesId, idx, vpFromAi);
+          // 🎬 聊天模型顺带写好的「动作 + 台词」（按位置配对：谁的图标签后面跟着视频标签，就算谁的）
+          const vpRaw = (videoPrompts.byImage || {})[idx] || '';
+          const vpMeta = parseVideoTagContent(vpRaw);
+          cardContainer.__sctVideoPrompt = vpMeta.sixSection || '';
+          cardContainer.__sctVideoAction = vpMeta.action || '';
+          cardContainer.__sctVideoDialogue = vpMeta.dialogue || '';
+          if (vpMeta.sixSection) {
+            saveVideoPromptFor(mesId, idx, vpMeta.sixSection);
           }
           // 这张图「上面那段」正文（台词/剧情只认这一段）
           cardContainer.__sctScriptText = String(item.script || '');
