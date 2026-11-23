@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.6.0';
+  const SCT_BUILD = '3.6.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4833,6 +4833,7 @@
   let sctVideoPlayerEl = null;
 
   function closeVideoManager() {
+    closeVideoPlayer();
     const el = sctVideoManagerEl;
     sctVideoManagerEl = null;
     if (!el) return;
@@ -4845,9 +4846,10 @@
     const el = sctVideoPlayerEl;
     sctVideoPlayerEl = null;
     if (!el) return;
+    try { if (el.__sctEsc) document.removeEventListener('keydown', el.__sctEsc, true); } catch (_) {}
     try {
       const v = el.querySelector('video');
-      if (v) { v.pause(); v.src = ''; }
+      if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
     } catch (_) {}
     if (el.isConnected) el.remove();
   }
@@ -4861,17 +4863,36 @@
       <div class="sct-video-player-inner">
         <div class="sct-video-player-head">
           <span class="sct-video-player-name">${escapeHtml(String(name || ''))}</span>
-          <button type="button" class="sct-video-x sct-vp-quit">✕ 关闭</button>
+          <button type="button" class="sct-video-x sct-vp-quit" title="关闭">✕ 关闭</button>
         </div>
-        <video class="sct-video-player-video" src="${escapeHtml(url)}" controls autoplay playsinline></video>
+        <div class="sct-video-player-stage">
+          <video class="sct-video-player-video" src="${escapeHtml(url)}" controls autoplay playsinline preload="auto"></video>
+        </div>
         <div class="sct-video-player-foot">
           <button type="button" class="sct-comfy-btn sct-vp-download">⬇ 下载到手机</button>
+          <button type="button" class="sct-comfy-btn sct-vp-quit2">✕ 关闭</button>
         </div>
       </div>`;
-    document.body.appendChild(overlay);
+    // ★ 关键：<dialog>.showModal() 会把弹窗放进浏览器顶层（top layer），
+    //   这个层级高于任何 z-index。播放器必须挂进 dialog 内部才能显示在上面。
+    //   用 querySelector 现找，不依赖变量（变量可能已被清空）。
+    const mgrDialog = document.querySelector('.sct-vm-dialog');
+    const host = (mgrDialog && mgrDialog.isConnected) ? mgrDialog : document.body;
+    host.appendChild(overlay);
+    // 挂进 dialog 时用 absolute 铺满 dialog；挂 body 时用 fixed 铺满视口
+    overlay.style.position = (host === document.body) ? 'fixed' : 'absolute';
     sctVideoPlayerEl = overlay;
-    overlay.querySelector('.sct-vp-quit')?.addEventListener('click', (e) => { e.preventDefault(); closeVideoPlayer(); });
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeVideoPlayer(); });
+    overlay.querySelectorAll('.sct-vp-quit, .sct-vp-quit2').forEach((btn) => {
+      btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); closeVideoPlayer(); });
+    });
+    // 点空白处关闭（点视频本身不关）
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.classList.contains('sct-video-player-stage')) closeVideoPlayer();
+    });
+    // ESC 关闭
+    const vpEsc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeVideoPlayer(); } };
+    document.addEventListener('keydown', vpEsc, true);
+    overlay.__sctEsc = vpEsc;
     overlay.querySelector('.sct-vp-download')?.addEventListener('click', async (e) => {
       e.preventDefault();
       const btn = e.currentTarget;
