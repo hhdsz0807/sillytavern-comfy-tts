@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.5.0';
+  const SCT_BUILD = '3.5.1';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -4454,31 +4454,59 @@
 
   /** 从 <video> 标签内容里解析「动作」和「台词」（新格式），或识别六段式（旧格式） */
   function parseVideoTagContent(raw) {
-    const txt = String(raw || '')
+    // 1) 统一换行：<br> / <br/> / </p> / </div> 全部转成 \n
+    let txt = String(raw || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
       .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/&nbsp;/g, ' ')
       .replace(/<[^>]+>/g, '')
+      .replace(/\r\n?/g, '\n')
       .trim();
     if (!txt) return { action: '', dialogue: '', sixSection: '' };
 
-    // 旧格式：六段式
-    if (/subject_definitions\s*:/i.test(txt)) {
+    // 2) 旧格式：六段式
+    if (/subject_definitions\s*[:：]/i.test(txt)) {
       return { action: '', dialogue: '', sixSection: txt };
     }
 
-    // 新格式：动作 / 台词
-    let action = '';
-    let dialogue = '';
-    const mAction = txt.match(/动作\s*[:：]\s*([^\n]+)/);
-    if (mAction) action = mAction[1].trim();
-    const mDialogue = txt.match(/台词\s*[:：]\s*([^\n]+)/);
-    if (mDialogue) {
-      let d = mDialogue[1].trim();
-      // 去掉「无」「none」「N/A」
-      if (/^(无|none|n\/a|没有|—|-)$/i.test(d)) d = '';
-      // 去掉外层引号
-      d = d.replace(/^["'「『“”]+|["'」』“”]+$/g, '').trim();
-      dialogue = d;
+    // 3) 新格式：动作 / 台词
+    //    用「行首标签 + 到下一个标签或行尾」的方式抓，避免跨行
+    const grab = (labelRe) => {
+      // 支持：动作：xxx / **动作**：xxx / - 动作: xxx / 动作 xxx
+      const re = new RegExp(
+        '(?:^|\\n)\\s*(?:[-*•]\\s*)?(?:\\*\\*)?' + labelRe + '(?:\\*\\*)?\\s*[:：]?\\s*([^\\n]*)',
+        'i'
+      );
+      const m = txt.match(re);
+      return m ? String(m[1] || '').trim() : '';
+    };
+
+    let action = grab('动作');
+    let dialogue = grab('台词');
+
+    // 4) 清理
+    const clean = (v) => {
+      let s = String(v || '').trim();
+      // 去掉 markdown 粗体/斜体残留
+      s = s.replace(/^\*+|\*+$/g, '').trim();
+      // 去掉「无」「none」「N/A」「没有」
+      if (/^(无|none|n\/a|没有|—|-|空)$/i.test(s)) return '';
+      // 去掉外层引号（中英文都去）
+      s = s.replace(/^["'「『“”‘’]+/, '').replace(/["'」』“”‘’]+$/, '').trim();
+      // 去掉尾部标点残留
+      s = s.replace(/[，,。.；;]+$/, '').trim();
+      return s;
+    };
+    action = clean(action);
+    dialogue = clean(dialogue);
+
+    // 5) 兜底：如果只抓到一行且没标签，当成动作
+    if (!action && !dialogue) {
+      const firstLine = txt.split('\n').map((x) => x.trim()).filter(Boolean)[0] || '';
+      if (firstLine && firstLine.length <= 200) action = clean(firstLine);
     }
+
     return { action, dialogue, sixSection: '' };
   }
 
@@ -4815,10 +4843,25 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     overlay.__sctVideoDialogue = String(anchor?.__sctVideoDialogue || '').trim();
     if (!overlay.__sctVideoDialogue) {
       // 兜底：从这张图上方的正文里抓引号台词
+      // 过滤掉语言代码 / 技术串 / 纯英文（那些不是台词）
       try {
         const script = String(anchor?.__sctScriptText || '');
-        const m = script.match(/[「『“"]([^「」『』“”"]{4,40})[」』”"]/);
-        if (m) overlay.__sctVideoDialogue = m[1].trim();
+        const re = /[「『“"]([^「」『』“”"]{4,40})[」』”"]/g;
+        let m;
+        while ((m = re.exec(script)) !== null) {
+          const cand = String(m[1] || '').trim();
+          if (!cand) continue;
+          // 跳过：纯 ASCII（zh-CN / en-US / http://... / 英文单词）
+          if (/^[\x00-\x7F]+$/.test(cand)) continue;
+          // 跳过：看起来像代码/路径/URL
+          if (/^[a-z]{2}-[A-Z]{2}$/.test(cand)) continue;
+          if (/^(https?|ftp|file):/i.test(cand)) continue;
+          if (/[\\/{}<>]/.test(cand)) continue;
+          // 必须含中文
+          if (!/[\u4e00-\u9fff]/.test(cand)) continue;
+          overlay.__sctVideoDialogue = cand;
+          break;
+        }
       } catch (_) {}
     }
 
