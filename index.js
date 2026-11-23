@@ -25,7 +25,7 @@
   const MODULE_NAME = 'sillytavern-comfy-tts';
   const DISPLAY_NAME = 'ComfyUI 绘图';
   // 构建标记:界面里显示出来,便于确认「手机跑的是不是最新代码」(缓存问题排查)
-  const SCT_BUILD = '3.5.1';
+  const SCT_BUILD = '3.5.2';
 
   // 默认自动配图指示词 (必须使用 <image> 标签包裹，严格遵循就地插入、单主体防污染与肢体接触互动规范)
   // 生图指导文本版本号:把「旧版默认文本」自动升级到新规则(用户自己改过的不动)
@@ -5381,13 +5381,6 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       });
     }
 
-    // 🎬 视频：拿当前这张当参考图，云端出片
-    container.querySelector('.sct-video-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openVideoDialog(container, currentSrc);
-    });
-
     // 清空本槽位全部图片
     const clearSlotBtn = container.querySelector('.sct-clear-slot-btn');
     if (clearSlotBtn) {
@@ -5419,7 +5412,7 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
     chatRoot.__sctActionDelegate = true;
     chatRoot.addEventListener('click', (e) => {
       const t = e.target && e.target.closest
-        ? e.target.closest('.sct-start-draw, .sct-retry-btn')
+        ? e.target.closest('.sct-start-draw, .sct-retry-btn, .sct-video-btn')
         : null;
       if (!t) return;
       const container = t.closest('.sct-comfy-card-container');
@@ -5430,6 +5423,17 @@ A gentle 72 BPM music-box melody with soft pads, ending on a calm resolving note
       const taskKey = container.dataset.sctTaskKey || null;
       const textEl = container.closest('.mes')?.querySelector('.mes_text');
       try {
+        // 🎬 视频：从 DOM 现读当前图（不依赖闭包里的 currentSrc，刷新后也有效）
+        if (t.classList.contains('sct-video-btn')) {
+          const img = container.querySelector('.sct-comfy-viewport img');
+          const src = String(img?.getAttribute('src') || '').trim();
+          if (!src) {
+            showToast('这张卡的图片信息丢了：请点「🔄 重新生成」再来', 'warning');
+            return;
+          }
+          openVideoDialog(container, src);
+          return;
+        }
         // 立即开始生图 / 重新生成
         if (taskKey) sctDrawingTasks.delete(taskKey);
         triggerComfyDraw(prompt, container, detectActiveLoras(textEl?.textContent || '', prompt), taskKey);
